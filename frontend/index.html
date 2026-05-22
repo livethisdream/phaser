@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADI Phaser Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div class="app-container">
+
+    <div class="desktop-titlebar" id="desktop-titlebar" hidden aria-hidden="true">
+      <div class="desktop-titlebar__drag pywebview-drag-region" id="desktop-titlebar-drag">
+        <span class="desktop-titlebar__wordmark">ADI <strong>Phaser</strong></span>
+        <span class="desktop-titlebar__badge">Desktop</span>
+      </div>
+      <div class="desktop-titlebar__controls">
+        <button class="desktop-titlebar__btn" id="btn-window-minimize" title="Minimize window" aria-label="Minimize window">—</button>
+        <button class="desktop-titlebar__btn" id="btn-window-maximize" title="Maximize window" aria-label="Maximize window">▢</button>
+        <button class="desktop-titlebar__btn desktop-titlebar__btn--close" id="btn-window-close" title="Close window" aria-label="Close window">✕</button>
+      </div>
+    </div>
+
+    <main class="dashboard">
+      <!-- Controls Column (Accordion) -->
+      <aside class="controls-panel glass-panel" id="settings-panel">
+        <!-- Icon Sidebar (shown when collapsed) -->
+        <div class="sidebar-icons" id="sidebar-icons">
+          <button class="sidebar-icon-btn" data-section="0" title="Configuration" aria-label="Configuration">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M18.01 5.99l-1.56 1.56M7.55 16.45l-1.56 1.56M18.01 18.01l-1.56-1.56M7.55 7.55L5.99 5.99"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="1" title="Element Gains" aria-label="Element Gains">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 5v14M12 5v14M18 5v14"></path>
+              <circle cx="6" cy="9" r="2"></circle>
+              <circle cx="12" cy="14" r="2"></circle>
+              <circle cx="18" cy="8" r="2"></circle>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="2" title="Phase Control" aria-label="Phase Control">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4a8 8 0 1 1-7.4 4.9"></path>
+              <path d="M4.5 4.5v5h5"></path>
+              <path d="M12 8v4l2.6 2.6"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="3" title="Quantization" aria-label="Quantization">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 7.5h14v9H5z"></path>
+              <path d="M8 7.5v3M11 7.5v2M14 7.5v3M17 7.5v2"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="4" title="Digital Beam" aria-label="Digital Beam Forming">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="2"></circle>
+              <path d="M12 4v3M12 17v3M4 12h3M17 12h3"></path>
+              <path d="M6.7 6.7l2.1 2.1M15.2 15.2l2.1 2.1M17.3 6.7l-2.1 2.1M8.8 15.2l-2.1 2.1"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="5" title="Plot Options" aria-label="Plot Options">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4.5 18.5h15"></path>
+              <path d="M6 16l4-5 3 2 5-6"></path>
+              <circle cx="6" cy="16" r="1"></circle>
+              <circle cx="10" cy="11" r="1"></circle>
+              <circle cx="13" cy="13" r="1"></circle>
+              <circle cx="18" cy="7" r="1"></circle>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="6" title="Lab Presets" aria-label="Lab Presets">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 3h6"></path>
+              <path d="M10 3v6.2L6 17a2 2 0 0 0 1.78 2.9h8.44A2 2 0 0 0 18 17l-4-7.8V3"></path>
+              <path d="M7.5 15h9"></path>
+            </svg>
+          </button>
+          <div class="sidebar-icons-spacer"></div>
+          <button class="sidebar-icon-btn" id="btn-toggle-settings-icon" title="Collapse settings" aria-label="Collapse settings" style="border-color: var(--primary); color: var(--primary);">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5.5h14v13H5z"></path>
+              <path d="M9 5.5v13"></path>
+              <path d="M13.5 12h3"></path>
+              <path d="M15 10.5l1.5 1.5-1.5 1.5"></path>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Full Sidebar (shown when expanded) -->
+        <div id="sidebar-content">
+          <div class="panel-header-row">
+            <h2 class="panel-title">Settings</h2>
+            <button class="btn btn-outline btn-small icon-toggle-btn" id="btn-toggle-settings" title="Collapse settings" aria-label="Collapse settings">−</button>
+          </div>
+
+        <div class="accordion" id="accordionSettings">
+            <!-- 1. Config -->
+            <div class="accordion-item active">
+                <button class="accordion-header" title="Configure host frequency, mode, and global RX/TX gains"><span class="accordion-icon" data-icon="0"></span> Configuration <span>▼</span></button>
+                <div class="accordion-body">
+                    <div class="control-group" style="margin-bottom:0.25rem">
+                      <label style="margin-bottom:0; color: var(--text-main);">Calibration</label>
+                    </div>
+                    <div class="action-row" style="margin-top:0.5rem">
+                        <button class="btn btn-outline" id="btn-calibrate-phaser">Calibrate Phaser</button>
+                        <button class="btn btn-outline" id="btn-find-hb100">Find HB100</button>
+                    </div>
+                    <div class="calibration-feedback" aria-live="polite">
+                        <span class="calibration-status-pill idle" id="cal-status-pill">Cal: Idle</span>
+                        <div class="calibration-status-text" id="cal-status">Idle</div>
+                    </div>
+                    <hr class="divider" />
+
+                    <div class="control-group">
+                      <label>Mode Selection</label>
+                      <select id="modeSelect" class="modern-select">
+                        <option value="Beam Sweep">Beam Sweep</option>
+                        <option value="Static Phase">Static Phase</option>
+                        <option value="Tracking">Tracking</option>
+                        <option value="Signal vs Time">Signal vs Time</option>
+                      </select>
+                    </div>
+                    <div class="control-group">
+                      <label>Signal Freq (GHz)</label>
+                      <input type="number" id="freq" step="0.001" value="10.0" class="modern-input">
+                    </div>
+                    <div class="control-group slider-group mt-2">
+                      <label>Signal BW (MHz): <span id="val-bw" class="val-display">10</span></label>
+                      <input type="range" id="bw" min="0" max="2000" step="100" value="10" class="modern-slider">
+                    </div>
+                    <div class="control-group slider-group mt-2">
+                      <label>Rx Gain (dB): <span id="val-rx-gain" class="val-display">20</span></label>
+                      <input type="range" id="rxgain" min="0" max="60" step="1" value="20" class="modern-slider">
+                    </div>
+                    <div class="control-group slider-group mt-2">
+                      <label>Tx Gain (dB): <span id="val-tx-gain" class="val-display">-40</span></label>
+                      <input type="range" id="txgain" min="-80" max="-3" step="1" value="-40" class="modern-slider">
+                    </div>
+                    <div class="control-group mt-2">
+                        <label>Tx Mode</label>
+                        <select id="txMode" class="modern-select">
+                            <option value="Transmit Disabled">Transmit Disabled</option>
+                            <option value="Transmit on OUT1">Transmit on OUT1</option>
+                            <option value="Transmit on OUT2">Transmit on OUT2</option>
+                        </select>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- 2. Element Gains -->
+            <div class="accordion-item">
+                <button class="accordion-header" title="Adjust individual channel gains and apply tapering functions"><span class="accordion-icon" data-icon="1"></span> Element Gains <span>▼</span></button>
+                <div class="accordion-body">
+                    <label style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 0.25rem;">Window Presets</label>
+                    <div class="taper-buttons">
+                      <button class="btn btn-outline" id="taper-rect">Rect</button>
+                      <button class="btn btn-outline" id="taper-cheb">Cheb</button>
+                      <button class="btn btn-outline" id="taper-hann">Hann</button>
+                      <button class="btn btn-outline" id="taper-black">Black</button>
+                    </div>
+                    <label class="toggle-container mt-2">
+                        <span>Enforce Symmetric Taper</span>
+                        <input type="checkbox" id="opt-symmetric-taper">
+                        <span class="checkmark"></span>
+                    </label>
+                    <hr class="divider" />
+                    <div id="elements-gain-container" class="sliders-list dense-list"></div>
+                </div>
+            </div>
+
+            <!-- 3. Phase -->
+            <div class="accordion-item">
+                <button class="accordion-header" title="Adjust specific RF phase mappings for each channel"><span class="accordion-icon" data-icon="2"></span> Phase Control <span>▼</span></button>
+                <div class="accordion-body">
+                    <div class="action-row" style="margin-top:0">
+                        <button class="btn btn-outline" id="btn-zero-phase">Set All Phase to 0</button>
+                    </div>
+                    <hr class="divider" />
+                    <div id="elements-phase-container" class="sliders-list dense-list"></div>
+                </div>
+            </div>
+
+            <!-- 4. Bits -->
+            <div class="accordion-item">
+                <button class="accordion-header" title="Truncate bit depth or limit steering resolution to simulate quantization effects"><span class="accordion-icon" data-icon="3"></span> Quantization <span>▼</span></button>
+                <div class="accordion-body">
+                    <div class="control-group slider-group">
+                      <label>Steer Resolution: <span id="val-res" class="val-display">2.8</span></label>
+                      <input type="range" id="res" min="0.1" max="5" step="0.1" value="2.8" class="modern-slider">
+                    </div>
+                    <div class="control-group slider-group mt-2">
+                      <label>Phase Shift Bits: <span id="val-bits" class="val-display">7</span></label>
+                      <input type="range" id="bits" min="1" max="7" step="1" value="7" class="modern-slider">
+                    </div>
+                    <label class="toggle-container mt-2">
+                      <span>Ignore Steer Res</span>
+                      <input type="checkbox" id="ignore-res" checked>
+                      <span class="checkmark"></span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 5. Digital -->
+            <div class="accordion-item">
+                <button class="accordion-header" title="Inject dual-beam signals and adjust sub-array tracking metrics"><span class="accordion-icon" data-icon="4"></span> Digital Beam Forming <span>▼</span></button>
+                <div class="accordion-body">
+                    <div class="control-group slider-group">
+                      <label>Beam0 Phase: <span id="val-b0p" class="val-display">0</span></label>
+                      <input type="range" id="b0_phase" min="-180" max="180" step="1" value="0" class="modern-slider">
+                    </div>
+                    <div class="control-group slider-group mt-2">
+                      <label>Beam1 Phase: <span id="val-b1p" class="val-display">0</span></label>
+                      <input type="range" id="b1_phase" min="-180" max="180" step="1" value="0" class="modern-slider">
+                    </div>
+                    <hr class="divider"/>
+                    <div class="control-group slider-group">
+                      <label>Beam0 Gain: <span id="val-b0g" class="val-display">1.0</span></label>
+                      <input type="range" id="b0_gain" min="0" max="2" step="0.1" value="1.0" class="modern-slider">
+                    </div>
+                    <div class="control-group slider-group mt-2">
+                      <label>Beam1 Gain: <span id="val-b1g" class="val-display">1.0</span></label>
+                      <input type="range" id="b1_gain" min="0" max="2" step="0.1" value="1.0" class="modern-slider">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 6. Plot Options -->
+            <div class="accordion-item">
+                <button class="accordion-header" title="Toggle visual markers and override graph axes boundaries"><span class="accordion-icon" data-icon="5"></span> Plot Options <span>▼</span></button>
+                <div class="accordion-body">
+                    <label class="toggle-container"><span>Show Peak Gain Marker</span><input type="checkbox" id="opt-peak-gain"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4"><span>Show Peak Angle Marker</span><input type="checkbox" id="opt-peak-angle"><span class="checkmark"></span></label>
+                    
+                    <hr class="divider"/>
+                    <div style="display:grid; grid-template-columns: 1fr; gap: 0.5rem">
+                        <div class="control-group combo-group">
+                          <label>X Min:</label>
+                          <div class="combo-inputs">
+                            <input type="range" id="xmin" min="-180" max="179" step="1" value="-90" class="modern-slider">
+                            <input type="number" id="val-xmin" value="-90" class="modern-input-small">
+                          </div>
+                        </div>
+                        <div class="control-group combo-group">
+                          <label>X Max:</label>
+                          <div class="combo-inputs">
+                            <input type="range" id="xmax" min="-179" max="180" step="1" value="90" class="modern-slider">
+                            <input type="number" id="val-xmax" value="90" class="modern-input-small">
+                          </div>
+                        </div>
+                        <div class="control-group combo-group">
+                          <label>Y Min:</label>
+                          <div class="combo-inputs">
+                            <input type="range" id="ymin" min="-100" max="9" step="1" value="-50" class="modern-slider">
+                            <input type="number" id="val-ymin" value="-50" class="modern-input-small">
+                          </div>
+                        </div>
+                        <div class="control-group combo-group">
+                          <label>Y Max:</label>
+                          <div class="combo-inputs">
+                            <input type="range" id="ymax" min="-59" max="100" step="1" value="0" class="modern-slider">
+                            <input type="number" id="val-ymax" value="0" class="modern-input-small">
+                          </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 7. Load Lab -->
+            <div class="accordion-item">
+                <button class="accordion-header" title="Load structured presets for the training syllabus"><span class="accordion-icon" data-icon="6"></span> Lab Presets <span>▼</span></button>
+                <div class="accordion-body" style="display:flex; flex-direction:column; gap:0.5rem">
+                    <button class="btn btn-outline lab-btn" data-lab="1">Lab 1: Steering Angle</button>
+                    <button class="btn btn-outline lab-btn" data-lab="2">Lab 2: Array Factor</button>
+                    <button class="btn btn-outline lab-btn" data-lab="3">Lab 3: Tapering</button>
+                    <button class="btn btn-outline lab-btn" data-lab="4">Lab 4: Grating Lobes</button>
+                    <button class="btn btn-outline lab-btn" data-lab="5">Lab 5: Beam Squint</button>
+                    <button class="btn btn-outline lab-btn" data-lab="6">Lab 6: Quantization</button>
+                    <button class="btn btn-outline lab-btn" data-lab="7">Lab 7: Hybrid Control</button>
+                    <button class="btn btn-outline lab-btn" data-lab="8">Lab 8: Tracking</button>
+                </div>
+            </div>
+
+            </div>
+
+        </div>
+
+      </aside>
+
+      <!-- Right Graph Panel (Tabs) -->
+      <section class="graph-panel glass-panel flex-grow">
+          <div class="header-with-tabs">
+              <div class="header-left">
+                <span class="app-wordmark">ADI <strong>Phaser</strong></span>
+                <div class="tab-list">
+                    <button class="tab-btn active" data-target="tab-rect">Rectangular</button>
+                    <button class="tab-btn" data-target="tab-polar">Polar</button>
+                    <button class="tab-btn" data-target="tab-fft">FFT</button>
+                    <button class="tab-btn" data-target="tab-tracking">Tracking</button>
+                    <button class="tab-btn" data-target="tab-logs">Logs</button>
+                </div>
+              </div>
+              <div class="header-actions">
+                <div class="status-indicator">
+                  <div class="dot disconnected" id="connection-dot"></div>
+                  <span id="connection-text">Disconnected</span>
+                </div>
+                <span class="backend-status-pill" id="backend-status-pill">Backend: Starting...</span>
+                <span class="transport-badge" id="transport-badge" style="display:none"></span>
+                <button class="btn btn-primary btn-header-sweep" id="btn-sweep">Start</button>
+                <button class="btn btn-outline btn-small theme-toggle" id="btn-theme-toggle" title="Switch theme" aria-label="Switch theme">☾</button>
+              </div>
+          </div>
+        
+        <div class="plots-stack">
+          <div class="chart-wrapper tab-content active" id="tab-rect">
+             <div id="chart-rect" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-polar">
+             <div id="chart-polar" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-fft">
+             <div id="chart-fft" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-tracking">
+             <div id="chart-tracking" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-logs">
+             <div class="logs-pane">
+               <div class="logs-toolbar">
+                 <span class="logs-title">Runtime Logs</span>
+                 <button class="btn btn-outline btn-small" id="btn-clear-logs">Clear</button>
+               </div>
+               <div id="log-console" class="log-console" aria-live="polite"></div>
+             </div>
+          </div>
+        </div>
+        
+        <div class="chart-stats">
+            <div class="stat-box">
+                <span class="stat-label">Peak Array Gain</span>
+                <span class="stat-value" id="stat-peak">-- dB</span>
+            </div>
+            <div class="stat-box">
+                <span class="stat-label">Est. Angle</span>
+                <span class="stat-value" id="stat-angle">-- °</span>
+            </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
