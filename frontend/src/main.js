@@ -38,8 +38,14 @@ const MAX_BACKEND_PROBE_RETRIES = 6;
 
 // Internal tracking for history
 let timeHistory = [];
-let gainHistory = [];
+let angleHistory = [];
 let autoSweepInterval = null;
+const CW_WATERFALL_ROWS = 50;
+const CW_IF_HZ = 100_000;
+const CW_DISPLAY_BW_HZ = 300;
+let cwWaterfallMatrix = null;
+let cwFreqHz = null;
+let cwRadarActive = false;
 const THEME_KEY = 'phaser_theme';
 const runtimeLogs = [];
 const RUNTIME_LOG_LIMIT = 500;
@@ -128,8 +134,16 @@ function parseDesktopResponse(response) {
     return response;
 }
 
+function isTauriHost() {
+    return !!window.__TAURI_INTERNALS__;
+}
+
+function isElectronHost() {
+    return !!window.__ELECTRON__;
+}
+
 function isDesktopHost() {
-    return window.__PHASER_DESKTOP === true || !!window.pywebview?.api;
+    return window.__PHASER_DESKTOP === true || !!window.pywebview?.api || isTauriHost() || isElectronHost();
 }
 
 function setDesktopChromeEnabled(enabled) {
@@ -165,6 +179,48 @@ function setDesktopControlsDisabled(disabled) {
 }
 
 async function invokeWindowControl(action) {
+    // Electron path
+    if (isElectronHost()) {
+        const { minimizeWindow, maximizeWindow, closeWindow, isMaximized } = await import('./transport-electron.js');
+        switch (action) {
+            case 'minimize':
+                await minimizeWindow();
+                break;
+            case 'toggle_maximize':
+                desktopChromeState.maximized = await maximizeWindow();
+                syncMaximizeButton();
+                break;
+            case 'close':
+                await closeWindow();
+                break;
+            default:
+                throw new Error(`Unknown window action: ${action}`);
+        }
+        return { status: 'ok' };
+    }
+
+    // Tauri path
+    if (isTauriHost()) {
+        const { minimizeWindow, maximizeWindow, closeWindow, isMaximized } = await import('./transport-tauri.js');
+        switch (action) {
+            case 'minimize':
+                await minimizeWindow();
+                break;
+            case 'toggle_maximize':
+                await maximizeWindow();
+                desktopChromeState.maximized = await isMaximized();
+                syncMaximizeButton();
+                break;
+            case 'close':
+                await closeWindow();
+                break;
+            default:
+                throw new Error(`Unknown window action: ${action}`);
+        }
+        return { status: 'ok' };
+    }
+
+    // PyWebView path
     const api = window.pywebview?.api;
     if (!api || typeof api.window_control !== 'function') {
         throw new Error('Desktop window controls are unavailable');
@@ -228,56 +284,78 @@ function wireDesktopChrome() {
         }
     });
 
-    // --- Custom JS drag (rAF-throttled, zero hit-test jump) ---
+    // --- Window drag handling ---
     {
         const dragEl = document.getElementById('desktop-titlebar-drag');
-        let dragging = false;
-        let lastX = 0, lastY = 0;
-        let accumDx = 0, accumDy = 0;
-        let rafPending = false;
 
-        function flushMove() {
-            rafPending = false;
-            if (!dragging || (accumDx === 0 && accumDy === 0)) return;
-            const dx = Math.round(accumDx);
-            const dy = Math.round(accumDy);
-            accumDx = 0;
-            accumDy = 0;
-            const api = window.pywebview?.api;
-            if (api?.move_window) {
-                api.move_window(dx, dy).catch(() => {});
-            }
+        // Electron: use CSS -webkit-app-region: drag (handled in style.css)
+        if (isElectronHost()) {
+            // Electron handles drag natively via CSS, no JS needed
+            // Just need to add the drag class
+            dragEl?.classList.add('electron-drag');
         }
+        // Tauri: use native OS drag (smooth, no jitter)
+        else if (isTauriHost()) {
+            dragEl?.addEventListener('mousedown', async (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                try {
+                    const { startDrag } = await import('./transport-tauri.js');
+                    await startDrag();
+                } catch (err) {
+                    console.error('Drag failed:', err);
+                }
+            });
+        } else {
+            // PyWebView: custom JS drag (rAF-throttled)
+            let dragging = false;
+            let lastX = 0, lastY = 0;
+            let accumDx = 0, accumDy = 0;
+            let rafPending = false;
 
-        dragEl?.addEventListener('mousedown', (e) => {
-            if (e.button !== 0) return;
-            dragging = true;
-            lastX = e.screenX;
-            lastY = e.screenY;
-            accumDx = 0;
-            accumDy = 0;
-            e.preventDefault();
-        });
-
-        document.addEventListener('mousemove', (e) => {
-            if (!dragging) return;
-            accumDx += e.screenX - lastX;
-            accumDy += e.screenY - lastY;
-            lastX = e.screenX;
-            lastY = e.screenY;
-            if (!rafPending) {
-                rafPending = true;
-                requestAnimationFrame(flushMove);
+            function flushMove() {
+                rafPending = false;
+                if (!dragging || (accumDx === 0 && accumDy === 0)) return;
+                const dx = Math.round(accumDx);
+                const dy = Math.round(accumDy);
+                accumDx = 0;
+                accumDy = 0;
+                const api = window.pywebview?.api;
+                if (api?.move_window) {
+                    api.move_window(dx, dy).catch(() => {});
+                }
             }
-        });
 
-        document.addEventListener('mouseup', (e) => {
-            if (e.button !== 0) return;
-            dragging = false;
-            rafPending = false;
-            accumDx = 0;
-            accumDy = 0;
-        });
+            dragEl?.addEventListener('mousedown', (e) => {
+                if (e.button !== 0) return;
+                dragging = true;
+                lastX = e.screenX;
+                lastY = e.screenY;
+                accumDx = 0;
+                accumDy = 0;
+                e.preventDefault();
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!dragging) return;
+                accumDx += e.screenX - lastX;
+                accumDy += e.screenY - lastY;
+                lastX = e.screenX;
+                lastY = e.screenY;
+                if (!rafPending) {
+                    rafPending = true;
+                    requestAnimationFrame(flushMove);
+                }
+            });
+
+            document.addEventListener('mouseup', (e) => {
+                if (e.button !== 0) return;
+                dragging = false;
+                rafPending = false;
+                accumDx = 0;
+                accumDy = 0;
+            });
+        }
     }
 
     syncMaximizeButton();
@@ -294,13 +372,28 @@ function applyTheme(theme, persist = true) {
     document.documentElement.setAttribute('data-theme', nextTheme);
     if (persist) localStorage.setItem(THEME_KEY, nextTheme);
 
+    // Update expanded sidebar theme button
     const btn = document.getElementById('btn-theme-toggle');
     if (btn) {
-        const toLight = nextTheme !== 'light';
-        btn.innerText = nextTheme === 'light' ? '☀' : '☾';
-        const label = toLight ? 'Switch to light theme' : 'Switch to dark theme';
+        const iconEl = btn.querySelector('.theme-icon');
+        const labelEl = btn.querySelector('.theme-label');
+        if (iconEl) iconEl.textContent = nextTheme === 'light' ? '☀' : '☾';
+        if (labelEl) labelEl.textContent = nextTheme === 'light' ? 'Light Mode' : 'Dark Mode';
+        const label = nextTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
         btn.title = label;
         btn.setAttribute('aria-label', label);
+    }
+
+    // Update icon sidebar theme button
+    const iconBtn = document.getElementById('btn-theme-toggle-icon');
+    if (iconBtn) {
+        const moonIcon = iconBtn.querySelector('.icon-moon');
+        const sunIcon = iconBtn.querySelector('.icon-sun');
+        if (moonIcon) moonIcon.style.display = nextTheme === 'light' ? 'none' : 'block';
+        if (sunIcon) sunIcon.style.display = nextTheme === 'light' ? 'block' : 'none';
+        const label = nextTheme === 'light' ? 'Switch to dark theme' : 'Switch to light theme';
+        iconBtn.title = label;
+        iconBtn.setAttribute('aria-label', label);
     }
 
     if (window.Plotly) {
@@ -319,6 +412,11 @@ function initTheme() {
     applyTheme(initial, false);
 
     document.getElementById('btn-theme-toggle')?.addEventListener('click', () => {
+        applyTheme(getTheme() === 'dark' ? 'light' : 'dark');
+    });
+
+    // Icon sidebar theme toggle
+    document.getElementById('btn-theme-toggle-icon')?.addEventListener('click', () => {
         applyTheme(getTheme() === 'dark' ? 'light' : 'dark');
     });
 }
@@ -405,18 +503,68 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         // a container that was display:none at initialization time.
         requestAnimationFrame(() => {
             requestAnimationFrame(() => {
-                // Only resize the active/visible chart to avoid conflicting resize operations
+                // Resize all charts in the newly-active tab (CW Radar tab has two charts)
                 requestAnimationFrame(() => {
                     const activeContent = document.querySelector('.tab-content.active');
                     if (activeContent) {
-                        const chartId = activeContent.querySelector('[id^="chart-"]');
-                        if (chartId) {
-                            Plotly.Plots.resize(chartId);
-                        }
+                        activeContent.querySelectorAll('[id^="chart-"]').forEach(chartEl => {
+                            Plotly.Plots.resize(chartEl);
+                        });
                     }
                 });
             });
         });
+    });
+});
+
+/* --- CW Radar Mode --- */
+async function startCwRadarMode() {
+    if (!isConnected || !backendProbeState.ready) return;
+    if (autoSweepInterval) {
+        clearInterval(autoSweepInterval);
+        autoSweepInterval = null;
+        const sweepBtn = document.getElementById('btn-sweep');
+        if (sweepBtn) { sweepBtn.innerText = 'Start'; sweepBtn.style.background = ''; sweepBtn.style.boxShadow = ''; }
+    }
+    cwRadarActive = true;
+    cwWaterfallMatrix = null;
+    cwFreqHz = null;
+    try {
+        if (transport.startCwRadar) {
+            await transport.startCwRadar();
+        } else {
+            await transport.invoke?.('start_cw_radar', {});
+        }
+        addRuntimeLog('info', 'CW', 'CW Radar started');
+    } catch (e) {
+        cwRadarActive = false;
+        addRuntimeLog('error', 'CW', `Failed to start CW radar: ${e}`);
+    }
+}
+
+async function stopCwRadarMode() {
+    if (!cwRadarActive) return;
+    cwRadarActive = false;
+    try {
+        if (transport.stopCwRadar) {
+            await transport.stopCwRadar();
+        } else {
+            await transport.invoke?.('stop_cw_radar', {});
+        }
+        addRuntimeLog('info', 'CW', 'CW Radar stopped');
+    } catch (e) {
+        addRuntimeLog('error', 'CW', `Failed to stop CW radar: ${e}`);
+    }
+}
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const targetId = btn.getAttribute('data-target');
+        if (targetId === 'tab-cw-radar') {
+            if (!cwRadarActive) await startCwRadarMode();
+        } else if (cwRadarActive) {
+            await stopCwRadarMode();
+        }
     });
 });
 
@@ -459,13 +607,14 @@ document.querySelectorAll('.gain-sl').forEach(el => {
         const val = parseInt(e.target.value);
         document.querySelector(`.gain-in[data-idx="${idx}"]`).value = val;
         state.gainList[idx] = val;
-        
+
         if (document.getElementById('opt-symmetric-taper')?.checked) {
             const symIdx = 7 - idx;
             document.querySelector(`.gain-sl[data-idx="${symIdx}"]`).value = val;
             document.querySelector(`.gain-in[data-idx="${symIdx}"]`).value = val;
             state.gainList[symIdx] = val;
         }
+        syncStateToBackend();
     })
 });
 document.querySelectorAll('.gain-in').forEach(el => {
@@ -474,13 +623,14 @@ document.querySelectorAll('.gain-in').forEach(el => {
         const val = parseInt(e.target.value) || 0;
         document.querySelector(`.gain-sl[data-idx="${idx}"]`).value = val;
         state.gainList[idx] = val;
-        
+
         if (document.getElementById('opt-symmetric-taper')?.checked) {
             const symIdx = 7 - idx;
             document.querySelector(`.gain-sl[data-idx="${symIdx}"]`).value = val;
             document.querySelector(`.gain-in[data-idx="${symIdx}"]`).value = val;
             state.gainList[symIdx] = val;
         }
+        syncStateToBackend();
     })
 });
 
@@ -530,20 +680,62 @@ const updateSignalFreqFromInput = (rawVal) => {
 freqInput.addEventListener('input', (e) => updateSignalFreqFromInput(e.target.value));
 freqInput.addEventListener('change', (e) => updateSignalFreqFromInput(e.target.value));
 
+function syncStateToBackend() {
+    if (transport.sweeping && transport.invoke) {
+        transport.invoke('set_state', { state }).catch(() => {});
+    }
+}
+
 const linkSlider = (id, stateKey, displayId, parseFunc = parseFloat, multiplier = 1) => {
     const el = document.getElementById(id);
     if(el) {
         el.addEventListener('input', (e) => {
             if(displayId) document.getElementById(displayId).innerText = e.target.value;
             state[stateKey] = parseFunc(e.target.value) * multiplier;
+            syncStateToBackend();
         });
     }
 };
 
 linkSlider('rxgain', 'Rx_gain', 'val-rx-gain', parseInt);
 linkSlider('txgain', 'Tx_gain', 'val-tx-gain', parseInt);
-linkSlider('bw', 'BW', 'val-bw', parseFloat);
 linkSlider('res', 'steer_res', 'val-res', parseFloat);
+
+// Beam Squint: BW slider with special handling to show calculated/measured freq
+function updateBeamSquintDisplay() {
+    const bwMHz = state.BW;
+    const measFreqMHz = state.SignalFreq / 1e6;
+    const calcFreqMHz = measFreqMHz - bwMHz;
+
+    const infoDiv = document.getElementById('beam-squint-info');
+    const calcSpan = document.getElementById('beam-calc-freq');
+    const measSpan = document.getElementById('beam-meas-freq');
+
+    if (infoDiv && calcSpan && measSpan) {
+        if (bwMHz > 0) {
+            infoDiv.style.display = 'block';
+            calcSpan.textContent = calcFreqMHz.toFixed(0);
+            measSpan.textContent = measFreqMHz.toFixed(0);
+        } else {
+            infoDiv.style.display = 'none';
+        }
+    }
+}
+
+const bwSlider = document.getElementById('bw');
+if (bwSlider) {
+    bwSlider.addEventListener('input', (e) => {
+        document.getElementById('val-bw').innerText = e.target.value;
+        state.BW = parseFloat(e.target.value);
+        updateBeamSquintDisplay();
+        syncStateToBackend();
+    });
+}
+
+// Also update beam squint when frequency changes
+const origFreqHandler = freqInput.oninput;
+freqInput.addEventListener('input', () => updateBeamSquintDisplay());
+freqInput.addEventListener('change', () => updateBeamSquintDisplay());
 linkSlider('b0_phase', 'Beam0_Phase', 'val-b0p', parseFloat);
 linkSlider('b1_phase', 'Beam1_Phase', 'val-b1p', parseFloat);
 linkSlider('b0_gain', 'B0_Gain', 'val-b0g', parseFloat);
@@ -552,6 +744,23 @@ linkSlider('bits', 'bits', 'val-bits', parseInt);
 
 document.getElementById('ignore-res')?.addEventListener('change', (e) => {
     state.ignore_res = e.target.checked;
+});
+
+// Monopulse delta/error toggles - trigger immediate plot update
+document.getElementById('opt-show-delta')?.addEventListener('change', (e) => {
+    const rectEl = document.getElementById('chart-rect');
+    if (rectEl && rectEl.data && rectEl.data[1]) {
+        Plotly.restyle('chart-rect', { visible: e.target.checked }, [1]);
+    }
+});
+
+document.getElementById('opt-show-error')?.addEventListener('change', (e) => {
+    // Error function visibility is handled in updateCharts
+    // Just trigger a redraw if we have data
+    const rectEl = document.getElementById('chart-rect');
+    if (rectEl && rectEl.data && rectEl.data[2]) {
+        Plotly.restyle('chart-rect', { visible: e.target.checked }, [2]);
+    }
 });
 
 function applyInitialStateToControls() {
@@ -587,6 +796,25 @@ function applyInitialStateToControls() {
     if (ignoreRes) {
         ignoreRes.checked = Boolean(state.ignore_res);
     }
+
+    // Update beam squint display based on current BW
+    updateBeamSquintDisplay();
+}
+
+function updateHardwareConnectionStatus(connected) {
+    const dot = document.getElementById('connection-dot');
+    const text = document.getElementById('connection-text');
+    console.log('[HW] updateHardwareConnectionStatus:', connected);
+    addRuntimeLog('info', 'HW', `Hardware connected: ${connected}`);
+    if (connected) {
+        dot?.classList.remove('disconnected');
+        dot?.classList.add('connected');
+        if (text) text.innerText = 'Connected';
+    } else {
+        dot?.classList.remove('connected');
+        dot?.classList.add('disconnected');
+        if (text) text.innerText = 'Hardware Offline';
+    }
 }
 
 async function loadStateFromServer() {
@@ -601,6 +829,9 @@ async function loadStateFromServer() {
         if (Number.isFinite(msg.data.Averages)) state.Averages = msg.data.Averages;
         if (Number.isFinite(msg.data.d)) state.d = msg.data.d;
         if (Number.isFinite(msg.data.BW)) state.BW = msg.data.BW;
+
+        // Update hardware connection indicator
+        updateHardwareConnectionStatus(msg.data.hardware_connected ?? false);
 
         applyInitialStateToControls();
     } catch (err) {
@@ -643,6 +874,7 @@ const applyTaper = (gains) => {
         document.querySelectorAll('.gain-sl')[idx].value = val;
         document.querySelectorAll('.gain-in')[idx].value = val;
     });
+    syncStateToBackend();
 };
 document.getElementById('taper-rect').addEventListener('click', () => applyTaper([100,100,100,100,100,100,100,100]));
 document.getElementById('taper-cheb').addEventListener('click', () => applyTaper([4,23,62,100,100,62,23,4]));
@@ -698,21 +930,37 @@ function applyPlotTheme() {
     });
 }
 
-Plotly.newPlot('chart-rect', [{
-    x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#6366f1', width: 3 }, fill: 'tozeroy', fillcolor: 'rgba(99, 102, 241, 0.1)'
-}], Object.assign({}, getLayoutBase(), {
-    xaxis: { 
-        title: 'Steering Angle (°)', 
+Plotly.newPlot('chart-rect', [
+    // Trace 0: Sum beam
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Sum', line: { color: '#6366f1', width: 3 }, fill: 'tozeroy', fillcolor: 'rgba(99, 102, 241, 0.1)' },
+    // Trace 1: Delta beam (hidden by default)
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#f59e0b', width: 2, dash: 'dash' }, visible: false },
+    // Trace 2: Error function (hidden by default, secondary y-axis)
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Error', yaxis: 'y2', line: { color: '#ef4444', width: 2 }, visible: false }
+], Object.assign({}, getLayoutBase(), {
+    xaxis: {
+        title: 'Steering Angle (°)',
         gridcolor: getPlotPalette().gridColor,
         griddash: 'dash',
         range: [-90, 90]
     },
-    yaxis: { 
-        title: 'Magnitude (dBFS)', 
+    yaxis: {
+        title: 'Magnitude (dBFS)',
         gridcolor: getPlotPalette().gridColor,
         griddash: 'dash',
         range: [-50, 0]
-    }
+    },
+    yaxis2: {
+        title: 'Error Function',
+        overlaying: 'y',
+        side: 'right',
+        range: [-1, 1],
+        gridcolor: 'rgba(239, 68, 68, 0.2)',
+        griddash: 'dot',
+        showgrid: false
+    },
+    showlegend: true,
+    legend: { x: 1, xanchor: 'right', y: 1, bgcolor: 'rgba(0,0,0,0)' }
 }), {displayModeBar: false, responsive: true});
 
 Plotly.newPlot('chart-polar', [{
@@ -753,17 +1001,63 @@ Plotly.newPlot('chart-polar', [{
 Plotly.newPlot('chart-fft', [{
     x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#8b5cf6', width: 2 }
 }], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Frequency (Hz)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
-    yaxis: { title: 'Gain', gridcolor: getPlotPalette().gridColor, griddash: 'dash' }
+    xaxis: { title: 'Frequency (MHz)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Amplitude (dBFS)', range: [-100, 0], gridcolor: getPlotPalette().gridColor, griddash: 'dash' }
 }), {displayModeBar: false, responsive: true});
 
 Plotly.newPlot('chart-tracking', [{
     x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#ef4444', width: 3 }
 }], Object.assign({}, getLayoutBase(), {
     xaxis: { title: 'Sweep Count', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
-    yaxis: { title: 'Peak Magnitude', gridcolor: getPlotPalette().gridColor, griddash: 'dash'  }
+    yaxis: { title: 'Steering Angle (°)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-90, 90] }
 }), {displayModeBar: false, responsive: true});
 
+Plotly.newPlot('chart-cw-fft', [{
+    x: [], y: [], type: 'scatter', mode: 'lines',
+    line: { color: '#f59e0b', width: 1.5 }, name: 'IF Spectrum'
+}], Object.assign({}, getLayoutBase(), {
+    xaxis: {
+        title: 'Frequency (Hz)',
+        range: [CW_IF_HZ - CW_DISPLAY_BW_HZ, CW_IF_HZ + CW_DISPLAY_BW_HZ],
+        gridcolor: getPlotPalette().gridColor, griddash: 'dash'
+    },
+    yaxis: {
+        title: 'dBFS',
+        range: [-80, 0],
+        gridcolor: getPlotPalette().gridColor, griddash: 'dash'
+    }
+}), {displayModeBar: false, responsive: true});
+
+Plotly.newPlot('chart-cw-waterfall', [{
+    type: 'heatmap', z: [[]], x: [], y: [],
+    colorscale: 'Viridis', zmin: -66, zmax: -42,
+    showscale: true, colorbar: { thickness: 12, len: 0.9 }
+}], Object.assign({}, getLayoutBase(), {
+    margin: { t: 10, r: 60, l: 55, b: 40 },
+    xaxis: {
+        title: 'Frequency (Hz)',
+        range: [CW_IF_HZ - CW_DISPLAY_BW_HZ, CW_IF_HZ + CW_DISPLAY_BW_HZ],
+        gridcolor: getPlotPalette().gridColor
+    },
+    yaxis: { title: 'Frame', autorange: 'reversed', gridcolor: getPlotPalette().gridColor }
+}), {displayModeBar: false, responsive: true});
+
+
+function updateCWRadarCharts(data) {
+    const freqHz = data.freq_hz;
+    const spectrum = data.spectrum_dbfs;
+    if (!freqHz || !spectrum) return;
+
+    Plotly.update('chart-cw-fft', { x: [freqHz], y: [spectrum] }, {}, [0]);
+
+    if (!cwWaterfallMatrix) {
+        cwWaterfallMatrix = Array.from({ length: CW_WATERFALL_ROWS }, () => new Array(freqHz.length).fill(-80));
+        cwFreqHz = freqHz;
+    }
+    cwWaterfallMatrix.pop();
+    cwWaterfallMatrix.unshift([...spectrum]);
+    Plotly.restyle('chart-cw-waterfall', { z: [cwWaterfallMatrix], x: [cwFreqHz] }, [0]);
+}
 
 function updatePlotLimits() {
     const xMin = parseFloat(document.getElementById('val-xmin').value);
@@ -790,17 +1084,45 @@ let sweepCounter = 0;
 
 const transport = createTransport({
     onMessage: (msg) => {
-        if (msg.status === 'ok' && msg.data) {
+        if (msg.type === 'backend-ready' && msg.state) {
+            // Initial state from backend
+            if (msg.state.status === 'ok' && msg.state.data) {
+                loadStateFromServerData(msg.state.data);
+            }
+        } else if (msg.type === 'response' && msg.data) {
+            // Command response
+            if (msg.data.status === 'ok' && msg.data.data) {
+                // State response
+            }
+        } else if (msg.status === 'ok' && msg.data) {
             updateCharts(msg.data);
         } else if (msg.status === 'error') {
             addRuntimeLog('error', 'WS', msg.message || 'Backend reported an error');
         }
     },
+    onSweepData: (data) => {
+        // Direct sweep data from WebSocket
+        if (data) updateCharts(data);
+    },
+    onCwRadarData: (data) => {
+        if (data) updateCWRadarCharts(data);
+    },
+    onConnectionStatus: (status) => {
+        // Connection status update
+        if (status.connected) {
+            document.getElementById('connection-dot')?.classList.replace('disconnected', 'connected');
+            document.getElementById('connection-text').innerText = 'Connected';
+        } else {
+            document.getElementById('connection-dot')?.classList.replace('connected', 'disconnected');
+            document.getElementById('connection-text').innerText = 'Disconnected';
+        }
+    },
     onOpen: () => {
         isConnected = true;
-        document.getElementById('connection-dot').classList.replace('disconnected', 'connected');
-        document.getElementById('connection-text').innerText = 'Connected';
-        addRuntimeLog('info', 'WS', 'Connected');
+        // Don't set "Connected" here - let loadStateFromServer check hardware status
+        document.getElementById('connection-dot')?.classList.replace('connected', 'disconnected');
+        document.getElementById('connection-text').innerText = 'Checking...';
+        addRuntimeLog('info', 'WS', 'Backend connected, checking hardware...');
         setBackendStatus('starting', 'Backend: Probing...');
         updateSweepAvailability();
         probeBackendReadiness();
@@ -819,6 +1141,10 @@ const transport = createTransport({
             autoSweepInterval = null;
             document.getElementById('btn-sweep').innerText = 'Start';
             addRuntimeLog('warn', 'SWEEP', 'Stopped because websocket disconnected');
+        }
+        if (cwRadarActive) {
+            cwRadarActive = false;
+            addRuntimeLog('warn', 'CW', 'CW Radar stopped because disconnected');
         }
     },
     onLog: addRuntimeLog,
@@ -905,7 +1231,11 @@ function formatCalibrationSummary(data) {
 function setCalibrationButtonsBusy(running, taskName = null) {
     const btnCal = document.getElementById('btn-calibrate-phaser');
     const btnHb100 = document.getElementById('btn-find-hb100');
-    if (!btnCal || !btnHb100) return;
+    console.log('[CAL] setCalibrationButtonsBusy:', { running, taskName, btnCal: !!btnCal, btnHb100: !!btnHb100 });
+    if (!btnCal || !btnHb100) {
+        console.warn('[CAL] Buttons not found!');
+        return;
+    }
 
     const isRunning = Boolean(running);
     const task = String(taskName || '');
@@ -923,6 +1253,7 @@ function setCalibrationButtonsBusy(running, taskName = null) {
         btnCal.innerText = 'Calibrate Phaser';
         btnHb100.innerText = 'Find HB100';
     }
+    console.log('[CAL] Button states after update:', { calText: btnCal.innerText, hb100Text: btnHb100.innerText });
 }
 
 function updateCalibrationPill(data, fallbackText) {
@@ -979,15 +1310,12 @@ function trackCalibrationLogUpdates(data) {
 }
 
 async function refreshCalibrationStatus() {
-    const statusEl = document.getElementById('cal-status');
     try {
         const msg = await transport.getCalibrationStatus();
         if (msg.status === 'ok') {
             updateCalibrationPill(msg.data);
+            updateCalibrationModal(msg.data);
             trackCalibrationLogUpdates(msg.data);
-            if (statusEl) {
-                statusEl.innerText = formatCalibrationStatus(msg.data);
-            }
             if (msg.data && !msg.data.running && msg.data.returncode === 0) {
                 const reloadableTasks = new Set(['find_hb100', 'phaser_cal']);
                 if (reloadableTasks.has(msg.data.task)) {
@@ -1003,9 +1331,6 @@ async function refreshCalibrationStatus() {
     } catch (err) {
         updateCalibrationPill(null, 'Cal: Status Error');
         addRuntimeLog('error', 'CAL', `Status polling failed: ${err}`);
-        if (statusEl) {
-            statusEl.innerText = `Calibration status error: ${err}`;
-        }
     }
 }
 
@@ -1015,33 +1340,266 @@ function startCalibrationPolling() {
     calibrationState.pollingTimer = setInterval(refreshCalibrationStatus, 2000);
 }
 
+function showCalibrationModal(taskName) {
+    const modal = document.getElementById('calibration-modal');
+    const titleEl = document.getElementById('cal-modal-title');
+    const statusEl = document.getElementById('cal-modal-status');
+    const outputEl = document.getElementById('cal-modal-output');
+    const actionBtn = document.getElementById('btn-cal-action');
+    const spinnerEl = document.getElementById('cal-spinner');
+
+    const taskLabels = {
+        'find_hb100': 'Find HB100',
+        'phaser_cal': 'Calibrate Phaser',
+    };
+    if (titleEl) titleEl.innerText = taskLabels[taskName] || 'Calibration';
+    if (statusEl) statusEl.innerText = 'Starting...';
+    if (outputEl) outputEl.innerText = '';
+    if (actionBtn) {
+        actionBtn.innerText = 'Cancel';
+        actionBtn.classList.remove('btn-outline');
+        actionBtn.classList.add('btn-danger');
+        actionBtn.dataset.mode = 'cancel';
+    }
+    if (spinnerEl) spinnerEl.classList.add('spinning');
+    if (modal) modal.hidden = false;
+}
+
+function updateCalibrationModal(data) {
+    const modal = document.getElementById('calibration-modal');
+    if (!modal || modal.hidden) return;
+
+    const statusEl = document.getElementById('cal-modal-status');
+    const outputEl = document.getElementById('cal-modal-output');
+    const actionBtn = document.getElementById('btn-cal-action');
+    const spinnerEl = document.getElementById('cal-spinner');
+
+    if (!data) return;
+
+    if (data.running) {
+        if (statusEl) statusEl.innerText = 'Running...';
+        if (spinnerEl) spinnerEl.classList.add('spinning');
+        if (actionBtn) {
+            actionBtn.innerText = 'Cancel';
+            actionBtn.classList.remove('btn-outline');
+            actionBtn.classList.add('btn-danger');
+            actionBtn.dataset.mode = 'cancel';
+        }
+    } else {
+        if (spinnerEl) spinnerEl.classList.remove('spinning');
+        if (actionBtn) {
+            actionBtn.innerText = 'Close';
+            actionBtn.classList.remove('btn-danger');
+            actionBtn.classList.add('btn-outline');
+            actionBtn.dataset.mode = 'close';
+        }
+        // Reset sidebar buttons when calibration completes
+        setCalibrationButtonsBusy(false);
+        if (data.returncode === 0) {
+            if (statusEl) statusEl.innerText = 'Completed successfully';
+        } else if (data.returncode !== null && data.returncode !== undefined) {
+            if (statusEl) statusEl.innerText = `Failed (code ${data.returncode})`;
+        } else {
+            if (statusEl) statusEl.innerText = 'Idle';
+        }
+    }
+
+    if (outputEl && Array.isArray(data.last_lines)) {
+        outputEl.innerText = data.last_lines.slice(-12).join('\n');
+        outputEl.scrollTop = outputEl.scrollHeight;
+    }
+}
+
+function hideCalibrationModal() {
+    const modal = document.getElementById('calibration-modal');
+    if (modal) modal.hidden = true;
+    // Directly reset buttons when closing modal
+    setCalibrationButtonsBusy(false);
+}
+
+async function cancelCalibrationTask() {
+    const cancelBtn = document.getElementById('btn-cal-cancel');
+    if (cancelBtn) cancelBtn.disabled = true;
+    addRuntimeLog('info', 'CAL', 'Cancellation requested');
+    try {
+        const msg = await transport.cancelCalibration();
+        if (msg.status === 'ok') {
+            addRuntimeLog('info', 'CAL', 'Calibration cancelled');
+            setCalibrationButtonsBusy(false);
+            setTimeout(refreshCalibrationStatus, 500);
+        } else {
+            addRuntimeLog('warn', 'CAL', msg.message || 'Cancel failed');
+        }
+    } catch (err) {
+        addRuntimeLog('error', 'CAL', `Cancel request failed: ${err}`);
+    }
+}
+
 async function runCalibrationTask(taskName) {
-    const statusEl = document.getElementById('cal-status');
     addRuntimeLog('info', 'CAL', `Requested task: ${taskName}`);
-    updateCalibrationPill({ running: true, task: taskName }, `Cal: Starting (${taskName.replace('_', ' ')})`);
+    showCalibrationModal(taskName);
     setCalibrationButtonsBusy(true, taskName);
-    if (statusEl) statusEl.innerText = `Starting ${taskName}...`;
     try {
         const msg = await transport.runCalibration(taskName);
         if (msg.status !== 'ok') {
-            updateCalibrationPill({ running: false, returncode: 1 }, 'Cal: Error');
+            updateCalibrationModal({ running: false, returncode: 1, last_lines: [msg.message || 'Calibration start failed'] });
             setCalibrationButtonsBusy(false);
             addRuntimeLog('error', 'CAL', msg.message || 'Calibration start failed');
-            if (statusEl) statusEl.innerText = `Calibration error: ${msg.message}`;
             return;
         }
         addRuntimeLog('info', 'CAL', `Task started: ${taskName}`);
         startCalibrationPolling();
     } catch (err) {
+        updateCalibrationModal({ running: false, returncode: 1, last_lines: [`Error: ${err}`] });
         setCalibrationButtonsBusy(false);
         addRuntimeLog('error', 'CAL', `Task request failed: ${err}`);
-        if (statusEl) statusEl.innerText = `Calibration error: ${err}`;
     }
 }
 
 document.getElementById('btn-calibrate-phaser')?.addEventListener('click', () => runCalibrationTask('phaser_cal'));
 document.getElementById('btn-find-hb100')?.addEventListener('click', () => runCalibrationTask('find_hb100'));
+
+document.getElementById('btn-reboot-phaser')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-reboot-phaser');
+    if (!confirm('Reboot the Phaser hardware? This will take about 30 seconds.')) return;
+    btn.disabled = true;
+    btn.textContent = 'Rebooting...';
+    addRuntimeLog('info', 'SYS', 'Sending reboot command to Phaser...');
+    try {
+        const resp = await transport.invoke('reboot_phaser', {});
+        if (resp?.status === 'ok') {
+            addRuntimeLog('info', 'SYS', resp.message || 'Phaser is rebooting');
+            // Wait for reboot and then try to reconnect
+            setTimeout(() => {
+                btn.textContent = 'Reboot';
+                btn.disabled = false;
+                addRuntimeLog('info', 'SYS', 'Phaser should be back online. Reconnecting...');
+                loadStateFromServer();
+            }, 35000);
+        } else {
+            addRuntimeLog('error', 'SYS', resp?.message || 'Reboot failed');
+            btn.textContent = 'Reboot';
+            btn.disabled = false;
+        }
+    } catch (err) {
+        addRuntimeLog('error', 'SYS', `Reboot failed: ${err}`);
+        btn.textContent = 'Reboot';
+        btn.disabled = false;
+    }
+});
+document.getElementById('btn-cal-action')?.addEventListener('click', (e) => {
+    const mode = e.target.dataset.mode;
+    if (mode === 'cancel') {
+        cancelCalibrationTask();
+    } else {
+        hideCalibrationModal();
+    }
+});
 startCalibrationPolling();
+
+// Simulation mode toggle (Electron only)
+let simModeActive = false;
+const simBtn = document.getElementById('btn-sim-mode');
+if (simBtn && window.electronAPI?.startSim) {
+    // Listen for sim status changes
+    window.electronAPI.onSimStatus?.((status) => {
+        simModeActive = status.running;
+        updateSimButton();
+    });
+
+    // Check initial status
+    window.electronAPI.getSimStatus?.().then((status) => {
+        simModeActive = status?.running || false;
+        updateSimButton();
+    });
+
+    simBtn.addEventListener('click', async () => {
+        if (simModeActive) {
+            // Stop sim
+            simBtn.disabled = true;
+            simBtn.textContent = 'Stopping...';
+            addRuntimeLog('info', 'SIM', 'Stopping simulator...');
+            await window.electronAPI.stopSim();
+        } else {
+            // Start sim with default data file
+            simBtn.disabled = true;
+            simBtn.textContent = 'Starting...';
+            addRuntimeLog('info', 'SIM', 'Starting simulator...');
+            const resp = await window.electronAPI.startSim(null);
+            if (resp.status !== 'ok') {
+                addRuntimeLog('error', 'SIM', resp.message || 'Failed to start simulator');
+                alert('Failed to start simulator:\n' + (resp.message || 'Unknown error'));
+            }
+        }
+        updateSimButton();
+    });
+
+    function updateSimButton() {
+        simBtn.disabled = false;
+        if (simModeActive) {
+            simBtn.textContent = 'Stop Sim';
+            simBtn.style.background = '#f59e0b';
+            simBtn.style.borderColor = '#f59e0b';
+            simBtn.style.color = '#000';
+        } else {
+            simBtn.textContent = 'Sim';
+            simBtn.style.background = '';
+            simBtn.style.borderColor = '';
+            simBtn.style.color = '';
+        }
+    }
+} else if (simBtn) {
+    // Hide button if not in Electron
+    simBtn.style.display = 'none';
+}
+
+// Host connection (Electron only)
+const hostInput = document.getElementById('phaser-host');
+const connectHostBtn = document.getElementById('btn-connect-host');
+if (hostInput && connectHostBtn && window.electronAPI?.connectToHost) {
+    // Load current host on startup
+    window.electronAPI.getCurrentHost?.().then((resp) => {
+        if (resp?.host) {
+            hostInput.value = resp.host;
+        }
+    });
+
+    connectHostBtn.addEventListener('click', async () => {
+        const host = hostInput.value.trim();
+        if (!host) {
+            alert('Please enter a host address');
+            return;
+        }
+
+        connectHostBtn.disabled = true;
+        connectHostBtn.textContent = '...';
+        addRuntimeLog('info', 'CONN', `Connecting to ${host}...`);
+
+        try {
+            const resp = await window.electronAPI.connectToHost(host);
+            if (resp.status === 'ok') {
+                addRuntimeLog('info', 'CONN', `Connected to ${host}`);
+                loadStateFromServer();
+            } else {
+                addRuntimeLog('error', 'CONN', `Failed to connect to ${host}`);
+                alert(`Failed to connect to ${host}`);
+            }
+        } catch (err) {
+            addRuntimeLog('error', 'CONN', `Connection error: ${err}`);
+            alert(`Connection error: ${err}`);
+        } finally {
+            connectHostBtn.disabled = false;
+            connectHostBtn.textContent = 'Connect';
+        }
+    });
+
+    // Allow Enter key to connect
+    hostInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            connectHostBtn.click();
+        }
+    });
+}
 
 const settingsPanel = document.getElementById('settings-panel');
 const dashboard = document.querySelector('.dashboard');
@@ -1173,6 +1731,18 @@ function applyLabPreset(preset) {
     document.getElementById('modeSelect').value = state.mode;
     document.getElementById('modeSelect').dispatchEvent(new Event('change'));
 
+    // Apply monopulse display options
+    const showDeltaEl = document.getElementById('opt-show-delta');
+    const showErrorEl = document.getElementById('opt-show-error');
+    if (showDeltaEl && typeof preset.showDelta === 'boolean') {
+        showDeltaEl.checked = preset.showDelta;
+        showDeltaEl.dispatchEvent(new Event('change'));
+    }
+    if (showErrorEl && typeof preset.showError === 'boolean') {
+        showErrorEl.checked = preset.showError;
+        showErrorEl.dispatchEvent(new Event('change'));
+    }
+
     const tabName = preset.ui_tab || 'tab-rect';
     document.querySelector(`[data-target="${tabName}"]`)?.click();
     applyInitialStateToControls();
@@ -1191,8 +1761,9 @@ function localLabPreset(labIdx) {
     };
     switch (labIdx) {
         case 1: return { ...base, mode: 'Static Phase', ui_tab: 'tab-fft' };
+        case 5: return { ...base, mode: 'Beam Sweep', BW: 500, ui_tab: 'tab-rect' };  // Beam Squint: 500 MHz offset shows ~3° shift at 45°
         case 6: return { ...base, mode: 'Signal vs Time', steer_res: 1.0, ignore_res: false, gainList: [6,27,66,100,100,66,27,6], ui_tab: 'tab-tracking' };
-        case 8: return { ...base, mode: 'Tracking', gainList: [6,27,66,100,100,66,27,6], ui_tab: 'tab-tracking' };
+        case 8: return { ...base, mode: 'Tracking', gainList: [6,27,66,100,100,66,27,6], ui_tab: 'tab-rect', showDelta: true, showError: true };
         default: return base;
     }
 }
@@ -1214,7 +1785,15 @@ function updateCharts(data) {
     let peakValue = -1000;
     let xData = data.ArrayAngle || state.PhaseValues;
     let yData = data.ArrayGain;
-    
+
+    // Debug: check if monopulse data is present
+    if (data.ArrayDelta) {
+        console.log('[Monopulse] Delta data present, length:', data.ArrayDelta.length);
+    }
+    if (data.ErrorFunc) {
+        console.log('[Monopulse] Error data present, length:', data.ErrorFunc.length, 'range:', Math.min(...data.ErrorFunc).toFixed(2), 'to', Math.max(...data.ErrorFunc).toFixed(2));
+    }
+
     // Process Arrays
     if(yData && yData.length > 0) {
         peakValue = Math.max(...yData);
@@ -1232,36 +1811,94 @@ function updateCharts(data) {
         }
         axisUpdate.shapes = shapes;
         
-        Plotly.update('chart-rect', {x: [xData], y: [yData]}, axisUpdate);
-        
-        // Polar mapping
-        Plotly.update('chart-polar', {r: [yData], theta: [xData.map(toPolarTheta)]}, {});
+        // Update rectangular plot (Sum beam)
+        const rectEl = document.getElementById('chart-rect');
+        if (rectEl && rectEl.data && rectEl.data[0]) {
+            rectEl.data[0].x = xData;
+            rectEl.data[0].y = yData;
 
-        // Time tracking
+            // Update Delta beam (trace 1) if data available
+            if (rectEl.data[1] && data.ArrayDelta) {
+                rectEl.data[1].x = xData;
+                rectEl.data[1].y = data.ArrayDelta;
+                const showDelta = document.getElementById('opt-show-delta')?.checked ?? false;
+                rectEl.data[1].visible = showDelta;
+            }
+
+            // Update Error function (trace 2) if data available
+            if (rectEl.data[2] && data.ErrorFunc) {
+                rectEl.data[2].x = xData;
+                rectEl.data[2].y = data.ErrorFunc;
+                const showError = document.getElementById('opt-show-error')?.checked ?? false;
+                rectEl.data[2].visible = showError;
+            }
+
+            Plotly.redraw('chart-rect');
+        }
+
+        // Update polar plot
+        const polarEl = document.getElementById('chart-polar');
+        if (polarEl && polarEl.data && polarEl.data[0]) {
+            polarEl.data[0].r = yData;
+            polarEl.data[0].theta = xData.map(toPolarTheta);
+            Plotly.redraw('chart-polar');
+        }
+
+        // Time tracking - show steering angle vs sweep count
         sweepCounter++;
+        const peakAngle = xData[peakIndex];
         timeHistory.push(sweepCounter);
-        gainHistory.push(peakValue);
-        if(timeHistory.length > 100) { timeHistory.shift(); gainHistory.shift(); }
-        Plotly.update('chart-tracking', {x: [timeHistory], y: [gainHistory]}, {});
+        angleHistory.push(peakAngle);
+        if(timeHistory.length > 100) { timeHistory.shift(); angleHistory.shift(); }
+        Plotly.update('chart-tracking', {x: [timeHistory], y: [angleHistory]}, {});
         
         // Update Stats displays
         document.getElementById('stat-peak').innerText = peakValue.toFixed(2) + " dB";
         document.getElementById('stat-angle').innerText = xData[peakIndex].toFixed(1) + " °";
     }
     
-    // FFT data
+    // FFT data - apply same transforms as original Tkinter GUI (phaser_gui.py:2423)
     if(data.xf && data.max_gain) {
-        Plotly.update('chart-fft', {x: [data.xf], y: [data.max_gain]}, {});
+        // Debug: log FFT data range
+        const maxGainVal = Math.max(...data.max_gain);
+        const minGainVal = Math.min(...data.max_gain);
+        const xfMin = Math.min(...data.xf);
+        const xfMax = Math.max(...data.xf);
+        console.log(`FFT: gain range [${minGainVal.toFixed(1)}, ${maxGainVal.toFixed(1)}] dB, freq range [${(xfMin/1e6).toFixed(2)}, ${(xfMax/1e6).toFixed(2)}] MHz, len=${data.xf.length}`);
+
+        // Negate and convert Hz to MHz to match original GUI behavior
+        const xfMHz = data.xf.map(f => -f / 1e6);
+        Plotly.update('chart-fft', {x: [xfMHz], y: [data.max_gain]}, {});
     }
 }
 
-// Global UI interaction 
+// Global UI interaction
 const sweepBtn = document.getElementById('btn-sweep');
 sweepBtn.addEventListener('click', () => {
     if (sweepBtn.disabled) {
         addRuntimeLog('warn', 'SWEEP', 'Start blocked until backend is ready');
         return;
     }
+
+    // For ZMQ-based Electron transport, use streaming mode
+    if (isElectronHost() && transport.stopSweep) {
+        if (!transport.sweeping) {
+            requestSweep(); // Start the stream
+            sweepBtn.innerText = "Stop";
+            sweepBtn.style.background = "#ef4444";
+            sweepBtn.style.boxShadow = "0 4px 15px rgba(239, 68, 68, 0.4)";
+            addRuntimeLog('info', 'SWEEP', 'Started ZMQ sweep stream');
+        } else {
+            transport.stopSweep();
+            sweepBtn.innerText = "Start";
+            sweepBtn.style.background = "";
+            sweepBtn.style.boxShadow = "";
+            addRuntimeLog('info', 'SWEEP', 'Stopped ZMQ sweep stream');
+        }
+        return;
+    }
+
+    // Legacy polling mode for non-Electron transports
     if(!autoSweepInterval) {
         requestSweep(); // Fire first sweep immediately
         autoSweepInterval = setInterval(requestSweep, 500); // 2Hz
@@ -1365,3 +2002,15 @@ async function probeBackendReadiness() {
     backendProbeState.probing = false;
     updateSweepAvailability();
 }
+
+// Force resize all plots after initial render to prevent "jump" on first tab click
+// This ensures hidden plots have correct dimensions when first shown
+setTimeout(() => {
+    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-tracking', 'chart-cw-fft', 'chart-cw-waterfall'];
+    chartIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el && window.Plotly) {
+            Plotly.Plots.resize(el);
+        }
+    });
+}, 100);

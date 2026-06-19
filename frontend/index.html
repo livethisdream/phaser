@@ -30,6 +30,14 @@
       <aside class="controls-panel glass-panel" id="settings-panel">
         <!-- Icon Sidebar (shown when collapsed) -->
         <div class="sidebar-icons" id="sidebar-icons">
+          <button class="sidebar-icon-btn" id="btn-toggle-settings-icon" title="Expand settings" aria-label="Expand settings" style="border-color: var(--primary); color: var(--primary);">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5.5h14v13H5z"></path>
+              <path d="M9 5.5v13"></path>
+              <path d="M13.5 12h3"></path>
+              <path d="M15 10.5l1.5 1.5-1.5 1.5"></path>
+            </svg>
+          </button>
           <button class="sidebar-icon-btn" data-section="0" title="Configuration" aria-label="Configuration">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="12" cy="12" r="3"></circle>
@@ -82,12 +90,13 @@
             </svg>
           </button>
           <div class="sidebar-icons-spacer"></div>
-          <button class="sidebar-icon-btn" id="btn-toggle-settings-icon" title="Collapse settings" aria-label="Collapse settings" style="border-color: var(--primary); color: var(--primary);">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 5.5h14v13H5z"></path>
-              <path d="M9 5.5v13"></path>
-              <path d="M13.5 12h3"></path>
-              <path d="M15 10.5l1.5 1.5-1.5 1.5"></path>
+          <button class="sidebar-icon-btn" id="btn-theme-toggle-icon" title="Switch theme" aria-label="Switch theme">
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-moon">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-sun" style="display:none">
+              <circle cx="12" cy="12" r="5"></circle>
+              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
             </svg>
           </button>
         </div>
@@ -105,15 +114,20 @@
                 <button class="accordion-header" title="Configure host frequency, mode, and global RX/TX gains"><span class="accordion-icon" data-icon="0"></span> Configuration <span>▼</span></button>
                 <div class="accordion-body">
                     <div class="control-group" style="margin-bottom:0.25rem">
+                      <label style="margin-bottom:0; color: var(--text-main);">Phaser Host</label>
+                    </div>
+                    <div class="control-group" style="display:flex; gap:0.5rem; align-items:center; margin-top:0.5rem">
+                        <input type="text" id="phaser-host" value="192.168.86.20" class="modern-input" style="flex:1; font-family:monospace;" placeholder="IP or hostname">
+                        <button class="btn btn-outline btn-small" id="btn-connect-host" title="Connect to host">Connect</button>
+                    </div>
+                    <hr class="divider" />
+
+                    <div class="control-group" style="margin-bottom:0.25rem">
                       <label style="margin-bottom:0; color: var(--text-main);">Calibration</label>
                     </div>
                     <div class="action-row" style="margin-top:0.5rem">
                         <button class="btn btn-outline" id="btn-calibrate-phaser">Calibrate Phaser</button>
                         <button class="btn btn-outline" id="btn-find-hb100">Find HB100</button>
-                    </div>
-                    <div class="calibration-feedback" aria-live="polite">
-                        <span class="calibration-status-pill idle" id="cal-status-pill">Cal: Idle</span>
-                        <div class="calibration-status-text" id="cal-status">Idle</div>
                     </div>
                     <hr class="divider" />
 
@@ -132,7 +146,11 @@
                     </div>
                     <div class="control-group slider-group mt-2">
                       <label>Signal BW (MHz): <span id="val-bw" class="val-display">10</span></label>
-                      <input type="range" id="bw" min="0" max="2000" step="100" value="10" class="modern-slider">
+                      <input type="range" id="bw" min="0" max="2000" step="10" value="10" class="modern-slider">
+                    </div>
+                    <div class="beam-squint-info" id="beam-squint-info" style="display:none; margin-top:0.5rem; padding:0.5rem; background:var(--surface-2); border-radius:6px; font-size:0.8rem;">
+                      <div style="color:var(--text-muted);">Beam Calculated at: <span id="beam-calc-freq" style="color:var(--primary);">10000</span> MHz</div>
+                      <div style="color:var(--text-muted);">Beam Measured at: <span id="beam-meas-freq" style="color:var(--accent);">10000</span> MHz</div>
                     </div>
                     <div class="control-group slider-group mt-2">
                       <label>Rx Gain (dB): <span id="val-rx-gain" class="val-display">20</span></label>
@@ -228,6 +246,10 @@
                       <label>Beam1 Gain: <span id="val-b1g" class="val-display">1.0</span></label>
                       <input type="range" id="b1_gain" min="0" max="2" step="0.1" value="1.0" class="modern-slider">
                     </div>
+                    <hr class="divider"/>
+                    <label style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 0.5rem;">Monopulse Display</label>
+                    <label class="toggle-container"><span>Show Delta Beam</span><input type="checkbox" id="opt-show-delta"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4"><span>Show Error Function</span><input type="checkbox" id="opt-show-error"><span class="checkmark"></span></label>
                 </div>
             </div>
 
@@ -289,6 +311,14 @@
 
             </div>
 
+          <!-- Theme Toggle (bottom of sidebar) -->
+          <div class="sidebar-footer">
+            <button class="btn btn-outline btn-small theme-toggle" id="btn-theme-toggle" title="Switch theme" aria-label="Switch theme">
+              <span class="theme-icon">☾</span>
+              <span class="theme-label">Dark Mode</span>
+            </button>
+          </div>
+
         </div>
 
       </aside>
@@ -303,18 +333,13 @@
                     <button class="tab-btn" data-target="tab-polar">Polar</button>
                     <button class="tab-btn" data-target="tab-fft">FFT</button>
                     <button class="tab-btn" data-target="tab-tracking">Tracking</button>
+                    <button class="tab-btn" data-target="tab-cw-radar">CW Radar</button>
                     <button class="tab-btn" data-target="tab-logs">Logs</button>
                 </div>
               </div>
               <div class="header-actions">
-                <div class="status-indicator">
-                  <div class="dot disconnected" id="connection-dot"></div>
-                  <span id="connection-text">Disconnected</span>
-                </div>
-                <span class="backend-status-pill" id="backend-status-pill">Backend: Starting...</span>
-                <span class="transport-badge" id="transport-badge" style="display:none"></span>
+                <button class="btn btn-outline btn-small" id="btn-sim-mode" title="Toggle simulation mode">Sim</button>
                 <button class="btn btn-primary btn-header-sweep" id="btn-sweep">Start</button>
-                <button class="btn btn-outline btn-small theme-toggle" id="btn-theme-toggle" title="Switch theme" aria-label="Switch theme">☾</button>
               </div>
           </div>
         
@@ -330,6 +355,12 @@
           </div>
           <div class="chart-wrapper tab-content" id="tab-tracking">
              <div id="chart-tracking" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-cw-radar">
+            <div style="display:flex; flex-direction:column; height:100%; gap:4px; padding:4px 0;">
+              <div id="chart-cw-fft" style="flex:0 0 38%; min-height:0;"></div>
+              <div id="chart-cw-waterfall" style="flex:1 1 auto; min-height:0;"></div>
+            </div>
           </div>
           <div class="chart-wrapper tab-content" id="tab-logs">
              <div class="logs-pane">
@@ -351,10 +382,35 @@
                 <span class="stat-label">Est. Angle</span>
                 <span class="stat-value" id="stat-angle">-- °</span>
             </div>
+            <div class="stats-spacer"></div>
+            <button class="btn btn-outline btn-small btn-reboot" id="btn-reboot-phaser" title="Reboot Phaser hardware">Reboot</button>
+            <div class="status-indicator">
+              <div class="dot disconnected" id="connection-dot"></div>
+              <span id="connection-text">Disconnected</span>
+            </div>
         </div>
       </section>
     </main>
   </div>
+  <!-- Calibration Modal -->
+  <div class="modal-overlay" id="calibration-modal" hidden>
+    <div class="modal glass-panel">
+      <div class="modal-header">
+        <h3 class="modal-title" id="cal-modal-title">Calibration</h3>
+      </div>
+      <div class="modal-body">
+        <div class="cal-status-indicator">
+          <div class="cal-spinner" id="cal-spinner"></div>
+          <span class="cal-status-text" id="cal-modal-status">Initializing...</span>
+        </div>
+        <div class="cal-output" id="cal-modal-output"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" id="btn-cal-action">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>
