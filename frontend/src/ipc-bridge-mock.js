@@ -113,7 +113,7 @@ function createMockBridge() {
                     data: {
                         SignalFreq: 10.525e9,
                         Rx_freq: 2.4e9,
-                        Rx_gain: 20,
+                        Rx_gain: 0,
                         Tx_gain: -40,
                         Averages: 1,
                         d: 0.014,

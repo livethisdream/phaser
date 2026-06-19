@@ -614,6 +614,17 @@ class PhaserHeadless:
                 self.B0_Gain = float(state["B0_Gain"])
             if "B1_Gain" in state:
                 self.B1_Gain = float(state["B1_Gain"])
+            # Handle phase_step: ignore_res=true uses bits, ignore_res=false uses steer_res
+            ignore_res = state.get("ignore_res", True)
+            if ignore_res:
+                if "bits" in state:
+                    bits = int(state["bits"])
+                    self.phase_step = 360.0 / (2 ** bits)
+                    print(f"Phase step set to {self.phase_step}° ({bits} bits)")
+            else:
+                if "steer_res" in state:
+                    self.phase_step = float(state["steer_res"])
+                    print(f"Steering resolution set to {self.phase_step}°")
             return {"status": "ok"}
 
         elif cmd == "run_calibration":
@@ -709,7 +720,8 @@ class PhaserHeadless:
 
     def _websocket_server(self):
         """Run WebSocket server for browser clients"""
-        async def handler(websocket, path):
+        async def handler(websocket):
+            # New websockets API (v11+) only passes websocket, not path
             print(f"[WS] Client connected from {websocket.remote_address}")
             with self.ws_lock:
                 self.ws_clients.add(websocket)

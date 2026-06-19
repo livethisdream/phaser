@@ -15,11 +15,22 @@ from ADAR_pyadi_functions import *
 from phaser_functions import load_channel_cal, load_gain_cal, load_hb100_cal, load_phase_cal
 from SDR_functions import *
 
+# Try local config first, then parent directory
 try:
     import config as config
 except ImportError:
-    print("Make sure config.py is in this directory")
-    sys.exit(0)
+    try:
+        sys.path.insert(0, str(Path(__file__).parent.parent))
+        import config as config
+    except ImportError:
+        print("Make sure config.py is in this directory or parent directory")
+        sys.exit(0)
+
+
+CW_SAMPLE_RATE = 600_000
+CW_BUFFER_SIZE = 1024 * 64
+CW_IF_HZ = 100_000
+CW_DISPLAY_BW_HZ = 300
 
 
 def _detect_hostname():
@@ -454,6 +465,46 @@ class PhaserServer:
             pass
 
 
+    def switch_to_cw_mode(self):
+        """Reconfigure SDR for CW radar: 600 kHz sample rate, 100 kHz TX tone."""
+        self._saved_sample_rate = int(self.sdr.sample_rate)
+        self._saved_buffer_size = int(self.sdr.rx_buffer_size)
+        self.sdr.sample_rate = CW_SAMPLE_RATE
+        self.sdr.rx_rf_bandwidth = int(CW_SAMPLE_RATE * 2.5)
+        self.sdr.rx_buffer_size = CW_BUFFER_SIZE
+        fc_bin = round(CW_IF_HZ / CW_SAMPLE_RATE * CW_BUFFER_SIZE)
+        fc_exact = fc_bin * CW_SAMPLE_RATE / CW_BUFFER_SIZE
+        t = np.arange(CW_BUFFER_SIZE) / CW_SAMPLE_RATE
+        iq = (np.cos(2 * np.pi * fc_exact * t) + 1j * np.sin(2 * np.pi * fc_exact * t)) * 2**14
+        self.sdr.tx([iq * 0.5, iq])
+
+    def switch_to_sweep_mode(self):
+        """Restore SDR to normal beam-sweep configuration."""
+        saved_rate = getattr(self, '_saved_sample_rate', self.SampleRate)
+        saved_buf = getattr(self, '_saved_buffer_size', config.buffer_size)
+        self.sdr.sample_rate = saved_rate
+        self.sdr.rx_rf_bandwidth = int(saved_rate * 2.5)
+        self.sdr.rx_buffer_size = saved_buf
+        self.sdr.tx([np.zeros(saved_buf, dtype=complex), np.zeros(saved_buf, dtype=complex)])
+
+    def process_cw_radar(self):
+        """Acquire one CW radar frame: FFT of coherent Rx sum, cropped to ±300 Hz around 100 kHz IF."""
+        data = SDR_getData(self.sdr)
+        signal = data[0] + data[1]
+        N = len(signal)
+        win = np.blackman(N)
+        sp = np.abs(np.fft.fft(signal * win))
+        sp = np.fft.fftshift(sp)
+        s_mag = np.maximum(sp / np.sum(win), 1e-15)
+        s_dbfs = 20 * np.log10(s_mag / 2**11)
+        freq = np.fft.fftshift(np.fft.fftfreq(N, 1.0 / CW_SAMPLE_RATE))
+        mask = np.abs(freq - CW_IF_HZ) <= CW_DISPLAY_BW_HZ
+        return {
+            "freq_hz": freq[mask].tolist(),
+            "spectrum_dbfs": s_dbfs[mask].tolist(),
+        }
+
+
 class PhaserServerSim:
     """Drop-in simulated backend that preserves the websocket payload contract."""
 
@@ -548,6 +599,24 @@ class PhaserServerSim:
             except Exception:
                 pass
 
+    def switch_to_cw_mode(self):
+        pass
+
+    def switch_to_sweep_mode(self):
+        pass
+
+    def process_cw_radar(self):
+        n_bins = 128
+        freq = np.linspace(CW_IF_HZ - CW_DISPLAY_BW_HZ, CW_IF_HZ + CW_DISPLAY_BW_HZ, n_bins)
+        noise = np.random.normal(-62, 2.5, n_bins)
+        target_df = 75 * np.sin(2 * np.pi * 0.3 * time.time())
+        peak = np.exp(-0.5 * ((freq - (CW_IF_HZ + target_df)) / 8) ** 2) * 20 - 5
+        spectrum = np.maximum(noise + peak, -80.0)
+        return {
+            "freq_hz": freq.tolist(),
+            "spectrum_dbfs": spectrum.tolist(),
+        }
+
 
 def default_serializer(obj):
     if isinstance(obj, np.ndarray):
@@ -632,6 +701,7 @@ class BackendService:
         self.hardware = None
         self.calibration_lock = threading.Lock()
         self._cal_log_file = None
+        self._cal_process = None
         self.calibration_status = {
             "running": False,
             "task": None,
@@ -650,8 +720,13 @@ class BackendService:
             self.hardware = PhaserServerSim()
             print("FastAPI Application has started up (SIM mode).")
         else:
-            self.hardware = PhaserServer()
-            print("FastAPI Application has started up (REAL mode).")
+            try:
+                self.hardware = PhaserServer()
+                print("FastAPI Application has started up (REAL mode).")
+            except Exception as e:
+                print(f"Hardware initialization failed: {e}")
+                print("Running in degraded mode - hardware features unavailable")
+                self.hardware = None
 
     def shutdown(self):
         if self.hardware:
@@ -662,6 +737,19 @@ class BackendService:
         if self.hardware is None:
             raise RuntimeError("Hardware service is not initialized")
         return self.hardware.process_sweep(state_msg)
+
+    def switch_to_cw_mode(self):
+        if self.hardware:
+            self.hardware.switch_to_cw_mode()
+
+    def switch_to_sweep_mode(self):
+        if self.hardware:
+            self.hardware.switch_to_sweep_mode()
+
+    def process_cw_radar(self):
+        if self.hardware is None:
+            raise RuntimeError("Hardware not initialized")
+        return self.hardware.process_cw_radar()
 
     def get_ui_state(self):
         signal_freq = getattr(config, "SignalFreq", 10.5e9)
@@ -681,6 +769,21 @@ class BackendService:
             spacing = self.hardware.d
             bandwidth = getattr(self.hardware, "bandwidth", 10)
 
+        # Check hardware connectivity
+        hardware_connected = False
+        if self.sim_mode:
+            hardware_connected = True  # Sim is always "connected"
+        elif self.hardware is None:
+            hardware_connected = False  # Hardware init failed
+        else:
+            try:
+                # Quick connectivity check - try to read an attribute from the SDR
+                if hasattr(self.hardware, 'sdr') and self.hardware.sdr is not None:
+                    _ = self.hardware.sdr.rx_lo
+                    hardware_connected = True
+            except Exception:
+                hardware_connected = False
+
         return {
             "status": "ok",
             "data": {
@@ -692,6 +795,7 @@ class BackendService:
                 "d": float(spacing),
                 "BW": float(bandwidth),
                 "sim_mode": bool(self.sim_mode),
+                "hardware_connected": hardware_connected,
                 "lab_presets_supported": True,
             },
         }
@@ -709,10 +813,50 @@ class BackendService:
         if self.sim_mode:
             return {"status": "error", "message": "Calibration is not available in sim mode"}
         try:
+            # Release hardware before calibration so the script can use it
+            if self.hardware is not None:
+                print("[BackendService] Releasing hardware for calibration...")
+                self.hardware.shutdown()
+                self.hardware = None
             self._start_calibration_task(task_name)
             return {"status": "ok", "message": f"Started {task_name}"}
         except RuntimeError as e:
             return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    def cancel_calibration(self):
+        with self.calibration_lock:
+            if not self.calibration_status["running"]:
+                return {"status": "error", "message": "No calibration task is running"}
+            proc = self._cal_process
+            if proc is None:
+                return {"status": "error", "message": "No process reference available"}
+            task_name = self.calibration_status["task"]
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        self._append_cal_line(f"[CANCELLED] {task_name} was cancelled by user")
+        return {"status": "ok", "message": f"Cancelled {task_name}"}
+
+    def reboot_phaser(self):
+        """SSH into Phaser and reboot it."""
+        if self.sim_mode:
+            return {"status": "error", "message": "Reboot is not available in sim mode"}
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5",
+                 "root@phaser.local", "reboot"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 or "Connection to phaser.local closed" in result.stderr:
+                return {"status": "ok", "message": "Phaser is rebooting. Please wait ~30 seconds."}
+            return {"status": "error", "message": f"SSH failed: {result.stderr}"}
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "message": "SSH connection timed out"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
@@ -780,17 +924,19 @@ class BackendService:
 
     def _reload_runtime_calibration(self, task_name):
         """Refresh live backend state after successful calibration subprocess."""
+        # Reinitialize hardware if it was released for calibration
         if self.hardware is None:
-            return
+            print("[BackendService] Reinitializing hardware after calibration...")
+            self.hardware = PhaserServer()
         if hasattr(self.hardware, "reload_calibration"):
             self.hardware.reload_calibration(task_name)
 
     @staticmethod
-    def _find_uv() -> str | None:
+    def _find_uv():
         """Check if uv is available on PATH."""
         return shutil.which("uv")
 
-    def _resolve_calibration_python(self, repo_root: Path) -> tuple[list[str], str]:
+    def _resolve_calibration_python(self, repo_root):
         """Pick the interpreter used for calibration subprocesses.
 
         Priority:
@@ -806,17 +952,26 @@ class BackendService:
         if env_python:
             return [env_python], "env:PHASER_CAL_PYTHON"
 
-        # Prefer uv if available and project uses it (pyproject.toml exists)
-        uv_path = self._find_uv()
-        if uv_path and (repo_root / "pyproject.toml").exists():
-            return [uv_path, "run", "python"], "uv run python"
-
+        # Use platform-specific venv first
         if os.name == "nt":
+            venv_python = repo_root / ".venv-win" / "Scripts" / "python.exe"
+            if venv_python.exists():
+                return [str(venv_python)], "repo:.venv-win"
+            # Fallback to generic .venv
             venv_python = repo_root / ".venv" / "Scripts" / "python.exe"
         else:
+            venv_python = repo_root / ".venv-linux" / "bin" / "python"
+            if venv_python.exists():
+                return [str(venv_python)], "repo:.venv-linux"
+            # Fallback to generic .venv
             venv_python = repo_root / ".venv" / "bin" / "python"
         if venv_python.exists():
             return [str(venv_python)], "repo:.venv"
+
+        # Fallback to uv run if available
+        uv_path = self._find_uv()
+        if uv_path and (repo_root / "pyproject.toml").exists():
+            return [uv_path, "run", "python"], "uv run python"
 
         return [sys.executable], "sys.executable"
 
@@ -866,7 +1021,7 @@ class BackendService:
             ]
 
             env = os.environ.copy()
-            env.setdefault("MPLBACKEND", "Agg")
+            env["MPLBACKEND"] = "Agg"  # Force non-interactive backend
             env.setdefault("PYTHONUNBUFFERED", "1")
             try:
                 proc = subprocess.Popen(
@@ -890,6 +1045,7 @@ class BackendService:
                 raise
 
             self.calibration_status["pid"] = proc.pid
+            self._cal_process = proc
             thread = threading.Thread(target=self._calibration_reader, args=(proc, task_name), daemon=True)
             thread.start()
 

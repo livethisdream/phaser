@@ -6,7 +6,7 @@ const state = {
     Tx_mode: "Transmit Disabled",
     SignalFreq: 10.0 * 1e9,
     Rx_freq: 2.4e9, 
-    Rx_gain: 20,
+    Rx_gain: 0,
     Tx_gain: -40,
     gainList: [100, 100, 100, 100, 100, 100, 100, 100],
     phaseList: [0, 0, 0, 0, 0, 0, 0, 0],
@@ -40,12 +40,6 @@ const MAX_BACKEND_PROBE_RETRIES = 6;
 let timeHistory = [];
 let angleHistory = [];
 let autoSweepInterval = null;
-const CW_WATERFALL_ROWS = 50;
-const CW_IF_HZ = 100_000;
-const CW_DISPLAY_BW_HZ = 300;
-let cwWaterfallMatrix = null;
-let cwFreqHz = null;
-let cwRadarActive = false;
 const THEME_KEY = 'phaser_theme';
 const runtimeLogs = [];
 const RUNTIME_LOG_LIMIT = 500;
@@ -484,6 +478,16 @@ document.querySelectorAll('.accordion-header').forEach(button => {
             document.querySelectorAll('.sidebar-icon-btn[data-section]').forEach((iconBtn) => {
                 iconBtn.classList.toggle('active', parseInt(iconBtn.dataset.section, 10) === idx);
             });
+            // Scroll the header to the top of the accordion container
+            setTimeout(() => {
+                const accordion = document.getElementById('accordionSettings');
+                if (accordion && item) {
+                    const itemRect = item.getBoundingClientRect();
+                    const accordionRect = accordion.getBoundingClientRect();
+                    const scrollOffset = itemRect.top - accordionRect.top + accordion.scrollTop;
+                    accordion.scrollTop = scrollOffset;
+                }
+            }, 100);
         }
     });
 });
@@ -517,56 +521,6 @@ document.querySelectorAll('.tab-btn').forEach(button => {
     });
 });
 
-/* --- CW Radar Mode --- */
-async function startCwRadarMode() {
-    if (!isConnected || !backendProbeState.ready) return;
-    if (autoSweepInterval) {
-        clearInterval(autoSweepInterval);
-        autoSweepInterval = null;
-        const sweepBtn = document.getElementById('btn-sweep');
-        if (sweepBtn) { sweepBtn.innerText = 'Start'; sweepBtn.style.background = ''; sweepBtn.style.boxShadow = ''; }
-    }
-    cwRadarActive = true;
-    cwWaterfallMatrix = null;
-    cwFreqHz = null;
-    try {
-        if (transport.startCwRadar) {
-            await transport.startCwRadar();
-        } else {
-            await transport.invoke?.('start_cw_radar', {});
-        }
-        addRuntimeLog('info', 'CW', 'CW Radar started');
-    } catch (e) {
-        cwRadarActive = false;
-        addRuntimeLog('error', 'CW', `Failed to start CW radar: ${e}`);
-    }
-}
-
-async function stopCwRadarMode() {
-    if (!cwRadarActive) return;
-    cwRadarActive = false;
-    try {
-        if (transport.stopCwRadar) {
-            await transport.stopCwRadar();
-        } else {
-            await transport.invoke?.('stop_cw_radar', {});
-        }
-        addRuntimeLog('info', 'CW', 'CW Radar stopped');
-    } catch (e) {
-        addRuntimeLog('error', 'CW', `Failed to stop CW radar: ${e}`);
-    }
-}
-
-document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const targetId = btn.getAttribute('data-target');
-        if (targetId === 'tab-cw-radar') {
-            if (!cwRadarActive) await startCwRadarMode();
-        } else if (cwRadarActive) {
-            await stopCwRadarMode();
-        }
-    });
-});
 
 /* --- Initialize Sliders --- */
 const gainContainer = document.getElementById('elements-gain-container');
@@ -652,6 +606,7 @@ document.querySelectorAll('.phase-sl').forEach(el => {
         const val = parseInt(e.target.value);
         document.querySelector(`.phase-in[data-idx="${idx}"]`).value = val;
         state.phaseList[idx] = val;
+        syncStateToBackend();
     })
 });
 document.querySelectorAll('.phase-in').forEach(el => {
@@ -660,6 +615,7 @@ document.querySelectorAll('.phase-in').forEach(el => {
         const val = parseInt(e.target.value) || 0;
         document.querySelector(`.phase-sl[data-idx="${idx}"]`).value = val;
         state.phaseList[idx] = val;
+        syncStateToBackend();
     })
 });
 
@@ -667,6 +623,7 @@ document.getElementById('btn-zero-phase').addEventListener('click', () => {
     state.phaseList = [0,0,0,0,0,0,0,0];
     document.querySelectorAll('.phase-sl').forEach((el) => el.value = 0);
     document.querySelectorAll('.phase-in').forEach((el) => el.value = 0);
+    syncStateToBackend();
 });
 
 /* --- Base Config Events --- */
@@ -681,11 +638,29 @@ freqInput.addEventListener('input', (e) => updateSignalFreqFromInput(e.target.va
 freqInput.addEventListener('change', (e) => updateSignalFreqFromInput(e.target.value));
 
 function syncStateToBackend() {
-    if (transport.sweeping && transport.invoke) {
-        transport.invoke('set_state', { state }).catch(() => {});
-    }
+    if (!isConnected) return;
+    // Send state update to backend
+    transport.send({ cmd: 'set_state', data: { state } });
 }
 
+const linkComboSlider = (sliderId, inputId, stateKey, parseFunc = parseFloat, multiplier = 1) => {
+    const slider = document.getElementById(sliderId);
+    const input = document.getElementById(inputId);
+    if (slider && input) {
+        slider.addEventListener('input', (e) => {
+            input.value = e.target.value;
+            state[stateKey] = parseFunc(e.target.value) * multiplier;
+            syncStateToBackend();
+        });
+        input.addEventListener('input', (e) => {
+            slider.value = e.target.value;
+            state[stateKey] = parseFunc(e.target.value) * multiplier;
+            syncStateToBackend();
+        });
+    }
+};
+
+// For sliders with span display (not combo inputs)
 const linkSlider = (id, stateKey, displayId, parseFunc = parseFloat, multiplier = 1) => {
     const el = document.getElementById(id);
     if(el) {
@@ -697,35 +672,57 @@ const linkSlider = (id, stateKey, displayId, parseFunc = parseFloat, multiplier 
     }
 };
 
-linkSlider('rxgain', 'Rx_gain', 'val-rx-gain', parseInt);
-linkSlider('txgain', 'Tx_gain', 'val-tx-gain', parseInt);
-linkSlider('res', 'steer_res', 'val-res', parseFloat);
+linkComboSlider('rxgain', 'val-rx-gain', 'Rx_gain', parseInt);
+linkComboSlider('txgain', 'val-tx-gain', 'Tx_gain', parseInt);
+linkComboSlider('res', 'val-res', 'steer_res', parseFloat);
+linkComboSlider('bits', 'val-bits', 'bits', parseInt);
+linkComboSlider('b0_gain', 'val-b0g', 'B0_Gain', parseFloat);
+linkComboSlider('b0_phase', 'val-b0p', 'Beam0_Phase', parseFloat);
+linkComboSlider('b1_gain', 'val-b1g', 'B1_Gain', parseFloat);
+linkComboSlider('b1_phase', 'val-b1p', 'Beam1_Phase', parseFloat);
+linkComboSlider('bw', 'val-bw', 'BW', parseInt);
 
-// Beam Squint: BW slider with special handling to show calculated/measured freq
+// Force-sync all combo sliders on page load (some browsers don't render initial value correctly)
+document.querySelectorAll('.combo-inputs').forEach(combo => {
+    const slider = combo.querySelector('input[type="range"]');
+    const input = combo.querySelector('input[type="number"]');
+    if (slider && input) {
+        slider.value = input.value;
+    }
+});
+
+// Beam Squint: show/hide based on toggle and BW > 0
 function updateBeamSquintDisplay() {
     const bwMHz = state.BW;
-    const measFreqMHz = state.SignalFreq / 1e6;
-    const calcFreqMHz = measFreqMHz - bwMHz;
+    const measFreqGHz = state.SignalFreq / 1e9;
+    const calcFreqGHz = measFreqGHz - (bwMHz / 1000);
 
     const infoDiv = document.getElementById('beam-squint-info');
+    const infoDiv2 = document.getElementById('beam-squint-info2');
     const calcSpan = document.getElementById('beam-calc-freq');
     const measSpan = document.getElementById('beam-meas-freq');
+    const showSquint = document.getElementById('opt-show-squint')?.checked;
 
-    if (infoDiv && calcSpan && measSpan) {
-        if (bwMHz > 0) {
-            infoDiv.style.display = 'block';
-            calcSpan.textContent = calcFreqMHz.toFixed(0);
-            measSpan.textContent = measFreqMHz.toFixed(0);
-        } else {
-            infoDiv.style.display = 'none';
-        }
-    }
+    const show = showSquint && bwMHz > 0;
+    if (infoDiv) infoDiv.style.display = show ? 'flex' : 'none';
+    if (infoDiv2) infoDiv2.style.display = show ? 'flex' : 'none';
+    if (calcSpan) calcSpan.textContent = calcFreqGHz.toFixed(3);
+    if (measSpan) measSpan.textContent = measFreqGHz.toFixed(3);
 }
 
+document.getElementById('opt-show-squint')?.addEventListener('change', updateBeamSquintDisplay);
+
 const bwSlider = document.getElementById('bw');
-if (bwSlider) {
+const bwInput = document.getElementById('val-bw');
+if (bwSlider && bwInput) {
     bwSlider.addEventListener('input', (e) => {
-        document.getElementById('val-bw').innerText = e.target.value;
+        bwInput.value = e.target.value;
+        state.BW = parseFloat(e.target.value);
+        updateBeamSquintDisplay();
+        syncStateToBackend();
+    });
+    bwInput.addEventListener('input', (e) => {
+        bwSlider.value = e.target.value;
         state.BW = parseFloat(e.target.value);
         updateBeamSquintDisplay();
         syncStateToBackend();
@@ -736,11 +733,6 @@ if (bwSlider) {
 const origFreqHandler = freqInput.oninput;
 freqInput.addEventListener('input', () => updateBeamSquintDisplay());
 freqInput.addEventListener('change', () => updateBeamSquintDisplay());
-linkSlider('b0_phase', 'Beam0_Phase', 'val-b0p', parseFloat);
-linkSlider('b1_phase', 'Beam1_Phase', 'val-b1p', parseFloat);
-linkSlider('b0_gain', 'B0_Gain', 'val-b0g', parseFloat);
-linkSlider('b1_gain', 'B1_Gain', 'val-b1g', parseFloat);
-linkSlider('bits', 'bits', 'val-bits', parseInt);
 
 document.getElementById('ignore-res')?.addEventListener('change', (e) => {
     state.ignore_res = e.target.checked;
@@ -761,6 +753,11 @@ document.getElementById('opt-show-error')?.addEventListener('change', (e) => {
     if (rectEl && rectEl.data && rectEl.data[2]) {
         Plotly.restyle('chart-rect', { visible: e.target.checked }, [2]);
     }
+    // Show/hide the right y-axis
+    Plotly.relayout('chart-rect', {
+        'yaxis2.visible': e.target.checked,
+        'yaxis2.showticklabels': e.target.checked
+    });
 });
 
 function applyInitialStateToControls() {
@@ -770,16 +767,16 @@ function applyInitialStateToControls() {
     const tx = document.getElementById('txgain');
     if (rx) {
         rx.value = String(state.Rx_gain);
-        document.getElementById('val-rx-gain').innerText = String(state.Rx_gain);
+        document.getElementById('val-rx-gain').value = String(state.Rx_gain);
     }
     if (tx) {
         tx.value = String(state.Tx_gain);
-        document.getElementById('val-tx-gain').innerText = String(state.Tx_gain);
+        document.getElementById('val-tx-gain').value = String(state.Tx_gain);
     }
     const bw = document.getElementById('bw');
     if (bw) {
         bw.value = String(state.BW);
-        document.getElementById('val-bw').innerText = String(state.BW);
+        document.getElementById('val-bw').value = String(state.BW);
     }
 
     const res = document.getElementById('res');
@@ -787,11 +784,11 @@ function applyInitialStateToControls() {
     const ignoreRes = document.getElementById('ignore-res');
     if (res) {
         res.value = String(state.steer_res);
-        document.getElementById('val-res').innerText = String(state.steer_res);
+        document.getElementById('val-res').value = String(state.steer_res);
     }
     if (bits) {
         bits.value = String(state.bits);
-        document.getElementById('val-bits').innerText = String(state.bits);
+        document.getElementById('val-bits').value = String(state.bits);
     }
     if (ignoreRes) {
         ignoreRes.checked = Boolean(state.ignore_res);
@@ -845,14 +842,6 @@ updateSweepAvailability();
 // Initial load now happens through readiness probe once connected.
 
 document.getElementById('txMode')?.addEventListener('change', e => state.Tx_mode = e.target.value);
-document.getElementById('modeSelect').addEventListener('change', (e) => {
-    state.mode = e.target.value;
-    if(state.mode === 'Static Phase') {
-        state.PhaseValues = [0]; 
-    } else {
-        state.PhaseValues = Array.from({length: 181}, (_, i) => i - 90);
-    }
-});
 
 /* --- Plot Options Combo Inputs --- */
 const setupCombo = (sliderId, inputId) => {
@@ -957,7 +946,9 @@ Plotly.newPlot('chart-rect', [
         range: [-1, 1],
         gridcolor: 'rgba(239, 68, 68, 0.2)',
         griddash: 'dot',
-        showgrid: false
+        showgrid: false,
+        visible: false,
+        showticklabels: false
     },
     showlegend: true,
     legend: { x: 1, xanchor: 'right', y: 1, bgcolor: 'rgba(0,0,0,0)' }
@@ -1012,52 +1003,6 @@ Plotly.newPlot('chart-tracking', [{
     yaxis: { title: 'Steering Angle (°)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-90, 90] }
 }), {displayModeBar: false, responsive: true});
 
-Plotly.newPlot('chart-cw-fft', [{
-    x: [], y: [], type: 'scatter', mode: 'lines',
-    line: { color: '#f59e0b', width: 1.5 }, name: 'IF Spectrum'
-}], Object.assign({}, getLayoutBase(), {
-    xaxis: {
-        title: 'Frequency (Hz)',
-        range: [CW_IF_HZ - CW_DISPLAY_BW_HZ, CW_IF_HZ + CW_DISPLAY_BW_HZ],
-        gridcolor: getPlotPalette().gridColor, griddash: 'dash'
-    },
-    yaxis: {
-        title: 'dBFS',
-        range: [-80, 0],
-        gridcolor: getPlotPalette().gridColor, griddash: 'dash'
-    }
-}), {displayModeBar: false, responsive: true});
-
-Plotly.newPlot('chart-cw-waterfall', [{
-    type: 'heatmap', z: [[]], x: [], y: [],
-    colorscale: 'Viridis', zmin: -66, zmax: -42,
-    showscale: true, colorbar: { thickness: 12, len: 0.9 }
-}], Object.assign({}, getLayoutBase(), {
-    margin: { t: 10, r: 60, l: 55, b: 40 },
-    xaxis: {
-        title: 'Frequency (Hz)',
-        range: [CW_IF_HZ - CW_DISPLAY_BW_HZ, CW_IF_HZ + CW_DISPLAY_BW_HZ],
-        gridcolor: getPlotPalette().gridColor
-    },
-    yaxis: { title: 'Frame', autorange: 'reversed', gridcolor: getPlotPalette().gridColor }
-}), {displayModeBar: false, responsive: true});
-
-
-function updateCWRadarCharts(data) {
-    const freqHz = data.freq_hz;
-    const spectrum = data.spectrum_dbfs;
-    if (!freqHz || !spectrum) return;
-
-    Plotly.update('chart-cw-fft', { x: [freqHz], y: [spectrum] }, {}, [0]);
-
-    if (!cwWaterfallMatrix) {
-        cwWaterfallMatrix = Array.from({ length: CW_WATERFALL_ROWS }, () => new Array(freqHz.length).fill(-80));
-        cwFreqHz = freqHz;
-    }
-    cwWaterfallMatrix.pop();
-    cwWaterfallMatrix.unshift([...spectrum]);
-    Plotly.restyle('chart-cw-waterfall', { z: [cwWaterfallMatrix], x: [cwFreqHz] }, [0]);
-}
 
 function updatePlotLimits() {
     const xMin = parseFloat(document.getElementById('val-xmin').value);
@@ -1085,14 +1030,28 @@ let sweepCounter = 0;
 const transport = createTransport({
     onMessage: (msg) => {
         if (msg.type === 'backend-ready' && msg.state) {
-            // Initial state from backend
+            // Initial state from backend - mark as ready and load state
             if (msg.state.status === 'ok' && msg.state.data) {
-                loadStateFromServerData(msg.state.data);
+                backendProbeState.ready = true;
+                backendProbeState.probing = false;
+                const data = msg.state.data;
+                if (Number.isFinite(data.SignalFreq)) state.SignalFreq = data.SignalFreq;
+                if (Number.isFinite(data.Rx_freq)) state.Rx_freq = data.Rx_freq;
+                if (Number.isFinite(data.Rx_gain)) state.Rx_gain = data.Rx_gain;
+                if (Number.isFinite(data.Tx_gain)) state.Tx_gain = data.Tx_gain;
+                if (Number.isFinite(data.Averages)) state.Averages = data.Averages;
+                if (Number.isFinite(data.d)) state.d = data.d;
+                if (Number.isFinite(data.BW)) state.BW = data.BW;
+                updateHardwareConnectionStatus(data.hardware_connected ?? false);
+                applyInitialStateToControls();
+                setBackendStatus('ready', 'Backend: Ready');
+                updateSweepAvailability();
+                addRuntimeLog('info', 'WS', 'Backend ready, hardware connected');
             }
         } else if (msg.type === 'response' && msg.data) {
-            // Command response
+            // Command response - check if it's a state response
             if (msg.data.status === 'ok' && msg.data.data) {
-                // State response
+                // Could be get_state response during probe
             }
         } else if (msg.status === 'ok' && msg.data) {
             updateCharts(msg.data);
@@ -1103,9 +1062,6 @@ const transport = createTransport({
     onSweepData: (data) => {
         // Direct sweep data from WebSocket
         if (data) updateCharts(data);
-    },
-    onCwRadarData: (data) => {
-        if (data) updateCWRadarCharts(data);
     },
     onConnectionStatus: (status) => {
         // Connection status update
@@ -1141,10 +1097,6 @@ const transport = createTransport({
             autoSweepInterval = null;
             document.getElementById('btn-sweep').innerText = 'Start';
             addRuntimeLog('warn', 'SWEEP', 'Stopped because websocket disconnected');
-        }
-        if (cwRadarActive) {
-            cwRadarActive = false;
-            addRuntimeLog('warn', 'CW', 'CW Radar stopped because disconnected');
         }
     },
     onLog: addRuntimeLog,
@@ -1553,53 +1505,6 @@ if (simBtn && window.electronAPI?.startSim) {
     simBtn.style.display = 'none';
 }
 
-// Host connection (Electron only)
-const hostInput = document.getElementById('phaser-host');
-const connectHostBtn = document.getElementById('btn-connect-host');
-if (hostInput && connectHostBtn && window.electronAPI?.connectToHost) {
-    // Load current host on startup
-    window.electronAPI.getCurrentHost?.().then((resp) => {
-        if (resp?.host) {
-            hostInput.value = resp.host;
-        }
-    });
-
-    connectHostBtn.addEventListener('click', async () => {
-        const host = hostInput.value.trim();
-        if (!host) {
-            alert('Please enter a host address');
-            return;
-        }
-
-        connectHostBtn.disabled = true;
-        connectHostBtn.textContent = '...';
-        addRuntimeLog('info', 'CONN', `Connecting to ${host}...`);
-
-        try {
-            const resp = await window.electronAPI.connectToHost(host);
-            if (resp.status === 'ok') {
-                addRuntimeLog('info', 'CONN', `Connected to ${host}`);
-                loadStateFromServer();
-            } else {
-                addRuntimeLog('error', 'CONN', `Failed to connect to ${host}`);
-                alert(`Failed to connect to ${host}`);
-            }
-        } catch (err) {
-            addRuntimeLog('error', 'CONN', `Connection error: ${err}`);
-            alert(`Connection error: ${err}`);
-        } finally {
-            connectHostBtn.disabled = false;
-            connectHostBtn.textContent = 'Connect';
-        }
-    });
-
-    // Allow Enter key to connect
-    hostInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            connectHostBtn.click();
-        }
-    });
-}
 
 const settingsPanel = document.getElementById('settings-panel');
 const dashboard = document.querySelector('.dashboard');
@@ -1728,9 +1633,6 @@ function applyLabPreset(preset) {
         applyPhaseList(preset.phaseList);
     }
 
-    document.getElementById('modeSelect').value = state.mode;
-    document.getElementById('modeSelect').dispatchEvent(new Event('change'));
-
     // Apply monopulse display options
     const showDeltaEl = document.getElementById('opt-show-delta');
     const showErrorEl = document.getElementById('opt-show-error');
@@ -1746,6 +1648,9 @@ function applyLabPreset(preset) {
     const tabName = preset.ui_tab || 'tab-rect';
     document.querySelector(`[data-target="${tabName}"]`)?.click();
     applyInitialStateToControls();
+
+    // Send preset state to backend
+    syncStateToBackend();
 }
 
 function localLabPreset(labIdx) {
@@ -1762,7 +1667,7 @@ function localLabPreset(labIdx) {
     switch (labIdx) {
         case 1: return { ...base, mode: 'Static Phase', ui_tab: 'tab-fft' };
         case 5: return { ...base, mode: 'Beam Sweep', BW: 500, ui_tab: 'tab-rect' };  // Beam Squint: 500 MHz offset shows ~3° shift at 45°
-        case 6: return { ...base, mode: 'Signal vs Time', steer_res: 1.0, ignore_res: false, gainList: [6,27,66,100,100,66,27,6], ui_tab: 'tab-tracking' };
+        case 6: return { ...base, mode: 'Beam Sweep', ui_tab: 'tab-rect' };  // Quantization: change bits slider to see effect on beam pattern
         case 8: return { ...base, mode: 'Tracking', gainList: [6,27,66,100,100,66,27,6], ui_tab: 'tab-rect', showDelta: true, showError: true };
         default: return base;
     }
@@ -1874,45 +1779,31 @@ function updateCharts(data) {
 
 // Global UI interaction
 const sweepBtn = document.getElementById('btn-sweep');
-sweepBtn.addEventListener('click', () => {
+let isSweeping = false;
+
+sweepBtn.addEventListener('click', async () => {
     if (sweepBtn.disabled) {
         addRuntimeLog('warn', 'SWEEP', 'Start blocked until backend is ready');
         return;
     }
 
-    // For ZMQ-based Electron transport, use streaming mode
-    if (isElectronHost() && transport.stopSweep) {
-        if (!transport.sweeping) {
-            requestSweep(); // Start the stream
-            sweepBtn.innerText = "Stop";
-            sweepBtn.style.background = "#ef4444";
-            sweepBtn.style.boxShadow = "0 4px 15px rgba(239, 68, 68, 0.4)";
-            addRuntimeLog('info', 'SWEEP', 'Started ZMQ sweep stream');
-        } else {
-            transport.stopSweep();
-            sweepBtn.innerText = "Start";
-            sweepBtn.style.background = "";
-            sweepBtn.style.boxShadow = "";
-            addRuntimeLog('info', 'SWEEP', 'Stopped ZMQ sweep stream');
-        }
-        return;
-    }
-
-    // Legacy polling mode for non-Electron transports
-    if(!autoSweepInterval) {
-        requestSweep(); // Fire first sweep immediately
-        autoSweepInterval = setInterval(requestSweep, 500); // 2Hz
+    if (!isSweeping) {
+        // Start sweeping - send current state first, then start
+        transport.send({ cmd: 'set_state', data: { state } });
+        transport.send({ cmd: 'start_sweep' });
+        isSweeping = true;
         sweepBtn.innerText = "Stop";
         sweepBtn.style.background = "#ef4444";
         sweepBtn.style.boxShadow = "0 4px 15px rgba(239, 68, 68, 0.4)";
-        addRuntimeLog('info', 'SWEEP', 'Started auto sweep (2 Hz)');
+        addRuntimeLog('info', 'SWEEP', 'Started sweep stream');
     } else {
-        clearInterval(autoSweepInterval);
-        autoSweepInterval = null;
+        // Stop sweeping
+        transport.send({ cmd: 'stop_sweep' });
+        isSweeping = false;
         sweepBtn.innerText = "Start";
         sweepBtn.style.background = "";
         sweepBtn.style.boxShadow = "";
-        addRuntimeLog('info', 'SWEEP', 'Stopped auto sweep');
+        addRuntimeLog('info', 'SWEEP', 'Stopped sweep stream');
     }
 });
 
@@ -2006,7 +1897,7 @@ async function probeBackendReadiness() {
 // Force resize all plots after initial render to prevent "jump" on first tab click
 // This ensures hidden plots have correct dimensions when first shown
 setTimeout(() => {
-    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-tracking', 'chart-cw-fft', 'chart-cw-waterfall'];
+    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-tracking'];
     chartIds.forEach(id => {
         const el = document.getElementById(id);
         if (el && window.Plotly) {

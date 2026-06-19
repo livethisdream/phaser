@@ -2,10 +2,50 @@
 __pycache__/
 *.py[oc]
 build/
-dist/
 wheels/
 *.egg-info
 
 # Virtual environments
 .venv-linux/
 .venv-win/
+
+# IDE
+.idea/
+
+# Build artifacts (staging dir only, keep the tarball)
+phaser-installer/
+release/
+
+# Calibration data (device-specific)
+*.pkl
+calibration.json
+hb100_cal.txt
+
+# Logs
+logs/
+
+# LTE test files
+*.ftr
+
+# Simulation data
+sim_data.json
+
+# Electron/Tauri (not using these)
+electron/
+src-tauri/
+package-lock.json
+
+# Documentation artifacts (generated)
+COMPLETE_SOLUTION.md
+DELIVERY_SUMMARY.md
+DIAGNOSTIC_IMPROVEMENTS.md
+DOCUMENTATION_INDEX.md
+ELECTRON_MIGRATION_PLAN.md
+FIND_HB100_FIX.md
+HARDWARE_URI_DIAGNOSIS.md
+NETWORK_FIX_SUMMARY.md
+NETWORK_SETUP_GUIDE.md
+QUICK_REFERENCE.md
+SOLUTION_COMPLETE.md
+START_HERE.md
+VISUAL_SUMMARY.md

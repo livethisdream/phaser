@@ -15,7 +15,8 @@ def _set_channel_map_with_fallback(sdr, attr_name, preferred):
 
 def SDR_init(ip, sample_rate, tx_lo, rx_lo, rx_gain, tx_gain, buffer_size=1024*16):
     print(f"Connecting to SDR at {ip}...")
-    sdr = adi.Pluto(ip)
+    # Use ad9361 instead of Pluto for better dual-channel support through iiod proxy
+    sdr = adi.ad9361(uri=ip)
 
     # Prefer dual-channel mode, but gracefully fallback for 1-channel device mappings.
     rx_map = _set_channel_map_with_fallback(sdr, "rx_enabled_channels", [0, 1])
@@ -42,27 +43,8 @@ def SDR_init(ip, sample_rate, tx_lo, rx_lo, rx_gain, tx_gain, buffer_size=1024*1
     if len(tx_map) > 1:
         sdr.tx_hardwaregain_chan1 = int(tx_gain)
 
-    # Need a small delay before sending data
+    # Need a small delay before receiving
     time.sleep(0.5)
-
-    # Send some data out
-    fs = int(sdr.sample_rate)
-    N = int(sdr.rx_buffer_size)
-    fc = int(100000) # 100 kHz tone
-    ts = 1 / float(fs)
-    t = np.arange(0, N * ts, ts)
-    i = np.cos(2 * np.pi * t * fc) * 2**14
-    q = np.sin(2 * np.pi * t * fc) * 2**14
-    iq = i + 1j * q
-    
-    # Send on both channels (gracefully handle if TX buffer not ready)
-    try:
-        if len(tx_map) > 1:
-            sdr.tx([iq, iq])
-        else:
-            sdr.tx(iq)
-    except (ValueError, Exception) as e:
-        print(f"Warning: TX buffer initialization failed (may be expected on non-hardware), continuing: {e}")
 
     return sdr
 
