@@ -35,6 +35,43 @@ electron/
 src-tauri/
 package-lock.json
 
+# Legacy files (kept locally, not in repo)
+radar/
+scripts/
+tests/
+config.py
+diagnose_hardware.py
+phaser_app.py
+phaser_cal.py
+phaser_find_hb100.py
+phaser_functions.py
+phaser_gui.py
+phaser_ipc_worker.py
+phaser_server.py
+requirements.txt
+frontend/phaser_desktop.html
+frontend/public/
+frontend/src/assets/
+frontend/src/counter.js
+frontend/src/ipc-bridge-native.js
+frontend/src/transport-ipc.js
+frontend/src/transport-web.js
+frontend/src/transport-electron.js
+frontend/src/transport-tauri.js
+frontend/src/vendor/
+
+# Dev utilities
+capture_sim_data.py
+fft_viewer.py
+phaser_sidecar.py
+phaser_sim.py
+phaser_zmq_server.py
+test_minimal.py
+start*.bat
+start*.py
+.python-version
+AGENTS.md
+
 # Documentation artifacts (generated)
 COMPLETE_SOLUTION.md
 DELIVERY_SUMMARY.md
