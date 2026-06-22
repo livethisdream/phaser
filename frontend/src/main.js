@@ -1378,7 +1378,7 @@ async function cancelCalibrationTask() {
         if (msg.status === 'ok') {
             addRuntimeLog('info', 'CAL', 'Calibration cancelled');
             setCalibrationButtonsBusy(false);
-            setTimeout(refreshCalibrationStatus, 500);
+            hideCalibrationModal();
         } else {
             addRuntimeLog('warn', 'CAL', msg.message || 'Cancel failed');
         }

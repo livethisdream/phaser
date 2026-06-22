@@ -535,6 +535,24 @@ class PhaserHeadless:
             self.cal_task = None
             return result
 
+    def cancel_calibration(self):
+        """Cancel running calibration process"""
+        if self.cal_process is None or self.cal_process.poll() is not None:
+            return {"status": "error", "message": "No calibration running"}
+
+        try:
+            self.cal_process.terminate()
+            self.cal_process.wait(timeout=5)
+        except Exception:
+            self.cal_process.kill()
+
+        task = self.cal_task
+        self.cal_process = None
+        self.cal_task = None
+        self.cal_log.append("Calibration cancelled by user")
+        print(f"Calibration {task} cancelled")
+        return {"status": "ok", "message": f"Cancelled {task}"}
+
     def _reload_calibration(self, task_name):
         """Re-initialize hardware after calibration script completes.
 
@@ -640,6 +658,9 @@ class PhaserHeadless:
 
         elif cmd == "get_calibration_status":
             return self.get_calibration_status()
+
+        elif cmd == "cancel_calibration":
+            return self.cancel_calibration()
 
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}
