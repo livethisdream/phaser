@@ -921,11 +921,11 @@ function applyPlotTheme() {
 
 Plotly.newPlot('chart-rect', [
     // Trace 0: Sum beam
-    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Sum', line: { color: '#6366f1', width: 3 }, fill: 'tozeroy', fillcolor: 'rgba(99, 102, 241, 0.1)' },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Sum', line: { color: '#6366f1', width: 3, shape: 'spline' }, fill: 'tozeroy', fillcolor: 'rgba(99, 102, 241, 0.1)' },
     // Trace 1: Delta beam (hidden by default)
-    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#f59e0b', width: 2, dash: 'dash' }, visible: false },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#f59e0b', width: 2, dash: 'dash', shape: 'spline' }, visible: false },
     // Trace 2: Error function (hidden by default, secondary y-axis)
-    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Error', yaxis: 'y2', line: { color: '#ef4444', width: 2 }, visible: false }
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Error', yaxis: 'y2', line: { color: '#ef4444', width: 2, shape: 'spline' }, visible: false }
 ], Object.assign({}, getLayoutBase(), {
     xaxis: {
         title: 'Steering Angle (°)',
@@ -955,7 +955,7 @@ Plotly.newPlot('chart-rect', [
 }), {displayModeBar: false, responsive: true});
 
 Plotly.newPlot('chart-polar', [{
-    r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#10b981', width: 3 }, fill: 'toself', fillcolor: 'rgba(16, 185, 129, 0.1)'
+    r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#10b981', width: 3, shape: 'spline' }, fill: 'toself', fillcolor: 'rgba(16, 185, 129, 0.1)'
 }], Object.assign({}, getLayoutBase(), {
     polar: {
         sector: [0, 180],
