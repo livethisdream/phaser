@@ -737,8 +737,12 @@ class PhaserHeadless:
                 async for message in websocket:
                     try:
                         msg = json.loads(message)
+                        request_id = msg.get("id")
                         response = self.handle_command(msg)
-                        await websocket.send(json.dumps({"type": "response", "data": response}))
+                        reply = {"type": "response", **response}
+                        if request_id:
+                            reply["id"] = request_id
+                        await websocket.send(json.dumps(reply))
                     except json.JSONDecodeError:
                         await websocket.send(json.dumps({"type": "error", "message": "Invalid JSON"}))
                     except Exception as e:
