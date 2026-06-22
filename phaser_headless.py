@@ -465,12 +465,16 @@ class PhaserHeadless:
         self.sweeping = False
 
         try:
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
             self.cal_process = subprocess.Popen(
-                [sys.executable, script],
+                [sys.executable, "-u", script],
                 cwd=script_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                bufsize=1,
+                env=env,
             )
             return {"status": "ok", "message": f"Started {task_name}"}
         except Exception as e:
@@ -505,7 +509,7 @@ class PhaserHeadless:
                 "status": "ok",
                 "running": True,
                 "task": self.cal_task,
-                "log": self.cal_log[-20:],  # Last 20 lines
+                "last_lines": self.cal_log[-20:],  # Last 20 lines
             }
         else:
             # Finished - read remaining output
@@ -520,7 +524,7 @@ class PhaserHeadless:
                 "task": self.cal_task,
                 "returncode": returncode,
                 "success": returncode == 0,
-                "log": self.cal_log,
+                "last_lines": self.cal_log,
             }
 
             # Reload calibration if successful
@@ -551,6 +555,10 @@ class PhaserHeadless:
         """Handle a command message"""
         cmd = msg.get("cmd", "")
         data = msg.get("data", {})
+        # Support flat {args} format from invoke() - merge top-level keys into data
+        for k, v in msg.items():
+            if k not in ("cmd", "id", "type", "data"):
+                data[k] = v
 
         print(f"[CMD] {cmd}")
 
