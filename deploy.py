@@ -61,14 +61,20 @@ def main():
         print("\n--build-only specified, skipping deployment.")
         return
 
-    # Step 2: Copy phaser_headless.py
-    print(f"\n[2/4] Copying phaser_headless.py to {host}...")
-    headless_py = script_dir / "phaser_headless.py"
-    if not headless_py.exists():
-        print("  ERROR: phaser_headless.py not found")
-        sys.exit(1)
-    run(f'scp "{headless_py}" {DEFAULT_USER}@{host}:{REMOTE_DIR}/')
-    print("  OK: Backend copied")
+    # Step 2: Copy backend Python files
+    print(f"\n[2/4] Copying backend scripts to {host}...")
+    backend_files = [
+        "phaser_headless.py",
+        "phaser_cal_headless.py",
+        "phaser_find_hb100_headless.py",
+    ]
+    for filename in backend_files:
+        py_file = script_dir / filename
+        if py_file.exists():
+            run(f'scp "{py_file}" {DEFAULT_USER}@{host}:{REMOTE_DIR}/')
+            print(f"  OK: {filename} copied")
+        else:
+            print(f"  SKIP: {filename} not found")
 
     # Step 3: Copy frontend
     print(f"\n[3/4] Copying frontend to {host}:{REMOTE_WWW}/...")

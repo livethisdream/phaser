@@ -268,8 +268,12 @@ class PhaserHeadless:
             2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
         )
 
+        # phaseList should be user-set phase offsets (zeros by default)
+        # The calibration (pcal) is applied inside ADAR_set_Phase automatically
+        phaseList = [0.0] * 8
+
         for i, PhDelta in enumerate(PhaseValues):
-            ADAR_set_Phase(self.array, PhDelta, self.phase_step, self.phase_cal)
+            ADAR_set_Phase(self.array, PhDelta, self.phase_step, phaseList)
 
             # Average multiple reads if configured
             total_sum = 0
@@ -439,6 +443,23 @@ class PhaserHeadless:
         print(f"Sweep params: {self.steer_min} to {self.steer_max}, step={self.phase_step}, avg={self.Averages}")
         return {"status": "ok"}
 
+    def _read_calibration_output(self):
+        """Background thread to read calibration subprocess output"""
+        try:
+            for line in iter(self.cal_process.stdout.readline, ''):
+                if line:
+                    self.cal_log.append(line.rstrip('\n'))
+                if self.cal_process.poll() is not None:
+                    break
+            # Read any remaining output
+            remaining = self.cal_process.stdout.read()
+            if remaining:
+                for line in remaining.strip().split('\n'):
+                    if line:
+                        self.cal_log.append(line)
+        except Exception as e:
+            self.cal_log.append(f"[Read error: {e}]")
+
     def run_calibration(self, task_name):
         """Run a calibration script as subprocess"""
         if self.cal_process is not None and self.cal_process.poll() is None:
@@ -476,6 +497,10 @@ class PhaserHeadless:
                 bufsize=1,
                 env=env,
             )
+            # Start background thread to read output
+            import threading
+            self.cal_reader_thread = threading.Thread(target=self._read_calibration_output, daemon=True)
+            self.cal_reader_thread.start()
             return {"status": "ok", "message": f"Started {task_name}"}
         except Exception as e:
             self.sweeping = was_sweeping
@@ -486,36 +511,18 @@ class PhaserHeadless:
         if self.cal_process is None:
             return {"status": "ok", "running": False, "task": None}
 
-        # Read any available output
         if self.cal_process.poll() is None:
-            # Still running - non-blocking read
-            import select
-            while True:
-                # Check if there's data to read (Unix only, but works on Pi)
-                try:
-                    import fcntl
-                    fd = self.cal_process.stdout.fileno()
-                    fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-                    line = self.cal_process.stdout.readline()
-                    if line:
-                        self.cal_log.append(line.strip())
-                    else:
-                        break
-                except Exception:
-                    break
-
+            # Still running - output is being read by background thread
             return {
                 "status": "ok",
                 "running": True,
                 "task": self.cal_task,
-                "last_lines": self.cal_log[-20:],  # Last 20 lines
+                "last_lines": self.cal_log[-20:],
             }
         else:
-            # Finished - read remaining output
-            remaining = self.cal_process.stdout.read()
-            if remaining:
-                self.cal_log.extend(remaining.strip().split('\n'))
+            # Finished - wait for reader thread to complete
+            if hasattr(self, 'cal_reader_thread') and self.cal_reader_thread.is_alive():
+                self.cal_reader_thread.join(timeout=1.0)
 
             returncode = self.cal_process.returncode
             result = {

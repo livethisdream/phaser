@@ -1317,6 +1317,8 @@ function showCalibrationModal(taskName) {
     if (modal) modal.hidden = false;
 }
 
+let calibrationAutoCloseTimer = null;
+
 function updateCalibrationModal(data) {
     const modal = document.getElementById('calibration-modal');
     if (!modal || modal.hidden) return;
@@ -1329,6 +1331,11 @@ function updateCalibrationModal(data) {
     if (!data) return;
 
     if (data.running) {
+        // Clear any pending auto-close when a new run starts
+        if (calibrationAutoCloseTimer) {
+            clearTimeout(calibrationAutoCloseTimer);
+            calibrationAutoCloseTimer = null;
+        }
         if (statusEl) statusEl.innerText = 'Running...';
         if (spinnerEl) spinnerEl.classList.add('spinning');
         if (actionBtn) {
@@ -1348,9 +1355,23 @@ function updateCalibrationModal(data) {
         // Reset sidebar buttons when calibration completes
         setCalibrationButtonsBusy(false);
         if (data.returncode === 0) {
-            if (statusEl) statusEl.innerText = 'Completed successfully';
+            if (statusEl) statusEl.innerText = 'Completed successfully!';
+            // Auto-close after 2 seconds on success
+            if (!calibrationAutoCloseTimer) {
+                calibrationAutoCloseTimer = setTimeout(() => {
+                    hideCalibrationModal();
+                    calibrationAutoCloseTimer = null;
+                }, 2000);
+            }
         } else if (data.returncode !== null && data.returncode !== undefined) {
             if (statusEl) statusEl.innerText = `Failed (code ${data.returncode})`;
+            // Auto-close after 5 seconds on failure (give more time to read error)
+            if (!calibrationAutoCloseTimer) {
+                calibrationAutoCloseTimer = setTimeout(() => {
+                    hideCalibrationModal();
+                    calibrationAutoCloseTimer = null;
+                }, 5000);
+            }
         } else {
             if (statusEl) statusEl.innerText = 'Idle';
         }

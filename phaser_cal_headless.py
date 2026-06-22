@@ -3,16 +3,12 @@
 Headless phaser calibration - no GUI, no prompts.
 Performs channel, gain, and phase calibration automatically.
 
-Based on phaser_cal.py from Analog Devices.
+Based on the "cal" option from phaser_examples.py in pyadi-iio.
 """
 
-import os
-import socket
 import sys
 import time
 
-import pickle
-import adi
 from phaser_functions import (
     channel_calibration,
     gain_calibration,
@@ -20,23 +16,8 @@ from phaser_functions import (
     phase_calibration,
 )
 
-
-def save_channel_cal(values, filename="channel_cal_val.pkl"):
-    """Save channel calibration values to pickle file."""
-    with open(filename, "wb") as f:
-        pickle.dump(values, f)
-
-
-def save_gain_cal(values, filename="gain_cal_val.pkl"):
-    """Save gain calibration values to pickle file."""
-    with open(filename, "wb") as f:
-        pickle.dump(values, f)
-
-
-def save_phase_cal(values, filename="phase_cal_val.pkl"):
-    """Save phase calibration values to pickle file."""
-    with open(filename, "wb") as f:
-        pickle.dump(values, f)
+from adi import ad9361
+from adi.cn0566 import CN0566
 
 try:
     import config
@@ -58,31 +39,25 @@ def do_calibration():
         try:
             print(f"Calibration attempt {attempt + 1}/{MAX_RETRIES}...")
 
-            # Detect hostname and set URIs
-            if socket.gethostname().find(".") >= 0:
-                hostname = socket.gethostname()
-            else:
-                hostname = socket.gethostbyaddr(socket.gethostname())[0]
+            # Connect to hardware (same as phaser_examples.py)
+            try:
+                print("Attempting to connect to CN0566 via ip:localhost...")
+                my_phaser = CN0566(uri="ip:localhost")
+                print("Found CN0566. Connecting to PlutoSDR via default IP address...")
+                my_sdr = ad9361(uri="ip:192.168.2.1")
+                print("PlutoSDR connected.")
+            except Exception as e:
+                print(f"Local connection failed: {e}")
+                print("CN0566 on ip:localhost not found, connecting via ip:phaser.local...")
+                my_phaser = CN0566(uri="ip:phaser.local")
+                print("Found CN0566. Connecting to PlutoSDR via shared context...")
+                my_sdr = ad9361(uri="ip:phaser.local:50901")
+                print("Found SDR on shared phaser.local.")
 
-            if "phaser" in hostname:
-                rpi_ip = "ip:localhost"
-                sdr_ip = "ip:192.168.2.1"
-            else:
-                rpi_ip = "ip:phaser.local"
-                sdr_ip = "ip:phaser.local:50901"
-
-            print(f"Hostname: {hostname}, rpi: {rpi_ip}, sdr: {sdr_ip}")
-
-            # Connect to hardware
-            print("Connecting to SDR...")
-            my_sdr = adi.ad9361(uri=sdr_ip)
-            print("Connecting to CN0566...")
-            my_phaser = adi.CN0566(uri=rpi_ip, sdr=my_sdr)
             my_phaser.sdr = my_sdr
             time.sleep(0.5)
 
-            # Configure device
-            print("Configuring device...")
+            # Configure device (same as phaser_examples.py)
             my_phaser.configure(device_mode="rx")
             my_phaser.SDR_init(30000000, config.Tx_freq, config.Rx_freq, 6, -6, 1024)
 
@@ -94,12 +69,12 @@ def do_calibration():
             # Load signal frequency
             try:
                 my_phaser.SignalFreq = load_hb100_cal()
-                print(f"Loaded HB100 freq: {my_phaser.SignalFreq}")
+                print(f"Found signal freq file: {my_phaser.SignalFreq}")
             except Exception:
                 my_phaser.SignalFreq = config.SignalFreq
-                print(f"Using config SignalFreq: {my_phaser.SignalFreq}")
+                print(f"No signal freq found, using config: {my_phaser.SignalFreq}")
 
-            # Disable TX path
+            # Configure SDR TX (disabled for calibration with HB100)
             my_sdr.tx_hardwaregain_chan0 = int(-88)
             my_sdr.tx_hardwaregain_chan1 = int(-88)
             my_sdr.tx_lo = int(1.0e9)
@@ -114,36 +89,33 @@ def do_calibration():
 
             # Set initial gains
             gain_list = [127, 127, 127, 127, 127, 127, 127, 127]
+            for i in range(0, len(gain_list)):
+                my_phaser.set_chan_gain(i, gain_list[i], apply_cal=False)
+
             my_phaser.Averages = 4
 
-            # Aim at boresight
-            my_phaser.set_beam_phase_diff(0.0)
-
             print("\n=== Starting Calibration ===")
-            print("Ensure antenna is at mechanical boresight in front of the array")
+            print("Antenna should be at mechanical boresight in front of the array")
 
-            # Channel calibration
+            # Channel calibration (same as phaser_examples.py)
             print("\n--- Channel Calibration ---")
             my_phaser.set_beam_phase_diff(0.0)
             channel_calibration(my_phaser, verbose=True)
-            ccal = getattr(my_phaser, "ccal", [0.0, 0.0])
-            save_channel_cal(ccal)
-            print(f"Channel calibration saved: {ccal}")
+            my_phaser.save_channel_cal()
+            print(f"Channel calibration saved: {my_phaser.ccal}")
 
-            # Gain calibration
+            # Gain calibration (same as phaser_examples.py)
             print("\n--- Gain Calibration ---")
             my_phaser.set_beam_phase_diff(0.0)
             gain_calibration(my_phaser, verbose=True)
-            gcal = getattr(my_phaser, "gcal", [1.0] * 8)
-            save_gain_cal(gcal)
-            print(f"Gain calibration saved: {gcal}")
+            my_phaser.save_gain_cal()
+            print(f"Gain calibration saved: {my_phaser.gcal}")
 
-            # Phase calibration
+            # Phase calibration (same as phaser_examples.py)
             print("\n--- Phase Calibration ---")
             phase_calibration(my_phaser, verbose=True)
-            pcal = getattr(my_phaser, "pcal", [0.0] * 8)
-            save_phase_cal(pcal)
-            print(f"Phase calibration saved: {pcal}")
+            my_phaser.save_phase_cal()
+            print(f"Phase calibration saved: {my_phaser.pcal}")
 
             print("\n=== Calibration Complete ===")
 
