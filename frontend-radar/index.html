@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/png" href="./favicon.png" />
+  <title>ADI Phaser Radar</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div class="app-container">
+
+    <main class="dashboard">
+      <!-- Controls Column (Accordion) -->
+      <aside class="controls-panel glass-panel" id="settings-panel">
+        <!-- Icon Sidebar (shown when collapsed) -->
+        <div class="sidebar-icons" id="sidebar-icons">
+          <button class="sidebar-icon-btn" id="btn-toggle-settings-icon" title="Expand settings" aria-label="Expand settings" style="border-color: var(--primary); color: var(--primary);">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5.5h14v13H5z"></path>
+              <path d="M9 5.5v13"></path>
+              <path d="M13.5 12h3"></path>
+              <path d="M15 10.5l1.5 1.5-1.5 1.5"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="0" title="Hardware" aria-label="Hardware">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 3.5v2.2M12 18.3v2.2M20.5 12h-2.2M5.7 12H3.5M18.01 5.99l-1.56 1.56M7.55 16.45l-1.56 1.56M18.01 18.01l-1.56-1.56M7.55 7.55L5.99 5.99"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="1" title="CW Capture" aria-label="CW Capture">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="2" title="Processing" aria-label="Processing">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 19V13M9 19V8M13 19V11M17 19V6M21 19V14"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="3" title="Display" aria-label="Display">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 5.5h14v13H5z"></path>
+              <path d="M5 9.5h14"></path>
+              <path d="M9 5.5v4"></path>
+            </svg>
+          </button>
+          <div class="sidebar-icons-spacer"></div>
+          <button class="sidebar-icon-btn" id="btn-theme-toggle-icon" title="Switch theme" aria-label="Switch theme">
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-moon">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-sun" style="display:none">
+              <circle cx="12" cy="12" r="5"></circle>
+              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Full Sidebar (shown when expanded) -->
+        <div id="sidebar-content">
+          <div class="panel-header-row">
+            <h2 class="panel-title">Radar Settings</h2>
+            <button class="btn btn-outline btn-small icon-toggle-btn" id="btn-toggle-settings" title="Collapse settings" aria-label="Collapse settings">−</button>
+          </div>
+
+          <div class="accordion" id="accordionSettings">
+
+            <!-- 1. Hardware -->
+            <div class="accordion-item active">
+              <button class="accordion-header" title="Configure RF front-end gains and frequencies"><span class="accordion-icon" data-icon="0"></span> Hardware <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">Output Freq (GHz)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="output-freq" step="0.001" value="12.2" class="modern-input-small">
+                </div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">Center Freq (GHz)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="center-freq" step="0.001" value="2.2" class="modern-input-small">
+                </div>
+                <div class="control-group combo-group mt-2">
+                  <label>Rx Gain (dB)</label>
+                  <div class="combo-inputs">
+                    <input type="range" id="rx-gain" min="-3" max="70" step="1" value="30" class="modern-slider">
+                    <input type="number" id="val-rx-gain" min="-3" max="70" step="1" value="30" class="modern-input-small">
+                  </div>
+                </div>
+                <div class="control-group combo-group mt-2">
+                  <label>Tx Gain (dB)</label>
+                  <div class="combo-inputs">
+                    <input type="range" id="tx-gain" min="-88" max="0" step="1" value="0" class="modern-slider">
+                    <input type="number" id="val-tx-gain" min="-88" max="0" step="1" value="0" class="modern-input-small">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. CW Capture -->
+            <div class="accordion-item">
+              <button class="accordion-header" title="Sample-rate, FFT size, and IF tone configuration"><span class="accordion-icon" data-icon="1"></span> CW Capture <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">Sample Rate (kHz)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="sample-rate" step="50" value="600" class="modern-input-small">
+                </div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">FFT Size</label>
+                  <span style="flex:1;"></span>
+                  <select id="fft-size" class="modern-select" style="flex:0 0 auto; width:90px;">
+                    <option value="8192">8192</option>
+                    <option value="16384">16384</option>
+                    <option value="32768">32768</option>
+                    <option value="65536" selected>65536</option>
+                    <option value="131072">131072</option>
+                  </select>
+                </div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">IF Tone (kHz)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="signal-freq" step="1" value="100" class="modern-input-small">
+                </div>
+                <hr class="divider"/>
+                <label style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 0.25rem;">Element Taper</label>
+                <div class="taper-buttons">
+                  <button class="btn btn-outline" id="taper-rect">Rect</button>
+                  <button class="btn btn-outline" id="taper-hann">Hann</button>
+                  <button class="btn btn-outline active" id="taper-black">Black</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. Processing -->
+            <div class="accordion-item">
+              <button class="accordion-header" title="FFT window, dB floor, and velocity range"><span class="accordion-icon" data-icon="2"></span> Processing <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">FFT Window</label>
+                  <span style="flex:1;"></span>
+                  <select id="fft-window" class="modern-select" style="flex:0 0 auto; width:120px;">
+                    <option value="hann">Hann</option>
+                    <option value="hamming">Hamming</option>
+                    <option value="blackman" selected>Blackman</option>
+                    <option value="rect">None</option>
+                  </select>
+                </div>
+                <div class="control-group combo-group mt-2">
+                  <label>dB Floor</label>
+                  <div class="combo-inputs">
+                    <input type="range" id="db-floor" min="-140" max="-20" step="1" value="-100" class="modern-slider">
+                    <input type="number" id="val-db-floor" min="-140" max="-20" step="1" value="-100" class="modern-input-small">
+                  </div>
+                </div>
+                <div class="control-group combo-group mt-2">
+                  <label>dB Ceiling</label>
+                  <div class="combo-inputs">
+                    <input type="range" id="db-ceil" min="-100" max="20" step="1" value="0" class="modern-slider">
+                    <input type="number" id="val-db-ceil" min="-100" max="20" step="1" value="0" class="modern-input-small">
+                  </div>
+                </div>
+                <div class="control-group combo-group mt-2">
+                  <label>Velocity Max (m/s)</label>
+                  <div class="combo-inputs">
+                    <input type="range" id="vel-max" min="1" max="200" step="1" value="20" class="modern-slider">
+                    <input type="number" id="val-vel-max" min="1" max="200" step="1" value="20" class="modern-input-small">
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. Display -->
+            <div class="accordion-item">
+              <button class="accordion-header" title="Waterfall depth and theme"><span class="accordion-icon" data-icon="3"></span> Display <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="control-group combo-group">
+                  <label>Waterfall Depth</label>
+                  <div class="combo-inputs">
+                    <input type="range" id="waterfall-depth" min="20" max="200" step="10" value="50" class="modern-slider">
+                    <input type="number" id="val-waterfall-depth" min="20" max="200" step="10" value="50" class="modern-input-small">
+                  </div>
+                </div>
+                <label class="toggle-container mt-2">
+                  <span>Auto-Scale dB</span>
+                  <input type="checkbox" id="opt-autoscale">
+                  <span class="checkmark"></span>
+                </label>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Theme Toggle (bottom of sidebar) -->
+          <div class="sidebar-footer">
+            <button class="btn btn-outline btn-small theme-toggle" id="btn-theme-toggle" title="Switch theme" aria-label="Switch theme">
+              <span class="theme-icon">☾</span>
+              <span class="theme-label">Dark Mode</span>
+            </button>
+          </div>
+
+        </div>
+
+      </aside>
+
+      <!-- Right Graph Panel (Tabs) -->
+      <section class="graph-panel glass-panel flex-grow">
+        <div class="header-with-tabs">
+          <div class="header-left">
+            <span class="app-wordmark">ADI <strong>Phaser Radar</strong></span>
+            <div class="tab-list">
+              <button class="tab-btn active" data-target="tab-waterfall">Waterfall</button>
+              <button class="tab-btn" data-target="tab-spectrum">Spectrum</button>
+              <button class="tab-btn" data-target="tab-time">Time-Domain</button>
+              <button class="tab-btn" data-target="tab-logs">Logs</button>
+            </div>
+          </div>
+          <div class="header-actions">
+            <button class="btn btn-primary btn-header-sweep" id="btn-radar">Start CW</button>
+          </div>
+        </div>
+
+        <div class="plots-stack">
+          <div class="chart-wrapper tab-content active" id="tab-waterfall">
+            <div id="chart-waterfall" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-spectrum">
+            <div id="chart-spectrum" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-time">
+            <div id="chart-time" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-logs">
+            <div class="logs-pane">
+              <div class="logs-toolbar">
+                <span class="logs-title">Runtime Logs</span>
+                <button class="btn btn-outline btn-small" id="btn-clear-logs">Clear</button>
+              </div>
+              <div id="log-console" class="log-console" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chart-stats">
+          <div class="stat-box">
+            <span class="stat-label">Peak Velocity</span>
+            <span class="stat-value" id="stat-peak-vel">-- m/s</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">Peak Magnitude</span>
+            <span class="stat-value" id="stat-peak-mag">-- dB</span>
+          </div>
+          <div class="stats-spacer"></div>
+          <div class="status-indicator">
+            <div class="dot disconnected" id="connection-dot"></div>
+            <span id="connection-text">Disconnected</span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

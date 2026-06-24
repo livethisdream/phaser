@@ -18,6 +18,7 @@ DEFAULT_HOST = "phaser.local"
 DEFAULT_USER = "analog"
 REMOTE_DIR = "/home/analog/pyadi-iio/examples/phaser"
 REMOTE_WWW = f"{REMOTE_DIR}/frontend/dist"
+REMOTE_RADAR_WWW = f"{REMOTE_DIR}/frontend-radar/dist"
 
 def run(cmd, cwd=None, check=True):
     """Run a command and print it."""
@@ -32,21 +33,28 @@ def main():
     script_dir = Path(__file__).parent.resolve()
     frontend_dir = script_dir / "frontend"
     dist_dir = frontend_dir / "dist"
+    radar_dir = script_dir / "frontend-radar"
+    radar_dist_dir = radar_dir / "dist"
 
     # Parse args
     build_only = "--build-only" in sys.argv
+    skip_radar = "--no-radar" in sys.argv
     host = DEFAULT_HOST
     for arg in sys.argv[1:]:
         if not arg.startswith("--"):
             host = arg
             break
 
+    radar_present = (radar_dir / "package.json").exists() and not skip_radar
+
     print("=" * 60)
-    print("  Phaser Beamforming Deployment")
+    print("  Phaser Deployment")
+    if radar_present:
+        print("  (beamforming app + radar app)")
     print("=" * 60)
 
-    # Step 1: Build frontend
-    print("\n[1/4] Building frontend...")
+    # Step 1: Build frontend(s)
+    print("\n[1/4] Building frontend(s)...")
     if not (frontend_dir / "package.json").exists():
         print("  ERROR: frontend/package.json not found")
         sys.exit(1)
@@ -55,7 +63,14 @@ def main():
     if not (dist_dir / "index.html").exists():
         print("  ERROR: Build failed - dist/index.html not found")
         sys.exit(1)
-    print("  OK: Frontend built")
+    print("  OK: Beamforming frontend built")
+
+    if radar_present:
+        run("npm run build", cwd=radar_dir)
+        if not (radar_dist_dir / "index.html").exists():
+            print("  ERROR: Radar build failed - frontend-radar/dist/index.html not found")
+            sys.exit(1)
+        print("  OK: Radar frontend built")
 
     if build_only:
         print("\n--build-only specified, skipping deployment.")
@@ -67,6 +82,7 @@ def main():
         "phaser_headless.py",
         "phaser_cal_headless.py",
         "phaser_find_hb100_headless.py",
+        "phaser_cw_radar.py",
     ]
     for filename in backend_files:
         py_file = script_dir / filename
@@ -76,11 +92,16 @@ def main():
         else:
             print(f"  SKIP: {filename} not found")
 
-    # Step 3: Copy frontend
+    # Step 3: Copy frontend(s)
     print(f"\n[3/4] Copying frontend to {host}:{REMOTE_WWW}/...")
     run(f'ssh {DEFAULT_USER}@{host} "mkdir -p {REMOTE_WWW}"')
     run(f'scp -r "{dist_dir}"/* {DEFAULT_USER}@{host}:{REMOTE_WWW}/')
-    print("  OK: Frontend copied")
+    print("  OK: Beamforming frontend copied")
+
+    if radar_present:
+        run(f'ssh {DEFAULT_USER}@{host} "mkdir -p {REMOTE_RADAR_WWW}"')
+        run(f'scp -r "{radar_dist_dir}"/* {DEFAULT_USER}@{host}:{REMOTE_RADAR_WWW}/')
+        print("  OK: Radar frontend copied")
 
     # Step 4: Restart service
     print(f"\n[4/4] Restarting phaser-headless service...")
@@ -98,7 +119,9 @@ def main():
     # Done
     print("\n" + "=" * 60)
     print(f"  Deployment complete!")
-    print(f"  Open http://{host}:8080 in your browser")
+    print(f"  Beamforming UI: http://{host}:8080")
+    if radar_present:
+        print(f"  Radar UI:       http://{host}:8081")
     print("=" * 60)
 
 if __name__ == "__main__":

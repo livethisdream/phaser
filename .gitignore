@@ -72,6 +72,12 @@ start*.py
 .python-version
 AGENTS.md
 
+# Generated knowledge graph
+graphify-out/
+
+# Local backups
+*.bak
+
 # Documentation artifacts (generated)
 COMPLETE_SOLUTION.md
 DELIVERY_SUMMARY.md
