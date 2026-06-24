@@ -14,10 +14,10 @@ import os
 from pathlib import Path
 
 # Default Pi settings
-DEFAULT_HOST = "192.168.86.20"
+DEFAULT_HOST = "phaser.local"
 DEFAULT_USER = "analog"
 REMOTE_DIR = "/home/analog/pyadi-iio/examples/phaser"
-REMOTE_WWW = f"{REMOTE_DIR}/www"
+REMOTE_WWW = f"{REMOTE_DIR}/frontend/dist"
 
 def run(cmd, cwd=None, check=True):
     """Run a command and print it."""
