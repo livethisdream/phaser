@@ -57,15 +57,30 @@ except ImportError:
 from phaser_functions import load_hb100_cal
 from SDR_functions import load_channel_cal
 
+import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
+
 
 class PhaserHeadless:
-    def __init__(self, pub_port=5555, rep_port=5556, ws_port=8765, http_port=8080):
+    def __init__(self, pub_port=5555, rep_port=5556, ws_port=8765, http_port=8080,
+                 radar_http_port=8081):
         self.pub_port = pub_port
         self.rep_port = rep_port
         self.ws_port = ws_port
         self.http_port = http_port
+        self.radar_http_port = radar_http_port
         self.running = False
+
+        # Mode dispatcher: "idle" | "sweep" | "cw_radar".
+        # `self.sweeping` is kept as a literal attribute for backwards compatibility
+        # with existing handlers and any code that assigns to it directly.
+        # _set_mode() keeps the two in sync.
+        self.mode = "idle"
         self.sweeping = False
+
+        # CW radar runtime state
+        self.cw_params = {}                # effective config (after defaults)
+        self.cw_saved_sdr = {}              # snapshot for restoration
+        self.cw_lock = threading.Lock()    # serialize mode transitions
 
         # WebSocket clients
         self.ws_clients = set()
@@ -362,6 +377,111 @@ class PhaserHeadless:
             "peak_signal": float(max_signal),
         }
 
+    # --- Mode dispatcher --------------------------------------------------
+
+    def _set_mode(self, new_mode):
+        """Single source of truth for mode transitions.
+
+        Handles hardware reconfiguration when entering/leaving CW radar mode,
+        and keeps `self.sweeping` in sync with `self.mode` for legacy code.
+        """
+        if new_mode == self.mode:
+            return {"status": "ok", "mode": self.mode}
+
+        with self.cw_lock:
+            # Leave current mode
+            if self.mode == "cw_radar":
+                try:
+                    phaser_cw_radar.exit_cw_mode(self.sdr, self.cw_saved_sdr)
+                except Exception as e:
+                    print(f"[CW] exit_cw_mode failed: {e}")
+                self.cw_saved_sdr = {}
+
+            # Enter new mode
+            if new_mode == "cw_radar":
+                try:
+                    self.cw_saved_sdr = {}
+                    self.cw_params = phaser_cw_radar.enter_cw_mode(
+                        self.sdr, self.cw_params, self.cw_saved_sdr
+                    )
+                except Exception as e:
+                    print(f"[CW] enter_cw_mode failed: {e}")
+                    self.mode = "idle"
+                    self.sweeping = False
+                    return {"status": "error", "message": f"enter_cw_mode failed: {e}"}
+
+            self.mode = new_mode
+            self.sweeping = (new_mode == "sweep")
+            print(f"[MODE] -> {new_mode}")
+            return {"status": "ok", "mode": new_mode}
+
+    # --- CW Radar handlers ------------------------------------------------
+
+    def start_cw_radar(self, params):
+        """Switch to CW radar mode. If a sweep is running, it is stopped first."""
+        # Merge requested params on top of stored ones (with defaults applied later
+        # by phaser_cw_radar.enter_cw_mode).
+        if params:
+            self.cw_params = {**(self.cw_params or {}), **params}
+        return self._set_mode("cw_radar")
+
+    def stop_cw_radar(self):
+        """Leave CW radar mode (back to idle)."""
+        if self.mode != "cw_radar":
+            return {"status": "ok", "mode": self.mode}
+        return self._set_mode("idle")
+
+    def set_cw_radar_params(self, params):
+        """Live-update CW radar parameters. If running, applies on the next frame
+        for processing-only changes (window, etc.); hardware changes (sample rate,
+        FFT size, gains, freqs) require a stop/start cycle."""
+        if not params:
+            return {"status": "ok"}
+        self.cw_params = {**(self.cw_params or {}), **params}
+        # Apply gain changes live if running
+        if self.mode == "cw_radar":
+            try:
+                if "rx_gain" in params:
+                    self.sdr.rx_hardwaregain_chan0 = int(params["rx_gain"])
+                    if hasattr(self.sdr, "rx_hardwaregain_chan1"):
+                        try:
+                            self.sdr.rx_hardwaregain_chan1 = int(params["rx_gain"])
+                        except Exception:
+                            pass
+                if "tx_gain" in params and hasattr(self.sdr, "tx_hardwaregain_chan1"):
+                    try:
+                        self.sdr.tx_hardwaregain_chan1 = int(params["tx_gain"])
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"[CW] live param update failed: {e}")
+                return {"status": "error", "message": str(e)}
+        return {"status": "ok", "params": self.cw_params}
+
+    def get_cw_radar_state(self):
+        """Return current CW radar config and mode."""
+        cfg = {**phaser_cw_radar.DEFAULTS, **(self.cw_params or {})}
+        return {
+            "status": "ok",
+            "data": {
+                "mode": self.mode,
+                "running": self.mode == "cw_radar",
+                "params": cfg,
+            },
+        }
+
+    def do_cw_radar_frame(self):
+        """Capture and process a single CW radar frame. Returns the broadcast payload."""
+        cfg = {**phaser_cw_radar.DEFAULTS, **(self.cw_params or {})}
+        iq = phaser_cw_radar.capture_cw_frame(self.sdr)
+        return phaser_cw_radar.process_cw_frame(
+            iq,
+            fs=cfg["sample_rate"],
+            signal_freq=cfg["signal_freq"],
+            output_freq=cfg["output_freq"],
+            fft_window=cfg.get("fft_window", "blackman"),
+        )
+
     def get_state(self):
         """Return current configuration state"""
         return {
@@ -481,9 +601,12 @@ class PhaserHeadless:
         self.cal_task = task_name
         self.cal_log = []
 
-        # Need to stop sweeping during calibration
+        # Need to stop any active mode during calibration. _set_mode handles
+        # CW teardown (restoring SDR state) before the calibration subprocess
+        # tries to grab the hardware.
         was_sweeping = self.sweeping
-        self.sweeping = False
+        if self.mode != "idle":
+            self._set_mode("idle")
 
         try:
             env = os.environ.copy()
@@ -594,12 +717,14 @@ class PhaserHeadless:
             return self.get_state()
 
         elif cmd == "start_sweep":
-            self.sweeping = True
-            return {"status": "ok"}
+            return self._set_mode("sweep")
 
         elif cmd == "stop_sweep":
+            if self.mode == "sweep":
+                return self._set_mode("idle")
+            # Even if we're idle or in cw_radar, ensure sweeping is False.
             self.sweeping = False
-            return {"status": "ok"}
+            return {"status": "ok", "mode": self.mode}
 
         elif cmd == "set_rx_gain":
             return self.set_rx_gain(data.get("gain", self.Rx_gain))
@@ -669,6 +794,18 @@ class PhaserHeadless:
         elif cmd == "cancel_calibration":
             return self.cancel_calibration()
 
+        elif cmd == "start_cw_radar":
+            return self.start_cw_radar(data)
+
+        elif cmd == "stop_cw_radar":
+            return self.stop_cw_radar()
+
+        elif cmd == "set_cw_radar_params":
+            return self.set_cw_radar_params(data)
+
+        elif cmd == "get_cw_radar_state":
+            return self.get_cw_radar_state()
+
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}
 
@@ -707,10 +844,14 @@ class PhaserHeadless:
         http_thread = threading.Thread(target=self._http_server, daemon=True)
         http_thread.start()
 
-        print("Starting sweep loop... (Ctrl+C to stop)")
+        # Start radar HTTP server (separate port, independent of main HTTP server)
+        radar_http_thread = threading.Thread(target=self._radar_http_server, daemon=True)
+        radar_http_thread.start()
+
+        print("Starting main loop... (Ctrl+C to stop)")
 
         while self.running:
-            if self.sweeping:
+            if self.mode == "sweep":
                 try:
                     sweep_data = self.do_sweep()
 
@@ -735,6 +876,28 @@ class PhaserHeadless:
                     }
                     self.pub_socket.send(msgpack.packb(frame, use_bin_type=True))
                     self.broadcast_to_ws(frame)
+
+            elif self.mode == "cw_radar":
+                try:
+                    radar_data = self.do_cw_radar_frame()
+                    frame = {
+                        "type": "cw_radar_frame",
+                        "timestamp": time.time(),
+                        "data": radar_data,
+                    }
+                    # Broadcast to WebSocket clients (skip ZMQ — desktop clients don't use radar)
+                    self.broadcast_to_ws(frame)
+                except Exception as e:
+                    print(f"CW radar error: {e}")
+                    self.broadcast_to_ws({
+                        "type": "error",
+                        "source": "cw_radar",
+                        "timestamp": time.time(),
+                        "message": str(e),
+                    })
+                    # Brief pause on error so we don't tight-loop
+                    time.sleep(0.1)
+
             else:
                 time.sleep(0.1)
 
@@ -844,11 +1007,71 @@ class PhaserHeadless:
 
         server.server_close()
 
+    def _radar_http_server(self):
+        """Serve the radar app static frontend on a separate port.
+
+        Independent of the main HTTP server so a misconfiguration here can't
+        affect the existing beamforming UI's serving path.
+        """
+        if not self.radar_http_port:
+            return
+
+        script_dir = Path(__file__).parent
+        possible_paths = [
+            script_dir / "frontend-radar" / "dist",
+            script_dir / "frontend-radar",
+        ]
+
+        www_dir = None
+        for p in possible_paths:
+            if p.exists() and (p / "index.html").exists():
+                www_dir = p
+                break
+
+        if www_dir is None:
+            print(f"[RADAR-HTTP] No radar frontend found; skipping radar HTTP server")
+            return
+
+        print(f"[RADAR-HTTP] Serving radar static files from {www_dir}")
+
+        class RadarHandler(SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(www_dir), **kwargs)
+
+            def log_message(self, format, *args):
+                pass
+
+            def end_headers(self):
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+                self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+                super().end_headers()
+
+        try:
+            server = HTTPServer(("0.0.0.0", self.radar_http_port), RadarHandler)
+        except OSError as e:
+            print(f"[RADAR-HTTP] Failed to bind port {self.radar_http_port}: {e}")
+            return
+
+        print(f"Radar HTTP server on port {self.radar_http_port}")
+
+        while self.running:
+            server.handle_request()
+
+        server.server_close()
+
     def stop(self):
         """Stop the server"""
         print("Shutting down...")
+        # Cleanly leave any active mode so SDR state is restored.
+        try:
+            if getattr(self, "mode", "idle") == "cw_radar":
+                self._set_mode("idle")
+        except Exception as e:
+            print(f"[CW] cleanup on stop failed: {e}")
         self.running = False
         self.sweeping = False
+        self.mode = "idle"
 
         # Kill any running calibration
         if self.cal_process and self.cal_process.poll() is None:
@@ -866,6 +1089,8 @@ def main():
     parser.add_argument("--rep-port", type=int, default=5556, help="ZMQ REP port")
     parser.add_argument("--ws-port", type=int, default=8765, help="WebSocket port")
     parser.add_argument("--http-port", type=int, default=8080, help="HTTP port for static files")
+    parser.add_argument("--radar-http-port", type=int, default=8081,
+                        help="HTTP port for radar app static files (0 to disable)")
     args = parser.parse_args()
 
     print(f"""
@@ -876,6 +1101,7 @@ def main():
 ║  ZMQ REP:    tcp://*:{args.rep_port:<5}  (commands)                   ║
 ║  WebSocket:  ws://*:{args.ws_port:<5}   (browser clients)            ║
 ║  HTTP:       http://*:{args.http_port:<5} (web UI)                     ║
+║  Radar HTTP: http://*:{args.radar_http_port:<5} (radar UI)                   ║
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
@@ -883,7 +1109,8 @@ def main():
         pub_port=args.pub_port,
         rep_port=args.rep_port,
         ws_port=args.ws_port,
-        http_port=args.http_port
+        http_port=args.http_port,
+        radar_http_port=args.radar_http_port,
     )
 
     def signal_handler(sig, frame):
