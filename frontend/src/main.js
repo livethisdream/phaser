@@ -502,6 +502,8 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         const targetId = button.getAttribute('data-target');
         document.getElementById(targetId).classList.add('active');
 
+        updateMemoryButtons();
+
         // Defer resize until after the browser has painted the newly-visible tab,
         // preventing the one-frame layout jump that occurs when Plotly measures
         // a container that was display:none at initialization time.
@@ -520,6 +522,229 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         });
     });
 });
+
+/* --- Memory Snapshots (Rectangular + Polar) -------------------------------
+ * Capture up to 3 snapshots of the live Sum trace as faded overlays for
+ * before/after comparisons when changing beam parameters. FIFO eviction —
+ * a 4th press drops the oldest. "Clear" removes all at once.
+ */
+const MEMORY_MAX = 3;
+const MEMORY_COLORS = ['#f59e0b', '#06b6d4', '#ec4899'];  // amber / cyan / magenta
+const memorySlots = [];  // each: { label, x: [...], y: [...], color }
+let lastLiveTrace = { x: null, y: null };  // most recently drawn Sum data
+
+function memoryActiveOnTab() {
+    const active = document.querySelector('.tab-btn.active');
+    const target = active?.getAttribute('data-target');
+    return target === 'tab-rect' || target === 'tab-polar';
+}
+
+function updateMemoryButtons() {
+    const memBtn = document.getElementById('btn-memory');
+    const onMemTab = memoryActiveOnTab();
+    // Allow click-to-freeze whenever there is live data on the right tab.
+    // Long-press still clears whenever snapshots exist, even with no live data.
+    if (memBtn) {
+        const canFreeze = onMemTab && lastLiveTrace.x && lastLiveTrace.x.length;
+        const canClear = onMemTab && memorySlots.length > 0;
+        memBtn.disabled = !(canFreeze || canClear);
+    }
+}
+
+function indexOfMax(arr) {
+    let best = 0;
+    for (let i = 1; i < arr.length; i++) if (arr[i] > arr[best]) best = i;
+    return best;
+}
+
+function rebuildMemoryTraces() {
+    // Drop any existing memory traces (everything past the live ones), then
+    // re-add from `memorySlots`. Labels are rendered separately as absolutely
+    // positioned HTML bubbles (see positionFreezeBubbles).
+    const rectEl = document.getElementById('chart-rect');
+    const polarEl = document.getElementById('chart-polar');
+
+    if (rectEl && rectEl.data) {
+        const liveCount = 3;  // Sum, Delta, Error
+        const extras = rectEl.data.length - liveCount;
+        if (extras > 0) {
+            const indices = [];
+            for (let i = 0; i < extras; i++) indices.push(liveCount + i);
+            try { Plotly.deleteTraces('chart-rect', indices); } catch (e) { /* ignore */ }
+        }
+        if (memorySlots.length) {
+            const newRectTraces = memorySlots.map((slot) => ({
+                x: slot.x,
+                y: slot.y,
+                type: 'scatter',
+                mode: 'lines',
+                name: slot.label,
+                line: { color: slot.color, width: 1.5, dash: 'dot' },
+                opacity: 0.7,
+                hoverinfo: 'skip',
+                showlegend: false,
+            }));
+            try { Plotly.addTraces('chart-rect', newRectTraces); } catch (e) { /* ignore */ }
+        }
+    }
+
+    if (polarEl && polarEl.data) {
+        const liveCount = 1;
+        const extras = polarEl.data.length - liveCount;
+        if (extras > 0) {
+            const indices = [];
+            for (let i = 0; i < extras; i++) indices.push(liveCount + i);
+            try { Plotly.deleteTraces('chart-polar', indices); } catch (e) { /* ignore */ }
+        }
+        if (memorySlots.length) {
+            const newPolarTraces = memorySlots.map((slot) => ({
+                r: slot.y,
+                theta: slot.x.map(toPolarTheta),
+                type: 'scatterpolar',
+                mode: 'lines',
+                name: slot.label,
+                line: { color: slot.color, width: 1.5, dash: 'dot' },
+                opacity: 0.7,
+                hoverinfo: 'skip',
+                showlegend: false,
+            }));
+            try { Plotly.addTraces('chart-polar', newPolarTraces); } catch (e) { /* ignore */ }
+        }
+    }
+
+    positionFreezeBubbles();
+}
+
+/* HTML-overlay freeze labels — small rounded pills positioned absolutely
+   within each chart wrapper at the peak of each frozen trace. Updated:
+     - when memorySlots changes (capture/clear/eviction)
+     - on Plotly relayout (axis range changes, theme toggles)
+     - on window resize and sidebar collapse (chart resizes)
+*/
+function ensureFreezeBubbles(wrapperId) {
+    const wrapper = document.getElementById(wrapperId);
+    if (!wrapper) return null;
+    let layer = wrapper.querySelector('.freeze-bubble-layer');
+    if (!layer) {
+        layer = document.createElement('div');
+        layer.className = 'freeze-bubble-layer';
+        wrapper.appendChild(layer);
+    }
+    return layer;
+}
+
+function renderFreezeStack(wrapperId) {
+    // Render the freeze pills as a fixed top-right legend stack on the chart
+    // wrapper, just below Plotly's existing legend. Order is ascending by
+    // capture index (oldest "1" on top, newest at the bottom).
+    const layer = ensureFreezeBubbles(wrapperId);
+    if (!layer) return;
+    layer.innerHTML = '';
+    memorySlots.forEach((slot) => {
+        const bubble = document.createElement('div');
+        bubble.className = 'freeze-bubble';
+        bubble.style.background = slot.color;
+        bubble.textContent = slot.label;
+        layer.appendChild(bubble);
+    });
+}
+
+function positionFreezeBubbles() {
+    renderFreezeStack('tab-rect');
+    renderFreezeStack('tab-polar');
+}
+
+// Re-position bubbles whenever Plotly relayouts (zoom/pan/theme/resize).
+['chart-rect', 'chart-polar'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el && el.on) {
+        el.on('plotly_relayout', positionFreezeBubbles);
+        el.on('plotly_afterplot', positionFreezeBubbles);
+    }
+});
+window.addEventListener('resize', positionFreezeBubbles);
+
+function captureFreezeSnapshot() {
+    if (!lastLiveTrace.x || !lastLiveTrace.x.length) return false;
+    const x = lastLiveTrace.x.slice();
+    const y = lastLiveTrace.y.slice();
+    if (memorySlots.length >= MEMORY_MAX) memorySlots.shift();  // FIFO evict
+    memorySlots.push({ x, y, color: '_pending', label: '_pending' });
+    memorySlots.forEach((slot, i) => {
+        slot.label = `${i + 1}`;
+        slot.color = MEMORY_COLORS[i % MEMORY_COLORS.length];
+    });
+    rebuildMemoryTraces();
+    updateMemoryButtons();
+    return true;
+}
+
+function clearFreezeSnapshots() {
+    if (memorySlots.length === 0) return false;
+    memorySlots.length = 0;
+    rebuildMemoryTraces();
+    updateMemoryButtons();
+    return true;
+}
+
+/* Freeze button: short click captures a snapshot, long-press (~700 ms) clears
+   all snapshots. A CSS overlay fills the button during the hold to telegraph
+   the imminent clear. Releasing before the timer fires aborts. */
+const FREEZE_HOLD_MS = 700;
+(() => {
+    const btn = document.getElementById('btn-memory');
+    if (!btn) return;
+    let holdTimer = null;
+    let suppressClick = false;
+    let pointerActive = false;
+
+    const startHold = () => {
+        if (memorySlots.length === 0) return;  // nothing to clear → don't arm
+        if (holdTimer) clearTimeout(holdTimer);
+        btn.classList.add('holding');
+        holdTimer = setTimeout(() => {
+            holdTimer = null;
+            btn.classList.remove('holding');
+            if (clearFreezeSnapshots()) {
+                btn.classList.add('flash');
+                setTimeout(() => btn.classList.remove('flash'), 260);
+            }
+            suppressClick = true;  // swallow the click that follows pointerup
+        }, FREEZE_HOLD_MS);
+    };
+
+    const cancelHold = () => {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+        btn.classList.remove('holding');
+    };
+
+    btn.addEventListener('pointerdown', (e) => {
+        if (btn.disabled) return;
+        if (e.button !== undefined && e.button !== 0) return;  // left/primary only
+        pointerActive = true;
+        suppressClick = false;
+        startHold();
+    });
+    btn.addEventListener('pointerup', () => { pointerActive = false; cancelHold(); });
+    btn.addEventListener('pointercancel', () => { pointerActive = false; cancelHold(); });
+    btn.addEventListener('pointerleave', () => { if (pointerActive) cancelHold(); pointerActive = false; });
+
+    btn.addEventListener('click', (e) => {
+        if (suppressClick) { suppressClick = false; return; }
+        captureFreezeSnapshot();
+    });
+
+    // Keyboard accessibility: Enter/Space = capture; long-press is mouse/touch only.
+    btn.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && !btn.disabled) {
+            e.preventDefault();
+            captureFreezeSnapshot();
+        }
+    });
+})();
+
+// Initial state: nothing captured yet, on-tab gating only.
+updateMemoryButtons();
 
 
 /* --- Initialize Sliders --- */
@@ -711,6 +936,28 @@ function updateBeamSquintDisplay() {
 }
 
 document.getElementById('opt-show-squint')?.addEventListener('change', updateBeamSquintDisplay);
+
+/* --- Show Logs Tab toggle --- */
+const LOGS_TAB_KEY = 'phaser_show_logs_tab';
+function applyLogsTabVisibility(show) {
+    const tabBtn = document.getElementById('tab-btn-logs');
+    if (tabBtn) tabBtn.hidden = !show;
+    // If the user hides the Logs tab while it's the active one, switch to Rect.
+    if (!show && tabBtn?.classList.contains('active')) {
+        document.querySelector('.tab-btn[data-target="tab-rect"]')?.click();
+    }
+}
+const showLogsToggle = document.getElementById('opt-show-logs');
+if (showLogsToggle) {
+    const stored = localStorage.getItem(LOGS_TAB_KEY) === '1';
+    showLogsToggle.checked = stored;
+    applyLogsTabVisibility(stored);
+    showLogsToggle.addEventListener('change', (e) => {
+        const on = !!e.target.checked;
+        localStorage.setItem(LOGS_TAB_KEY, on ? '1' : '0');
+        applyLogsTabVisibility(on);
+    });
+}
 
 const bwSlider = document.getElementById('bw');
 const bwInput = document.getElementById('val-bw');
@@ -931,13 +1178,15 @@ Plotly.newPlot('chart-rect', [
         title: 'Steering Angle (°)',
         gridcolor: getPlotPalette().gridColor,
         griddash: 'dash',
-        range: [-90, 90]
+        range: [-90, 90],
+        autorange: false
     },
     yaxis: {
         title: 'Magnitude (dBFS)',
         gridcolor: getPlotPalette().gridColor,
         griddash: 'dash',
-        range: [-50, 0]
+        range: [-50, 0],
+        autorange: false
     },
     yaxis2: {
         title: 'Error Function',
@@ -963,6 +1212,7 @@ Plotly.newPlot('chart-polar', [{
         radialaxis: {
             visible: true,
             range: [-50, 0],
+            autorange: false,
             dtick: 10,
             angle: 90,
             tickangle: 90,
@@ -1010,15 +1260,18 @@ function updatePlotLimits() {
     const yMin = parseFloat(document.getElementById('val-ymin').value);
     const yMax = parseFloat(document.getElementById('val-ymax').value);
     
-    // Update Cartesian Axes
+    // Update Cartesian Axes (force autorange off so traces don't re-trigger
+    // autoscaling on every redraw or addTraces call).
     Plotly.relayout('chart-rect', {
         'xaxis.range': [xMin, xMax],
-        'yaxis.range': [yMin, yMax]
+        'xaxis.autorange': false,
+        'yaxis.range': [yMin, yMax],
+        'yaxis.autorange': false
     });
-    
-    // Auto-calculate appropriate radial range from Y-Mins for Polar
+
     Plotly.relayout('chart-polar', {
-        'polar.radialaxis.range': [yMin, yMax]
+        'polar.radialaxis.range': [yMin, yMax],
+        'polar.radialaxis.autorange': false
     });
 }
 updatePlotLimits();
@@ -1474,6 +1727,8 @@ startCalibrationPolling();
 let simModeActive = false;
 const simBtn = document.getElementById('btn-sim-mode');
 if (simBtn && window.electronAPI?.startSim) {
+    // Reveal: HTML hides it by default so the button never flashes in browser mode.
+    simBtn.hidden = false;
     // Listen for sim status changes
     window.electronAPI.onSimStatus?.((status) => {
         simModeActive = status.running;
@@ -1737,6 +1992,10 @@ function updateCharts(data) {
         }
         axisUpdate.shapes = shapes;
         
+        // Snapshot the live Sum trace for the Memory feature.
+        lastLiveTrace = { x: xData.slice(), y: yData.slice() };
+        updateMemoryButtons();
+
         // Update rectangular plot (Sum beam)
         const rectEl = document.getElementById('chart-rect');
         if (rectEl && rectEl.data && rectEl.data[0]) {

@@ -811,6 +811,68 @@ input[type=number]::-webkit-outer-spin-button {
   border: 1px solid #dc2626;
   color: #fff;
 }
+
+/* Freeze label legend stack — fixed in the top-right of each chart wrapper,
+   positioned just under Plotly's existing legend. Each pill is colored to
+   match its frozen trace; oldest is at the top, newest at the bottom. */
+.freeze-bubble-layer {
+  position: absolute;
+  top: 56px;        /* sits below Plotly's legend (Sum entry) */
+  right: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 5;
+}
+.freeze-bubble {
+  color: #fff;
+  padding: 0.18rem 0.55rem;
+  border-radius: 12px;
+  font-family: 'Outfit', sans-serif;
+  font-weight: 700;
+  font-size: 0.85rem;
+  line-height: 1;
+  min-width: 1.4rem;
+  text-align: center;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+}
+
+/* Freeze button (header) — single click captures, long-press clears.
+   The .btn-freeze-fill is an absolute overlay that grows left→right during
+   the long-press, signaling the imminent clear. */
+.btn-freeze {
+  position: relative;
+  overflow: hidden;
+}
+.btn-freeze-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: rgba(239, 68, 68, 0.55);
+  pointer-events: none;
+  border-radius: inherit;
+  transition: width 0s linear;
+}
+.btn-freeze.holding .btn-freeze-fill {
+  width: 100%;
+  transition: width 700ms linear;
+}
+.btn-freeze.flash {
+  animation: btn-freeze-flash 240ms ease-out;
+}
+.btn-freeze-label {
+  position: relative;
+  z-index: 1;
+}
+@keyframes btn-freeze-flash {
+  0%   { background: rgba(239, 68, 68, 0.4); }
+  100% { background: transparent; }
+}
+
 .btn-danger:hover {
   background: #dc2626;
   border-color: #b91c1c;

@@ -236,9 +236,13 @@ class PhaserHeadless:
         # Beam squint: BW offset (MHz) for phase calculation
         self.BW = 0  # When > 0, phases calculated for (SignalFreq - BW*1e6)
 
-        # Digital beam gains (for hybrid beamforming / monopulse)
-        self.B0_Gain = 1.0  # Beam 0 (elements 5-8) digital gain
-        self.B1_Gain = 1.0  # Beam 1 (elements 1-4) digital gain
+        # Digital beam weights — complex w_k = gain * exp(j*phase) applied
+        # to each digital channel before summing. The two analog sub-arrays
+        # (chan0, chan1) become a 2-element digital array.
+        self.B0_Gain = 1.0
+        self.B1_Gain = 1.0
+        self.Beam0_Phase = 0.0  # degrees
+        self.Beam1_Phase = 0.0  # degrees
 
         print("Hardware Initialization Complete.")
 
@@ -300,9 +304,13 @@ class PhaserHeadless:
                 chan1 = data[0]
                 chan2 = data[1]
 
-                # Apply digital beam gains (B0_Gain, B1_Gain)
-                chan1 = chan1 * self.B0_Gain
-                chan2 = chan2 * self.B1_Gain
+                # Apply digital beamforming complex weights w_k = B_k * exp(j*phase_k).
+                # This is the conventional (manual) digital beamformer: two complex
+                # scalars applied to the two digital channels before summing.
+                w0 = self.B0_Gain * np.exp(1j * np.deg2rad(self.Beam0_Phase))
+                w1 = self.B1_Gain * np.exp(1j * np.deg2rad(self.Beam1_Phase))
+                chan1 = chan1 * w0
+                chan2 = chan2 * w1
 
                 # Sum and delta beams
                 sum_chan = chan1 + chan2
@@ -502,6 +510,8 @@ class PhaserHeadless:
                 "BW": self.BW,
                 "B0_Gain": self.B0_Gain,
                 "B1_Gain": self.B1_Gain,
+                "Beam0_Phase": self.Beam0_Phase,
+                "Beam1_Phase": self.Beam1_Phase,
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
             }
@@ -772,6 +782,10 @@ class PhaserHeadless:
                 self.B0_Gain = float(state["B0_Gain"])
             if "B1_Gain" in state:
                 self.B1_Gain = float(state["B1_Gain"])
+            if "Beam0_Phase" in state:
+                self.Beam0_Phase = float(state["Beam0_Phase"])
+            if "Beam1_Phase" in state:
+                self.Beam1_Phase = float(state["Beam1_Phase"])
             # Handle phase_step: ignore_res=true uses bits, ignore_res=false uses steer_res
             ignore_res = state.get("ignore_res", True)
             if ignore_res:

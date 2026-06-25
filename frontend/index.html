@@ -269,6 +269,7 @@
                     <label class="toggle-container" style="justify-content:space-between;"><span>Show Peak Gain Marker</span><input type="checkbox" id="opt-peak-gain"><span class="checkmark"></span></label>
                     <label class="toggle-container mt-4" style="justify-content:space-between;"><span>Show Peak Angle Marker</span><input type="checkbox" id="opt-peak-angle"><span class="checkmark"></span></label>
                     <label class="toggle-container mt-4" style="justify-content:space-between;"><span>Show Beam Squint Info</span><input type="checkbox" id="opt-show-squint"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4" style="justify-content:space-between;"><span>Show Logs Tab</span><input type="checkbox" id="opt-show-logs"><span class="checkmark"></span></label>
 
                     <hr class="divider"/>
                     <div style="display:grid; grid-template-columns: 1fr; gap: 0.5rem">
@@ -343,11 +344,15 @@
                     <button class="tab-btn" data-target="tab-polar">Polar</button>
                     <button class="tab-btn" data-target="tab-fft">FFT</button>
                     <button class="tab-btn" data-target="tab-tracking">Tracking</button>
-                    <button class="tab-btn" data-target="tab-logs">Logs</button>
+                    <button class="tab-btn" data-target="tab-logs" id="tab-btn-logs" hidden>Logs</button>
                 </div>
               </div>
               <div class="header-actions">
-                <button class="btn btn-outline btn-small" id="btn-sim-mode" title="Toggle simulation mode">Sim</button>
+                <button class="btn btn-outline btn-small" id="btn-sim-mode" title="Toggle simulation mode" hidden>Sim</button>
+                <button class="btn btn-outline btn-small btn-freeze" id="btn-memory" title="Click to freeze current trace (max 3). Hold to clear all.">
+                  <span class="btn-freeze-fill"></span>
+                  <span class="btn-freeze-label">Freeze</span>
+                </button>
                 <button class="btn btn-primary btn-header-sweep" id="btn-sweep">Start</button>
               </div>
           </div>
