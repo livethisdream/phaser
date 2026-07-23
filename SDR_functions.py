@@ -1,6 +1,23 @@
 import adi
+import os
+import pickle
 import time
 import numpy as np
+
+
+_REPO_DIR = os.path.dirname(__file__)
+
+
+def load_channel_cal(default=None, filename="channel_cal_val.pkl"):
+    if default is None:
+        default = [0.0] * 2
+    path = os.path.join(_REPO_DIR, filename)
+    try:
+        with open(path, "rb") as f:
+            values = list(pickle.load(f))
+    except FileNotFoundError:
+        values = list(default)
+    return (values + [0.0] * 2)[:2]
 
 
 def _set_channel_map_with_fallback(sdr, attr_name, preferred):

@@ -1,4 +1,32 @@
+import os
+import pickle
 import time
+
+_REPO_DIR = os.path.dirname(__file__)
+
+
+def _load_pickle(filename, default):
+    path = os.path.join(_REPO_DIR, filename)
+    try:
+        with open(path, "rb") as f:
+            return pickle.load(f)
+    except FileNotFoundError:
+        return default
+
+
+def load_phase_cal(default=None, filename="phase_cal_val.pkl"):
+    if default is None:
+        default = [0.0] * 8
+    values = list(_load_pickle(filename, default))
+    return (values + [0.0] * 8)[:8]
+
+
+def load_gain_cal(default=None, filename="gain_cal_val.pkl"):
+    if default is None:
+        default = [1.0] * 8
+    values = list(_load_pickle(filename, default))
+    return (values + [1.0] * 8)[:8]
+
 
 def ADAR_init(device):
     """ Initialize ADAR1000 """

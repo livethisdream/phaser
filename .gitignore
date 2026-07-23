@@ -39,12 +39,10 @@ package-lock.json
 radar/
 scripts/
 tests/
-config.py
 diagnose_hardware.py
 phaser_app.py
 phaser_cal.py
 phaser_find_hb100.py
-phaser_functions.py
 phaser_gui.py
 phaser_ipc_worker.py
 phaser_server.py
@@ -64,7 +62,6 @@ frontend/src/vendor/
 capture_sim_data.py
 fft_viewer.py
 phaser_sidecar.py
-phaser_sim.py
 phaser_zmq_server.py
 test_minimal.py
 start*.bat
@@ -77,6 +74,10 @@ graphify-out/
 
 # Local backups
 *.bak
+
+# Reference material (kept locally, not in repo — too large for git,
+# and it's binary reference material, not source)
+docs/*.pdf
 
 # Documentation artifacts (generated)
 COMPLETE_SOLUTION.md

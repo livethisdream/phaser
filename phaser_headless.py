@@ -62,12 +62,13 @@ import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchang
 
 class PhaserHeadless:
     def __init__(self, pub_port=5555, rep_port=5556, ws_port=8765, http_port=8080,
-                 radar_http_port=8081):
+                 radar_http_port=8081, sim_mode=False):
         self.pub_port = pub_port
         self.rep_port = rep_port
         self.ws_port = ws_port
         self.http_port = http_port
         self.radar_http_port = radar_http_port
+        self.sim_mode = bool(sim_mode)
         self.running = False
 
         # Mode dispatcher: "idle" | "sweep" | "cw_radar".
@@ -147,7 +148,10 @@ class PhaserHeadless:
         else:
             my_hostname = socket.gethostbyaddr(socket.gethostname())[0]
 
-        if "phaser" in my_hostname:
+        if self.sim_mode:
+            self.rpi_ip = "sim"
+            self.sdr_ip = "sim"
+        elif "phaser" in my_hostname:
             self.rpi_ip = "ip:localhost"
             self.sdr_ip = "ip:192.168.2.1"
         else:
@@ -166,7 +170,8 @@ class PhaserHeadless:
         self.d = config.d
         self.Averages = getattr(config, 'Averages', 1)
 
-        # Load calibration data
+        # Load calibration data (works in both real and sim — the .pkl files
+        # in the repo root are loaded whether or not hardware is attached)
         self.phase_cal = load_phase_cal()
         self.gain_cal = load_gain_cal()
         self.channel_cal = load_channel_cal()
@@ -177,53 +182,74 @@ class PhaserHeadless:
         print(f"Gain cal: {self.gain_cal}")
         print(f"Channel cal: {self.channel_cal}")
 
-        # GPIO setup (exactly like phaser_gui.py at module level)
-        print("Setting up GPIOs...")
-        self.gpios = adi.one_bit_adc_dac(self.rpi_ip)
-        self.gpios.gpio_vctrl_1 = 1
-        self.gpios.gpio_vctrl_2 = 1
-        self.gpios.gpio_div_mr = 1
-        self.gpios.gpio_div_s0 = 0
-        self.gpios.gpio_div_s1 = 0
-        self.gpios.gpio_div_s2 = 0
-        self.gpios.gpio_tx_sw = 0
-        time.sleep(0.5)
+        if self.sim_mode:
+            print("[SIM] Using physics-based hardware stubs (no Phaser required)")
+            import phaser_sim
+            self.gpios = phaser_sim.make_stub_gpios()
+            self.array = phaser_sim.make_stub_array()
+            self.sdr = phaser_sim.SimSDR(
+                self.array,
+                signal_freq=self.SignalFreq,
+                element_spacing=self.d,
+                sample_rate=self.SampleRate,
+                buffer_size=config.buffer_size,
+            )
+            for device in self.array.devices.values():
+                ADAR_init(device)
+                ADAR_set_mode(device, "rx")
+        else:
+            # GPIO setup (exactly like phaser_gui.py at module level)
+            print("Setting up GPIOs...")
+            self.gpios = adi.one_bit_adc_dac(self.rpi_ip)
+            self.gpios.gpio_vctrl_1 = 1
+            self.gpios.gpio_vctrl_2 = 1
+            self.gpios.gpio_div_mr = 1
+            self.gpios.gpio_div_s0 = 0
+            self.gpios.gpio_div_s1 = 0
+            self.gpios.gpio_div_s2 = 0
+            self.gpios.gpio_tx_sw = 0
+            time.sleep(0.5)
 
-        # SDR init
-        print("Initializing SDR...")
-        self.sdr = SDR_init(
-            self.sdr_ip,
-            self.SampleRate,
-            self.Tx_freq,
-            self.Rx_freq,
-            self.Rx_gain,
-            self.Tx_gain,
-            config.buffer_size,
-        )
+            # SDR init
+            print("Initializing SDR...")
+            self.sdr = SDR_init(
+                self.sdr_ip,
+                self.SampleRate,
+                self.Tx_freq,
+                self.Rx_freq,
+                self.Rx_gain,
+                self.Tx_gain,
+                config.buffer_size,
+            )
 
-        print("Initializing LO...")
-        SDR_LO_init(self.rpi_ip, self.LO_freq)
+            print("Initializing LO...")
+            SDR_LO_init(self.rpi_ip, self.LO_freq)
 
-        # ADAR init
-        print("Initializing ADAR1000...")
-        time.sleep(0.5)
-        self.array = adi.adar1000_array(
-            uri=self.rpi_ip,
-            chip_ids=["BEAM0", "BEAM1"],
-            device_map=[[1], [2]],
-            element_map=[[1, 2, 3, 4, 5, 6, 7, 8]],
-            device_element_map={
-                1: [7, 8, 5, 6],
-                2: [3, 4, 1, 2],
-            },
-        )
-        for device in self.array.devices.values():
-            ADAR_init(device)
-            ADAR_set_mode(device, "rx")
+            # ADAR init
+            print("Initializing ADAR1000...")
+            time.sleep(0.5)
+            self.array = adi.adar1000_array(
+                uri=self.rpi_ip,
+                chip_ids=["BEAM0", "BEAM1"],
+                device_map=[[1], [2]],
+                element_map=[[1, 2, 3, 4, 5, 6, 7, 8]],
+                device_element_map={
+                    1: [7, 8, 5, 6],
+                    2: [3, 4, 1, 2],
+                },
+            )
+            for device in self.array.devices.values():
+                ADAR_init(device)
+                ADAR_set_mode(device, "rx")
 
         # Default taper (all elements equal)
         self.gainList = [100, 100, 100, 100, 100, 100, 100, 100]
         ADAR_set_Taper(self.array, self.gainList)
+
+        # Per-element user phase offsets (degrees). Added to each element's
+        # steering phase inside ADAR_set_Phase. Zeros by default; the
+        # frontend Phase Control sliders write here via set_state.
+        self.phaseList = [0.0] * 8
 
         # Sweep settings
         self.phase_step = 2.8125  # 7 bits = 360/128
@@ -243,6 +269,20 @@ class PhaserHeadless:
         self.B1_Gain = 1.0
         self.Beam0_Phase = 0.0  # degrees
         self.Beam1_Phase = 0.0  # degrees
+
+        # Digital beamforming mode: "manual" (use B0/B1 weights above) or
+        # "mvdr" (adaptive, wired in a later step). Wired here so the
+        # frontend toggle plumbs through today; algorithm added with todo #4.
+        self.bf_mode = "manual"
+        self.mvdr_K = 128         # snapshots for covariance estimate
+        self.mvdr_diag_load = 1e-3  # diagonal loading factor
+
+        # Simulator interferer knobs (sim mode only). Frontend hides these
+        # unless ?instructor=1 is set, so students don't see them; the
+        # instructor can still enable/tune from the URL-guarded panel.
+        self.sim_interferer_enable = False
+        self.sim_interferer_angle_deg = 30.0
+        self.sim_interferer_power_db = 0.0  # relative to target amplitude
 
         print("Hardware Initialization Complete.")
 
@@ -267,6 +307,51 @@ class PhaserHeadless:
         phase_rad = 2 * 3.14159 * self.d * np.sin(np.radians(steer_angle)) * self.SignalFreq / self.c
         return np.degrees(phase_rad)
 
+    def _mvdr_weights(self, snapshots):
+        """Compute MVDR (Capon) weights for the 2-element digital sub-array.
+
+        snapshots: complex ndarray of shape (2, K) — K IQ snapshots stacked
+                   across the two sub-array outputs.
+
+        Returns a 2-element complex weight vector w such that y = w^H · x
+        is the MVDR beamformer output for the *analog-steered look
+        direction*.
+
+        Why the steering vector is [1, 1]:
+        The analog ADAR stage has already phase-compensated all 8 elements
+        for the current sweep angle. Consequently, a signal arriving from
+        that angle produces identical (in-phase) outputs at sub-array 0
+        (elements 1..4) and sub-array 1 (elements 5..8). Signals from any
+        other direction produce a phase differential between the sub-arrays
+        (proportional to sin(θ_src) - sin(θ_steer)) which shows up in the
+        sample covariance R̂ — that's what MVDR minimizes against.
+
+        Math (Capon 1969):
+            R̂ = (1/K) X Xᴴ                          # sample covariance
+            R̂ ← R̂ + δ · tr(R̂)/Nr · I               # diagonal loading
+            s = [1, 1]ᵀ                              # on-target steering vector
+            w = R̂⁻¹ s / (sᴴ R̂⁻¹ s)                  # MVDR weights
+        """
+        X = np.asarray(snapshots, dtype=np.complex128)
+        K = X.shape[1]
+
+        R = (X @ X.conj().T) / K
+
+        # Diagonal loading — robustifies against near-singular R and steering
+        # mismatch. Scaled by tr(R)/Nr so the load stays proportional to the
+        # signal power (consistent units).
+        Nr = R.shape[0]
+        load = self.mvdr_diag_load * (np.trace(R).real / Nr)
+        R = R + load * np.eye(Nr, dtype=np.complex128)
+
+        s = np.ones((Nr, 1), dtype=np.complex128)
+
+        Rinv = np.linalg.inv(R)
+        numer = Rinv @ s
+        denom = (s.conj().T @ Rinv @ s)[0, 0]
+        w = numer / denom
+        return w.ravel()
+
     def do_sweep(self):
         """Perform one beam sweep and return data including monopulse delta/error"""
         max_signal = -1000
@@ -287,9 +372,9 @@ class PhaserHeadless:
             2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
         )
 
-        # phaseList should be user-set phase offsets (zeros by default)
-        # The calibration (pcal) is applied inside ADAR_set_Phase automatically
-        phaseList = [0.0] * 8
+        # User-set per-element phase offsets from the Phase Control sliders.
+        # ADAR_set_Phase adds these to i*PhDelta (the steering ramp) per element.
+        phaseList = list(self.phaseList)
 
         for i, PhDelta in enumerate(PhaseValues):
             ADAR_set_Phase(self.array, PhDelta, self.phase_step, phaseList)
@@ -301,20 +386,36 @@ class PhaserHeadless:
 
             for _ in range(self.Averages):
                 data = SDR_getData(self.sdr)
-                chan1 = data[0]
-                chan2 = data[1]
+                chan1 = np.asarray(data[0])
+                chan2 = np.asarray(data[1])
 
-                # Apply digital beamforming complex weights w_k = B_k * exp(j*phase_k).
-                # This is the conventional (manual) digital beamformer: two complex
-                # scalars applied to the two digital channels before summing.
-                w0 = self.B0_Gain * np.exp(1j * np.deg2rad(self.Beam0_Phase))
-                w1 = self.B1_Gain * np.exp(1j * np.deg2rad(self.Beam1_Phase))
-                chan1 = chan1 * w0
-                chan2 = chan2 * w1
-
-                # Sum and delta beams
-                sum_chan = chan1 + chan2
-                delta_chan = chan1 - chan2
+                # Compute digital beamforming weights (2 complex scalars,
+                # one per digital sub-array). Manual: user-set sliders.
+                # MVDR: Capon-optimal weights derived from covariance of
+                # the current samples with the current sweep angle as
+                # the desired look direction.
+                if self.bf_mode == "mvdr":
+                    # Build snapshot matrix X (2 x K) from the current SDR
+                    # read. One SDR read gives buffer_size samples per
+                    # channel; use the first mvdr_K of them as our K IQ
+                    # snapshots — much cheaper than K separate SDR reads
+                    # and mathematically equivalent.
+                    K = int(min(self.mvdr_K, len(chan1)))
+                    X = np.vstack([chan1[:K], chan2[:K]]).astype(np.complex128)
+                    w = self._mvdr_weights(X)
+                    # Apply weights: y = w^H · x, per-sample
+                    sum_chan = np.conj(w[0]) * chan1 + np.conj(w[1]) * chan2
+                    # MVDR produces one optimal beam; no natural delta output.
+                    delta_chan = np.zeros_like(sum_chan)
+                else:
+                    # Conventional (manual) digital beamformer: two complex
+                    # scalars applied to the two digital channels before summing.
+                    w0 = self.B0_Gain * np.exp(1j * np.deg2rad(self.Beam0_Phase))
+                    w1 = self.B1_Gain * np.exp(1j * np.deg2rad(self.Beam1_Phase))
+                    chan1 = chan1 * w0
+                    chan2 = chan2 * w1
+                    sum_chan = chan1 + chan2
+                    delta_chan = chan1 - chan2
 
                 # Find peak in sum channel
                 max_index = np.argmax(np.abs(sum_chan))
@@ -427,6 +528,8 @@ class PhaserHeadless:
 
     def start_cw_radar(self, params):
         """Switch to CW radar mode. If a sweep is running, it is stopped first."""
+        if self.sim_mode:
+            return {"status": "error", "message": "CW radar not available in --sim mode"}
         # Merge requested params on top of stored ones (with defaults applied later
         # by phaser_cw_radar.enter_cw_mode).
         if params:
@@ -502,6 +605,7 @@ class PhaserHeadless:
                 "Tx_gain": self.Tx_gain,
                 "Tx_mode": self.Tx_mode,
                 "gainList": self.gainList,
+                "phaseList": self.phaseList,
                 "phase_step": self.phase_step,
                 "steer_min": self.steer_min,
                 "steer_max": self.steer_max,
@@ -512,6 +616,13 @@ class PhaserHeadless:
                 "B1_Gain": self.B1_Gain,
                 "Beam0_Phase": self.Beam0_Phase,
                 "Beam1_Phase": self.Beam1_Phase,
+                "bfMode": self.bf_mode,
+                "mvdrK": self.mvdr_K,
+                "mvdrDiagLoad": self.mvdr_diag_load,
+                "sim_mode": self.sim_mode,
+                "sim_interferer_enable": self.sim_interferer_enable,
+                "sim_interferer_angle_deg": self.sim_interferer_angle_deg,
+                "sim_interferer_power_db": self.sim_interferer_power_db,
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
             }
@@ -535,7 +646,10 @@ class PhaserHeadless:
         """Set signal frequency and retune LO"""
         self.SignalFreq = float(freq)
         self.LO_freq = self.SignalFreq + self.Rx_freq
-        SDR_LO_init(self.rpi_ip, self.LO_freq)
+        if self.sim_mode:
+            self.sdr.set_signal_freq(self.SignalFreq)
+        else:
+            SDR_LO_init(self.rpi_ip, self.LO_freq)
         print(f"Signal freq set to {self.SignalFreq/1e9:.6f} GHz, LO: {self.LO_freq/1e9:.6f} GHz")
         return {"status": "ok"}
 
@@ -770,6 +884,9 @@ class PhaserHeadless:
                 self.set_signal_freq(state["SignalFreq"])
             if "gainList" in state:
                 self.set_taper(state["gainList"])
+            if "phaseList" in state:
+                incoming = list(state["phaseList"])[:8]
+                self.phaseList = [float(v) for v in (incoming + [0.0] * 8)[:8]]
             if "Tx_mode" in state:
                 self.set_tx_mode(state["Tx_mode"])
             if "Averages" in state:
@@ -786,6 +903,38 @@ class PhaserHeadless:
                 self.Beam0_Phase = float(state["Beam0_Phase"])
             if "Beam1_Phase" in state:
                 self.Beam1_Phase = float(state["Beam1_Phase"])
+            if "bfMode" in state:
+                mode = str(state["bfMode"])
+                if mode in ("manual", "mvdr") and mode != self.bf_mode:
+                    self.bf_mode = mode
+                    if mode == "mvdr":
+                        print("[BF] MVDR mode selected — algorithm not yet wired; using manual weights until todo #4 lands.")
+                    else:
+                        print("[BF] Manual mode selected.")
+            if "mvdrK" in state:
+                self.mvdr_K = max(8, int(state["mvdrK"]))
+            if "mvdrDiagLoad" in state:
+                self.mvdr_diag_load = max(0.0, float(state["mvdrDiagLoad"]))
+            # Simulator interferer fields: ignored on real hardware; in sim
+            # mode we forward them to SimSDR so the next SDR read reflects
+            # the new configuration.
+            interf_changed = False
+            if "sim_interferer_enable" in state:
+                self.sim_interferer_enable = bool(state["sim_interferer_enable"])
+                interf_changed = True
+            if "sim_interferer_angle_deg" in state:
+                v = float(state["sim_interferer_angle_deg"])
+                self.sim_interferer_angle_deg = max(-90.0, min(90.0, v))
+                interf_changed = True
+            if "sim_interferer_power_db" in state:
+                self.sim_interferer_power_db = float(state["sim_interferer_power_db"])
+                interf_changed = True
+            if interf_changed and self.sim_mode and hasattr(self.sdr, "set_interferer"):
+                self.sdr.set_interferer(
+                    enable=self.sim_interferer_enable,
+                    angle_deg=self.sim_interferer_angle_deg,
+                    power_db=self.sim_interferer_power_db,
+                )
             # Handle phase_step: ignore_res=true uses bits, ignore_res=false uses steer_res
             ignore_res = state.get("ignore_res", True)
             if ignore_res:
@@ -1105,6 +1254,8 @@ def main():
     parser.add_argument("--http-port", type=int, default=8080, help="HTTP port for static files")
     parser.add_argument("--radar-http-port", type=int, default=8081,
                         help="HTTP port for radar app static files (0 to disable)")
+    parser.add_argument("--sim", action="store_true",
+                        help="Run with simulated hardware (no Phaser required)")
     args = parser.parse_args()
 
     print(f"""
@@ -1119,12 +1270,16 @@ def main():
 ╚══════════════════════════════════════════════════════════════╝
     """)
 
+    if args.sim:
+        print("*** RUNNING IN SIMULATION MODE — no Phaser hardware required ***")
+
     server = PhaserHeadless(
         pub_port=args.pub_port,
         rep_port=args.rep_port,
         ws_port=args.ws_port,
         http_port=args.http_port,
         radar_http_port=args.radar_http_port,
+        sim_mode=args.sim,
     )
 
     def signal_handler(sig, frame):
