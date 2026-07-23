@@ -21,8 +21,25 @@ const state = {
     Beam0_Phase: 0,
     Beam1_Phase: 0,
     Averages: 1,
-    d: 0.014
+    d: 0.014,
+    bfMode: 'manual',       // 'manual' | 'mvdr'
+    mvdrK: 128,             // MVDR snapshot count
+    mvdrDiagLoad: 0.001,    // MVDR diagonal loading factor
+
+    // Simulator interferer (instructor-only, sim mode only; hidden by default)
+    sim_interferer_enable: false,
+    sim_interferer_angle_deg: 30,
+    sim_interferer_power_db: 0,
 };
+
+// Instructor mode: adds ?instructor=1 to the URL to reveal the
+// Simulator Interferer accordion. Students never see it.
+const instructorMode = new URLSearchParams(window.location.search).get('instructor') === '1';
+
+// When switching Manual -> MVDR, we zero B0/B1 so residual manual weights
+// don't fight the adaptive algorithm. These snapshots restore them on the
+// way back.
+const bfManualSnapshot = { B0_Gain: 1.0, B1_Gain: 1.0, Beam0_Phase: 0, Beam1_Phase: 0 };
 
 const calibrationState = {
     pollingTimer: null,
@@ -589,7 +606,7 @@ function rebuildMemoryTraces() {
     }
 
     if (polarEl && polarEl.data) {
-        const liveCount = 1;
+        const liveCount = 3;  // Sum + peak-angle marker + peak-gain marker
         const extras = polarEl.data.length - liveCount;
         if (extras > 0) {
             const indices = [];
@@ -851,6 +868,170 @@ document.getElementById('btn-zero-phase').addEventListener('click', () => {
     syncStateToBackend();
 });
 
+/* --- Beam Steering: compute per-element phase ramp for a chosen angle --- */
+const steerAngleSlider = document.getElementById('steer-angle');
+const steerAngleInput = document.getElementById('val-steer-angle');
+if (steerAngleSlider && steerAngleInput) {
+    steerAngleSlider.addEventListener('input', (e) => {
+        steerAngleInput.value = e.target.value;
+    });
+    steerAngleInput.addEventListener('input', (e) => {
+        steerAngleSlider.value = e.target.value;
+    });
+}
+
+const STEER_TAPERS = {
+    uniform:   [100, 100, 100, 100, 100, 100, 100, 100],
+    chebyshev: [4, 23, 62, 100, 100, 62, 23, 4],
+    hann:      [12, 43, 77, 100, 100, 77, 43, 12],
+    blackman:  [6, 27, 66, 100, 100, 66, 27, 6],
+};
+
+document.getElementById('btn-apply-steer')?.addEventListener('click', () => {
+    const theta_deg = parseFloat(steerAngleInput.value);
+    if (!Number.isFinite(theta_deg)) return;
+
+    // Sign convention matches ADAR_set_Phase: element k gets phase k * PhDelta.
+    // For a plane wave arriving at angle theta, the required per-element
+    // compensation phase per step is 2*pi*d*sin(theta)*f/c (in radians).
+    // We negate so positive steer angles produce a peak at +theta on the plot.
+    const c = 299792458;
+    const f = state.SignalFreq;
+    const d = state.d;
+    const phDeltaDeg = -(360 * d * Math.sin(theta_deg * Math.PI / 180) * f / c);
+    const ramp = Array.from({ length: 8 }, (_, k) => Math.round(k * phDeltaDeg));
+
+    const taperKey = document.getElementById('steer-taper')?.value || 'uniform';
+    const gains = STEER_TAPERS[taperKey] || STEER_TAPERS.uniform;
+
+    applyTaper(gains.slice());  // syncs backend
+    applyPhaseList(ramp);
+    syncStateToBackend();
+});
+
+/* --- Digital Beam Forming mode toggle --- */
+function setBeamformerMode(mode) {
+    const prevMode = state.bfMode;
+    if (mode === prevMode) return;
+
+    if (mode === 'mvdr') {
+        // Snapshot current manual weights before zeroing (option b:
+        // adaptive weights get a clean slate)
+        bfManualSnapshot.B0_Gain = state.B0_Gain;
+        bfManualSnapshot.B1_Gain = state.B1_Gain;
+        bfManualSnapshot.Beam0_Phase = state.Beam0_Phase;
+        bfManualSnapshot.Beam1_Phase = state.Beam1_Phase;
+        // Zero them
+        state.B0_Gain = 1.0; state.B1_Gain = 1.0;
+        state.Beam0_Phase = 0; state.Beam1_Phase = 0;
+    } else if (prevMode === 'mvdr') {
+        // Restore manual weights
+        state.B0_Gain = bfManualSnapshot.B0_Gain;
+        state.B1_Gain = bfManualSnapshot.B1_Gain;
+        state.Beam0_Phase = bfManualSnapshot.Beam0_Phase;
+        state.Beam1_Phase = bfManualSnapshot.Beam1_Phase;
+    }
+    // Reflect restored/reset values in the manual sliders
+    const setPair = (slId, inId, val) => {
+        const sl = document.getElementById(slId), inp = document.getElementById(inId);
+        if (sl) sl.value = val;
+        if (inp) inp.value = val;
+    };
+    setPair('b0_gain', 'val-b0g', state.B0_Gain);
+    setPair('b1_gain', 'val-b1g', state.B1_Gain);
+    setPair('b0_phase', 'val-b0p', state.Beam0_Phase);
+    setPair('b1_phase', 'val-b1p', state.Beam1_Phase);
+
+    state.bfMode = mode;
+    document.getElementById('bf-panel-manual').hidden = (mode !== 'manual');
+    document.getElementById('bf-panel-mvdr').hidden = (mode !== 'mvdr');
+    syncStateToBackend();
+}
+
+document.querySelectorAll('input[name="bf-mode"]').forEach(el => {
+    el.addEventListener('change', (e) => {
+        if (e.target.checked) setBeamformerMode(e.target.value);
+    });
+});
+
+document.getElementById('btn-reset-dbf')?.addEventListener('click', () => {
+    state.B0_Gain = 1.0; state.B1_Gain = 1.0;
+    state.Beam0_Phase = 0; state.Beam1_Phase = 0;
+    // Keep the snapshot in sync so a subsequent Manual->MVDR->Manual round
+    // trip doesn't restore stale weights.
+    bfManualSnapshot.B0_Gain = 1.0; bfManualSnapshot.B1_Gain = 1.0;
+    bfManualSnapshot.Beam0_Phase = 0; bfManualSnapshot.Beam1_Phase = 0;
+    const setPair = (slId, inId, val) => {
+        const sl = document.getElementById(slId), inp = document.getElementById(inId);
+        if (sl) sl.value = val;
+        if (inp) inp.value = val;
+    };
+    setPair('b0_gain', 'val-b0g', 1.0);
+    setPair('b1_gain', 'val-b1g', 1.0);
+    setPair('b0_phase', 'val-b0p', 0);
+    setPair('b1_phase', 'val-b1p', 0);
+    syncStateToBackend();
+});
+
+const mvdrKInput = document.getElementById('mvdr-k');
+if (mvdrKInput) {
+    mvdrKInput.addEventListener('input', (e) => {
+        const v = parseInt(e.target.value);
+        if (Number.isFinite(v) && v >= 8) {
+            state.mvdrK = v;
+            syncStateToBackend();
+        }
+    });
+}
+const mvdrDiagInput = document.getElementById('mvdr-diag-load');
+if (mvdrDiagInput) {
+    mvdrDiagInput.addEventListener('input', (e) => {
+        const v = parseFloat(e.target.value);
+        if (Number.isFinite(v) && v >= 0) {
+            state.mvdrDiagLoad = v;
+            syncStateToBackend();
+        }
+    });
+}
+
+/* --- Simulator Interferer (instructor mode only) ---
+   The accordion stays hidden unless BOTH conditions are met:
+     1. URL contains ?instructor=1 (see instructorMode above)
+     2. Backend reports sim_mode: true (revealSimInterfererIfEligible())
+   Students loading the app normally never see or reach this panel. */
+function revealSimInterfererIfEligible(serverState) {
+    const el = document.getElementById('accordion-sim-interferer');
+    if (!el) return;
+    const showIt = instructorMode && !!serverState?.sim_mode;
+    el.hidden = !showIt;
+}
+
+const simInterfererEnable = document.getElementById('sim-interferer-enable');
+if (simInterfererEnable) {
+    simInterfererEnable.addEventListener('change', (e) => {
+        state.sim_interferer_enable = !!e.target.checked;
+        syncStateToBackend();
+    });
+}
+
+// Angle: slider <-> number input, both write into state
+function linkInterfererPair(slId, inId, stateKey) {
+    const sl = document.getElementById(slId);
+    const inp = document.getElementById(inId);
+    if (!sl || !inp) return;
+    const onChange = (raw) => {
+        const v = parseFloat(raw);
+        if (Number.isFinite(v)) {
+            state[stateKey] = v;
+            syncStateToBackend();
+        }
+    };
+    sl.addEventListener('input', (e) => { inp.value = e.target.value; onChange(e.target.value); });
+    inp.addEventListener('input', (e) => { sl.value = e.target.value; onChange(e.target.value); });
+}
+linkInterfererPair('sim-interferer-angle', 'val-sim-interferer-angle', 'sim_interferer_angle_deg');
+linkInterfererPair('sim-interferer-power', 'val-sim-interferer-power', 'sim_interferer_power_db');
+
 /* --- Base Config Events --- */
 const freqInput = document.getElementById('freq');
 const updateSignalFreqFromInput = (rawVal) => {
@@ -1077,6 +1258,30 @@ async function loadStateFromServer() {
         // Update hardware connection indicator
         updateHardwareConnectionStatus(msg.data.hardware_connected ?? false);
 
+        // Reveal the instructor-only interferer panel iff (a) URL has
+        // ?instructor=1 AND (b) backend is running in sim mode. Also
+        // hydrate the panel's controls from the current server state.
+        revealSimInterfererIfEligible(msg.data);
+        if (typeof msg.data.sim_interferer_enable === 'boolean') {
+            state.sim_interferer_enable = msg.data.sim_interferer_enable;
+            const el = document.getElementById('sim-interferer-enable');
+            if (el) el.checked = msg.data.sim_interferer_enable;
+        }
+        if (Number.isFinite(msg.data.sim_interferer_angle_deg)) {
+            state.sim_interferer_angle_deg = msg.data.sim_interferer_angle_deg;
+            const s = document.getElementById('sim-interferer-angle');
+            const n = document.getElementById('val-sim-interferer-angle');
+            if (s) s.value = msg.data.sim_interferer_angle_deg;
+            if (n) n.value = msg.data.sim_interferer_angle_deg;
+        }
+        if (Number.isFinite(msg.data.sim_interferer_power_db)) {
+            state.sim_interferer_power_db = msg.data.sim_interferer_power_db;
+            const s = document.getElementById('sim-interferer-power');
+            const n = document.getElementById('val-sim-interferer-power');
+            if (s) s.value = msg.data.sim_interferer_power_db;
+            if (n) n.value = msg.data.sim_interferer_power_db;
+        }
+
         applyInitialStateToControls();
     } catch (err) {
         console.warn('Failed to load initial state from server:', err);
@@ -1116,6 +1321,9 @@ document.getElementById('taper-rect').addEventListener('click', () => applyTaper
 document.getElementById('taper-cheb').addEventListener('click', () => applyTaper([4,23,62,100,100,62,23,4]));
 document.getElementById('taper-hann').addEventListener('click', () => applyTaper([12,43,77,100,100,77,43,12]));
 document.getElementById('taper-black').addEventListener('click', () => applyTaper([6,27,66,100,100,66,27,6]));
+// Aperture presets: sparse element patterns for teaching array topology
+document.getElementById('taper-2elem')?.addEventListener('click', () => applyTaper([0,0,0,127,127,0,0,0]));
+document.getElementById('taper-sparse-lambda')?.addEventListener('click', () => applyTaper([127,0,127,0,127,0,127,0]));
 
 /* --- Plotly Setup --- */
 function getLayoutBase() {
@@ -1203,9 +1411,14 @@ Plotly.newPlot('chart-rect', [
     legend: { x: 1, xanchor: 'right', y: 1, bgcolor: 'rgba(0,0,0,0)' }
 }), {displayModeBar: false, responsive: true});
 
-Plotly.newPlot('chart-polar', [{
-    r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#10b981', width: 3, shape: 'spline' }, fill: 'toself', fillcolor: 'rgba(16, 185, 129, 0.1)'
-}], Object.assign({}, getLayoutBase(), {
+Plotly.newPlot('chart-polar', [
+    // Trace 0: main sum beam
+    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#10b981', width: 3, shape: 'spline' }, fill: 'toself', fillcolor: 'rgba(16, 185, 129, 0.1)' },
+    // Trace 1: peak-angle marker (radial line at peak theta)
+    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#ef4444', width: 1.5, dash: 'dash' }, hoverinfo: 'skip', showlegend: false, visible: false },
+    // Trace 2: peak-gain marker (circle at peak dBFS)
+    { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#10b981', width: 1.5, dash: 'dash' }, hoverinfo: 'skip', showlegend: false, visible: false },
+], Object.assign({}, getLayoutBase(), {
     polar: {
         sector: [0, 180],
         bgcolor: 'transparent',
@@ -1980,18 +2193,17 @@ function updateCharts(data) {
         peakValue = Math.max(...yData);
         peakIndex = yData.indexOf(peakValue);
         
-        let axisUpdate = {};
-        let shapes = [];
-        
-        // Render Peak Markers
+        const shapes = [];
+
+        // Render Peak Markers (applied via Plotly.relayout below)
         if(document.getElementById('opt-peak-angle').checked) {
             shapes.push({ type: 'line', x0: xData[peakIndex], y0: 0, x1: xData[peakIndex], y1: 1, yref: 'paper', line: { color: '#ef4444', dash: 'dash'} });
         }
         if(document.getElementById('opt-peak-gain').checked) {
             shapes.push({ type: 'line', x0: 0, y0: peakValue, x1: 1, y1: peakValue, xref: 'paper', line: { color: '#10b981', dash: 'dash'} });
         }
-        axisUpdate.shapes = shapes;
-        
+
+
         // Snapshot the live Sum trace for the Memory feature.
         lastLiveTrace = { x: xData.slice(), y: yData.slice() };
         updateMemoryButtons();
@@ -2019,6 +2231,10 @@ function updateCharts(data) {
             }
 
             Plotly.redraw('chart-rect');
+            // Apply peak-marker shapes (or clear them if both toggles are off).
+            // These live in layout, not in trace data, so a redraw alone
+            // won't touch them — we need an explicit relayout.
+            Plotly.relayout('chart-rect', { shapes });
         }
 
         // Update polar plot
@@ -2026,6 +2242,37 @@ function updateCharts(data) {
         if (polarEl && polarEl.data && polarEl.data[0]) {
             polarEl.data[0].r = yData;
             polarEl.data[0].theta = xData.map(toPolarTheta);
+
+            // Peak-angle marker: radial spoke at the peak theta.
+            // Runs from the current radial-axis min to the peak's dB value
+            // so it visually tracks the peak on both axes.
+            if (polarEl.data[1]) {
+                const showPeakAngle = document.getElementById('opt-peak-angle')?.checked ?? false;
+                if (showPeakAngle) {
+                    const peakTheta = toPolarTheta(xData[peakIndex]);
+                    const rMin = (polarEl.layout?.polar?.radialaxis?.range?.[0]) ?? -50;
+                    polarEl.data[1].r = [rMin, peakValue];
+                    polarEl.data[1].theta = [peakTheta, peakTheta];
+                    polarEl.data[1].visible = true;
+                } else {
+                    polarEl.data[1].visible = false;
+                }
+            }
+
+            // Peak-gain marker: constant-r arc across the visible sector.
+            if (polarEl.data[2]) {
+                const showPeakGain = document.getElementById('opt-peak-gain')?.checked ?? false;
+                if (showPeakGain) {
+                    const arcN = 61;
+                    const arcTheta = Array.from({ length: arcN }, (_, i) => 180 * i / (arcN - 1));
+                    polarEl.data[2].r = arcTheta.map(() => peakValue);
+                    polarEl.data[2].theta = arcTheta;
+                    polarEl.data[2].visible = true;
+                } else {
+                    polarEl.data[2].visible = false;
+                }
+            }
+
             Plotly.redraw('chart-polar');
         }
 

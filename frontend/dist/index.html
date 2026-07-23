@@ -9,8 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
   <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-DtKtrF8i.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-6r23IZPC.css">
+  <script type="module" crossorigin src="./assets/index-BoH0Nvnb.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-BCJcMsFv.css">
 </head>
 <body>
   <div class="app-container">
@@ -175,6 +175,11 @@
                       <button class="btn btn-outline" id="taper-hann">Hann</button>
                       <button class="btn btn-outline" id="taper-black">Black</button>
                     </div>
+                    <label class="mt-2" style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 0.25rem;">Aperture Presets</label>
+                    <div class="taper-buttons">
+                      <button class="btn btn-outline" id="taper-2elem" title="Only the center pair active — 2-element array baseline">2-Elem</button>
+                      <button class="btn btn-outline" id="taper-sparse-lambda" title="Every other element active — spacing = 2d approaches lambda, grating lobes appear">Sparse &lambda;</button>
+                    </div>
                     <label class="toggle-container mt-2">
                         <span>Enforce Symmetric Taper</span>
                         <input type="checkbox" id="opt-symmetric-taper">
@@ -190,10 +195,36 @@
                 <button class="accordion-header" title="Adjust specific RF phase mappings for each channel"><span class="accordion-icon" data-icon="2"></span> Phase Control <span>▼</span></button>
                 <div class="accordion-body">
                     <div class="action-row" style="margin-top:0">
-                        <button class="btn btn-outline" id="btn-zero-phase">Set All Phase to 0</button>
+                        <button class="btn btn-outline" id="btn-zero-phase">Reset</button>
                     </div>
                     <hr class="divider" />
                     <div id="elements-phase-container" class="sliders-list dense-list"></div>
+                </div>
+            </div>
+
+            <!-- 3b. Beam Steering -->
+            <div class="accordion-item">
+                <button class="accordion-header" title="Compute the per-element phases needed to steer to a chosen angle; sliders in Phase Control update to show the ramp"><span class="accordion-icon" data-icon="2"></span> Beam Steering <span>▼</span></button>
+                <div class="accordion-body">
+                    <div class="control-group combo-group">
+                      <label>Steer Angle (deg)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="steer-angle" min="-90" max="90" step="1" value="0" class="modern-slider">
+                        <input type="number" id="val-steer-angle" min="-90" max="90" step="1" value="0" class="modern-input-small">
+                      </div>
+                    </div>
+                    <div class="control-group mt-2" style="display:flex; align-items:center; gap:10px;">
+                      <label style="margin-bottom:0">Taper</label>
+                      <select id="steer-taper" class="modern-input-small" style="flex:1; width:auto; text-align:left;">
+                        <option value="uniform">Uniform</option>
+                        <option value="chebyshev">Chebyshev</option>
+                        <option value="hann">Hann</option>
+                        <option value="blackman">Blackman</option>
+                      </select>
+                    </div>
+                    <div class="action-row mt-2">
+                        <button class="btn btn-outline" id="btn-apply-steer">Apply</button>
+                    </div>
                 </div>
             </div>
 
@@ -202,21 +233,21 @@
                 <button class="accordion-header" title="Truncate bit depth or limit steering resolution to simulate quantization effects"><span class="accordion-icon" data-icon="3"></span> Quantization <span>▼</span></button>
                 <div class="accordion-body">
                     <div class="control-group combo-group">
-                      <label>Steer Resolution</label>
+                      <label>Steer Resolution (deg)</label>
                       <div class="combo-inputs">
                         <input type="range" id="res" min="0.1" max="5" step="0.1" value="2.8" class="modern-slider">
-                        <input type="number" id="val-res" min="0.1" max="5" step="0.1" value="2.8" class="modern-input-small">
+                        <input type="number" id="val-res" min="0.1" max="5" step="0.1" value="2.8" class="modern-input-small" style="width:88px;">
                       </div>
                     </div>
                     <div class="control-group combo-group mt-2">
                       <label>Phase Shift Bits</label>
                       <div class="combo-inputs">
                         <input type="range" id="bits" min="1" max="7" step="1" value="7" class="modern-slider">
-                        <input type="number" id="val-bits" min="1" max="7" step="1" value="7" class="modern-input-small">
+                        <input type="number" id="val-bits" min="1" max="7" step="1" value="7" class="modern-input-small" style="width:88px;">
                       </div>
                     </div>
-                    <label class="toggle-container mt-2">
-                      <span>Ignore Steer Res</span>
+                    <label class="toggle-container mt-2" title="When ON: phase step comes from Phase Shift Bits (hardware-accurate — 360/2^bits). When OFF: use the Steer Resolution slider directly, bypassing hardware quantization to preview what a finer array would do.">
+                      <span>Use Bits (ignore Steer Res)</span>
                       <input type="checkbox" id="ignore-res" checked>
                       <span class="checkmark"></span>
                     </label>
@@ -227,39 +258,62 @@
             <div class="accordion-item">
                 <button class="accordion-header" title="Inject dual-beam signals and adjust sub-array tracking metrics"><span class="accordion-icon" data-icon="4"></span> Digital Beam Forming <span>▼</span></button>
                 <div class="accordion-body">
-                    <div class="control-group combo-group">
-                      <label>Beam 0 Gain</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="b0_gain" min="0" max="2" step="0.1" value="1.0" class="modern-slider">
-                        <input type="number" id="val-b0g" min="0" max="2" step="0.1" value="1.0" class="modern-input-small">
-                      </div>
-                    </div>
-                    <div class="control-group combo-group mt-2">
-                      <label>Beam 0 Phase</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="b0_phase" min="-180" max="180" step="1" value="0" class="modern-slider">
-                        <input type="number" id="val-b0p" min="-180" max="180" step="1" value="0" class="modern-input-small">
-                      </div>
+                    <div class="control-group" style="display:flex; align-items:center; gap:10px;">
+                      <label style="margin-bottom:0">Mode</label>
+                      <label style="display:flex; align-items:center; gap:4px; font-size:0.85rem; margin:0;">
+                        <input type="radio" name="bf-mode" value="manual" checked> Manual
+                      </label>
+                      <label style="display:flex; align-items:center; gap:4px; font-size:0.85rem; margin:0;">
+                        <input type="radio" name="bf-mode" value="mvdr"> MVDR
+                      </label>
                     </div>
                     <hr class="divider"/>
-                    <div class="control-group combo-group">
-                      <label>Beam 1 Gain</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="b1_gain" min="0" max="2" step="0.1" value="1.0" class="modern-slider">
-                        <input type="number" id="val-b1g" min="0" max="2" step="0.1" value="1.0" class="modern-input-small">
+                    <div id="bf-panel-manual">
+                      <div class="action-row" style="margin-top:0">
+                        <button class="btn btn-outline" id="btn-reset-dbf">Reset</button>
+                      </div>
+                      <hr class="divider"/>
+                      <div class="control-group combo-group">
+                        <label>Beam 0 Gain</label>
+                        <div class="combo-inputs">
+                          <input type="range" id="b0_gain" min="0" max="2" step="0.1" value="1.0" class="modern-slider">
+                          <input type="number" id="val-b0g" min="0" max="2" step="0.1" value="1.0" class="modern-input-small">
+                        </div>
+                      </div>
+                      <div class="control-group combo-group mt-2">
+                        <label>Beam 0 Phase</label>
+                        <div class="combo-inputs">
+                          <input type="range" id="b0_phase" min="-180" max="180" step="1" value="0" class="modern-slider">
+                          <input type="number" id="val-b0p" min="-180" max="180" step="1" value="0" class="modern-input-small">
+                        </div>
+                      </div>
+                      <hr class="divider"/>
+                      <div class="control-group combo-group">
+                        <label>Beam 1 Gain</label>
+                        <div class="combo-inputs">
+                          <input type="range" id="b1_gain" min="0" max="2" step="0.1" value="1.0" class="modern-slider">
+                          <input type="number" id="val-b1g" min="0" max="2" step="0.1" value="1.0" class="modern-input-small">
+                        </div>
+                      </div>
+                      <div class="control-group combo-group mt-2">
+                        <label>Beam 1 Phase</label>
+                        <div class="combo-inputs">
+                          <input type="range" id="b1_phase" min="-180" max="180" step="1" value="0" class="modern-slider">
+                          <input type="number" id="val-b1p" min="-180" max="180" step="1" value="0" class="modern-input-small">
+                        </div>
                       </div>
                     </div>
-                    <div class="control-group combo-group mt-2">
-                      <label>Beam 1 Phase</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="b1_phase" min="-180" max="180" step="1" value="0" class="modern-slider">
-                        <input type="number" id="val-b1p" min="-180" max="180" step="1" value="0" class="modern-input-small">
+                    <div id="bf-panel-mvdr" hidden>
+                      <div class="control-group" style="display:flex; align-items:center; gap:10px;">
+                        <label style="margin-bottom:0">Snapshots (K)</label>
+                        <input type="number" id="mvdr-k" min="8" max="4096" step="1" value="128" class="modern-input-small" style="flex:1; width:auto; text-align:right;">
                       </div>
+                      <div class="control-group mt-2" style="display:flex; align-items:center; gap:10px;">
+                        <label style="margin-bottom:0">Diagonal Load</label>
+                        <input type="number" id="mvdr-diag-load" min="0" max="1" step="0.001" value="0.001" class="modern-input-small" style="flex:1; width:auto; text-align:right;">
+                      </div>
+                      <p style="font-size:0.8rem; color:var(--text-muted); margin:0.75rem 0 0;">Uses the Steer Angle from Beam Steering as the desired look direction.</p>
                     </div>
-                    <hr class="divider"/>
-                    <label style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 0.5rem;">Monopulse Display</label>
-                    <label class="toggle-container"><span>Show Delta Beam</span><input type="checkbox" id="opt-show-delta"><span class="checkmark"></span></label>
-                    <label class="toggle-container mt-4"><span>Show Error Function</span><input type="checkbox" id="opt-show-error"><span class="checkmark"></span></label>
                 </div>
             </div>
 
@@ -267,10 +321,13 @@
             <div class="accordion-item">
                 <button class="accordion-header" title="Toggle visual markers and override graph axes boundaries"><span class="accordion-icon" data-icon="5"></span> Plot Options <span>▼</span></button>
                 <div class="accordion-body">
-                    <label class="toggle-container" style="justify-content:space-between;"><span>Show Peak Gain Marker</span><input type="checkbox" id="opt-peak-gain"><span class="checkmark"></span></label>
-                    <label class="toggle-container mt-4" style="justify-content:space-between;"><span>Show Peak Angle Marker</span><input type="checkbox" id="opt-peak-angle"><span class="checkmark"></span></label>
-                    <label class="toggle-container mt-4" style="justify-content:space-between;"><span>Show Beam Squint Info</span><input type="checkbox" id="opt-show-squint"><span class="checkmark"></span></label>
-                    <label class="toggle-container mt-4" style="justify-content:space-between;"><span>Show Logs Tab</span><input type="checkbox" id="opt-show-logs"><span class="checkmark"></span></label>
+                    <label class="toggle-container"><span>Show Peak Gain Marker</span><input type="checkbox" id="opt-peak-gain"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4"><span>Show Peak Angle Marker</span><input type="checkbox" id="opt-peak-angle"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4"><span>Show Beam Squint Info</span><input type="checkbox" id="opt-show-squint"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4"><span>Show Logs Tab</span><input type="checkbox" id="opt-show-logs"><span class="checkmark"></span></label>
+
+                    <label class="toggle-container mt-4"><span>Show Monopulse Delta Beam</span><input type="checkbox" id="opt-show-delta"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4"><span>Show Monopulse Error Function</span><input type="checkbox" id="opt-show-error"><span class="checkmark"></span></label>
 
                     <hr class="divider"/>
                     <div style="display:grid; grid-template-columns: 1fr; gap: 0.5rem">
@@ -318,6 +375,31 @@
                     <button class="btn btn-outline lab-btn" data-lab="6"><span class="lab-num">6</span> Quantization</button>
                     <button class="btn btn-outline lab-btn" data-lab="7"><span class="lab-num">7</span> Hybrid Control</button>
                     <button class="btn btn-outline lab-btn" data-lab="8"><span class="lab-num">8</span> Tracking</button>
+                </div>
+            </div>
+
+            <!-- 8. Simulator Interferer (instructor mode only — hidden unless ?instructor=1) -->
+            <div class="accordion-item" id="accordion-sim-interferer" hidden>
+                <button class="accordion-header" title="Inject a simulated jammer at a chosen angle to demonstrate adaptive nulling (sim mode only)"><span class="accordion-icon" data-icon="7"></span> Simulator Interferer <span>▼</span></button>
+                <div class="accordion-body">
+                    <label class="toggle-container mt-2"><span>Enable Interferer</span><input type="checkbox" id="sim-interferer-enable"><span class="checkmark"></span></label>
+                    <div class="control-group combo-group mt-2">
+                      <label>Interferer Angle (deg)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="sim-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-slider">
+                        <input type="number" id="val-sim-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-input-small" style="width:88px;">
+                      </div>
+                    </div>
+                    <div class="control-group combo-group mt-2">
+                      <label>Interferer Power (dB rel target)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="sim-interferer-power" min="-20" max="10" step="1" value="0" class="modern-slider">
+                        <input type="number" id="val-sim-interferer-power" min="-20" max="10" step="1" value="0" class="modern-input-small" style="width:88px;">
+                      </div>
+                    </div>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0.5rem 0 0; line-height:1.35;">
+                      Instructor-only panel. Simulator sums a second plane wave at the chosen angle and power. Only visible with <code>?instructor=1</code> in the URL, and only while the backend reports sim mode.
+                    </p>
                 </div>
             </div>
 
