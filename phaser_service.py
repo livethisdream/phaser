@@ -649,6 +649,12 @@ def default_serializer(obj):
 
 
 def build_lab_preset(lab_idx: int):
+    """PDF-aligned lab presets (docs/2025_Phaser_labs_Python.pdf).
+
+    Kept in sync with the frontend's localLabPreset() in
+    frontend/src/main.js so the desktop-app path (which reaches this via
+    BackendService) produces the same starting state as the browser path.
+    """
     base = {
         "mode": "Beam Sweep",
         "gainList": [100, 100, 100, 100, 100, 100, 100, 100],
@@ -665,30 +671,50 @@ def build_lab_preset(lab_idx: int):
     }
 
     if lab_idx == 1:
-        base.update({"mode": "Static Phase", "ui_tab": "tab-fft"})
-    elif lab_idx in (2, 3, 4, 5):
+        # STEERING ANGLE (p.9): FFT tab, uniform array
+        base.update({"mode": "Beam Sweep", "ui_tab": "tab-fft"})
+    elif lab_idx == 2:
+        # ARRAY FACTOR AND BEAMWIDTH (p.11): uniform 8-element
         base.update({"mode": "Beam Sweep", "ui_tab": "tab-rect"})
+    elif lab_idx == 3:
+        # SIDELOBES AND TAPERING (p.16): symmetric taper enforcement on
+        base.update({
+            "mode": "Beam Sweep", "ui_tab": "tab-rect",
+            "symmetricTaper": True,
+        })
+    elif lab_idx == 4:
+        # GRATING LOBES (p.17): elements 1,4,7 active → d_eff = 3d = 42mm
+        base.update({
+            "mode": "Beam Sweep", "ui_tab": "tab-rect",
+            "gainList": [100, 0, 0, 100, 0, 0, 100, 0],
+        })
+    elif lab_idx == 5:
+        # BEAM SQUINT (p.19): 500 MHz signal BW
+        base.update({
+            "mode": "Beam Sweep", "ui_tab": "tab-rect",
+            "BW": 500,
+        })
     elif lab_idx == 6:
-        base.update(
-            {
-                "mode": "Signal vs Time",
-                "steer_res": 1.0,
-                "bits": 7,
-                "ignore_res": False,
-                "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
-                "ui_tab": "tab-tracking",
-            }
-        )
+        # QUANTIZATION SIDELOBES (p.21): Blackman taper is the PDF's stated
+        # pre-programmed default; student then reduces Phase Shift Bits to
+        # see quantization sidelobes.
+        base.update({
+            "mode": "Beam Sweep", "ui_tab": "tab-rect",
+            "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
+            "ignore_res": True,
+        })
     elif lab_idx == 7:
-        base.update({"mode": "Beam Sweep", "ui_tab": "tab-rect"})
+        # MEASURING THE ACTUAL ANTENNA PATTERN (p.14): Signal vs Time so
+        # student manually rotates the HB100 to trace amplitude vs time.
+        base.update({"mode": "Signal vs Time", "ui_tab": "tab-tracking"})
     elif lab_idx == 8:
-        base.update(
-            {
-                "mode": "Tracking",
-                "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
-                "ui_tab": "tab-tracking",
-            }
-        )
+        # MONOPULSE TRACKING (p.28): Tracking mode + Blackman taper +
+        # delta/error display
+        base.update({
+            "mode": "Tracking", "ui_tab": "tab-rect",
+            "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
+            "showDelta": True, "showError": True,
+        })
 
     return base
 

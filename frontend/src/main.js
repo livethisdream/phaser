@@ -2134,6 +2134,13 @@ function applyLabPreset(preset) {
         showErrorEl.dispatchEvent(new Event('change'));
     }
 
+    // Apply Enforce Symmetric Taper toggle (used by Lab 3 to keep student
+    // taper exploration mirror-symmetric across the array center)
+    const symmetricTaperEl = document.getElementById('opt-symmetric-taper');
+    if (symmetricTaperEl && typeof preset.symmetricTaper === 'boolean') {
+        symmetricTaperEl.checked = preset.symmetricTaper;
+    }
+
     const tabName = preset.ui_tab || 'tab-rect';
     document.querySelector(`[data-target="${tabName}"]`)?.click();
     applyInitialStateToControls();
@@ -2143,6 +2150,9 @@ function applyLabPreset(preset) {
 }
 
 function localLabPreset(labIdx) {
+    // Base state matches the "clean slate" the labs expect: uniform 8-element
+    // array, zero per-element phase, 7-bit phase (default hardware), 10 MHz
+    // signal BW (so beam-squint is negligible until Lab 5 raises it).
     const base = {
         mode: 'Beam Sweep',
         gainList: [100,100,100,100,100,100,100,100],
@@ -2153,11 +2163,60 @@ function localLabPreset(labIdx) {
         BW: 10,
         ui_tab: 'tab-rect',
     };
+    // Preset entries are aligned with docs/2025_Phaser_labs_Python.pdf
+    // (PHASER Phased Array Radar Workshop, Python edition, 2025).
     switch (labIdx) {
-        case 1: return { ...base, mode: 'Static Phase', ui_tab: 'tab-fft' };
-        case 5: return { ...base, mode: 'Beam Sweep', BW: 500, ui_tab: 'tab-rect' };  // Beam Squint: 500 MHz offset shows ~3° shift at 45°
-        case 6: return { ...base, mode: 'Beam Sweep', ui_tab: 'tab-rect' };  // Quantization: change bits slider to see effect on beam pattern
-        case 8: return { ...base, mode: 'Tracking', gainList: [6,27,66,100,100,66,27,6], ui_tab: 'tab-rect', showDelta: true, showError: true };
+        // Lab 1 — STEERING ANGLE (PDF p.9): student moves the Steering Angle
+        // slider while watching the FFT to observe the peak, then switches
+        // to the Rect plot. Start on FFT tab in Beam Sweep so they see live
+        // spectrum immediately.
+        case 1: return { ...base, mode: 'Beam Sweep', ui_tab: 'tab-fft' };
+
+        // Lab 2 — ARRAY FACTOR AND BEAMWIDTH (PDF p.11): uniform 8-element
+        // array on Rect plot. PDF has student later disable Rx1/2/7/8 by
+        // hand to reduce to N=4, then N=2 — we start at the full array.
+        case 2: return { ...base, ui_tab: 'tab-rect' };
+
+        // Lab 3 — SIDELOBES AND TAPERING (PDF p.16): PDF instructs student
+        // to enable Symmetric Taper and then try different taper profiles.
+        // Preset enforces symmetric taper so exploration stays symmetric.
+        case 3: return { ...base, ui_tab: 'tab-rect', symmetricTaper: true };
+
+        // Lab 4 — GRATING LOBES (PDF p.17): PDF instructs student to set
+        // Rx2/3/5/6/8 = 0, leaving Rx1/4/7 active with spacing d_eff = 3d
+        // = 42mm. At 10.3 GHz (λ ≈ 29mm), grating lobes appear at
+        // sin⁻¹(m·λ/d_eff) ≈ ±44°. Preset applies that taper directly so
+        // students see the grating lobes on first sweep.
+        case 4: return { ...base, ui_tab: 'tab-rect',
+                         gainList: [100, 0, 0, 100, 0, 0, 100, 0] };
+
+        // Lab 5 — BEAM SQUINT (PDF p.19): PDF sets signal BW to 500 MHz and
+        // steers to +45° so the student sees the ~3° squint predicted by
+        // arcsin(10.5/10 * sin(45°)) - 45°.
+        case 5: return { ...base, BW: 500, ui_tab: 'tab-rect' };
+
+        // Lab 6 — QUANTIZATION SIDELOBES (PDF p.21): PDF explicitly says
+        // "Blackman is the pre-programmed default for this lab" and sets
+        // steering angle to 15°. Uses Phase Shift Bits (not steer_res) as
+        // the quantization knob — set ignore_res=true so student's changes
+        // to the Bits slider drive the phase step.
+        case 6: return { ...base, ui_tab: 'tab-rect',
+                         gainList: [6, 27, 66, 100, 100, 66, 27, 6],
+                         ignore_res: true };
+
+        // Lab 7 — MEASURING THE ACTUAL ANTENNA PATTERN (PDF p.14):
+        // (Renamed from "Hybrid Control" — PDF has no lab by that name.)
+        // PDF selects Signal vs Time mode so the student physically rotates
+        // the HB100 by hand and traces the pattern amplitude vs time.
+        case 7: return { ...base, mode: 'Signal vs Time', ui_tab: 'tab-tracking' };
+
+        // Lab 8 — MONOPULSE TRACKING (PDF p.28): PDF selects Blackman taper
+        // and enables monopulse delta/error display. Tracking mode drives
+        // the closed-loop steering.
+        case 8: return { ...base, mode: 'Tracking', ui_tab: 'tab-rect',
+                         gainList: [6, 27, 66, 100, 100, 66, 27, 6],
+                         showDelta: true, showError: true };
+
         default: return base;
     }
 }
