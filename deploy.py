@@ -83,6 +83,15 @@ def main():
         "phaser_cal_headless.py",
         "phaser_find_hb100_headless.py",
         "phaser_cw_radar.py",
+        # Helpers that phaser_headless.py imports at module top. The Pi
+        # historically shipped its own copies; now that these live in the
+        # repo they're deployed as one atomic set to prevent version skew.
+        # NOTE: config.py is deliberately excluded — the Pi's copy may have
+        # site-specific values (URIs, calibrated defaults) that we don't
+        # want to overwrite. Use config_custom.py for local overrides.
+        "ADAR_pyadi_functions.py",
+        "SDR_functions.py",
+        "phaser_functions.py",
     ]
     for filename in backend_files:
         py_file = script_dir / filename
