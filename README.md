@@ -100,6 +100,43 @@ The panel is also hidden if the backend isn't in sim mode, so a
 student loading the *real* Pi app with `?instructor=1` still doesn't
 see it.
 
+### CTF mode
+
+`?ctf=1` reveals a **CTF Mode** panel for the GRCon26 signals CTF. A
+player steers the beam through a sector sequence, holding each sector
+briefly, and the backend hands back a flag when the sequence completes.
+
+```text
+http://phaser.local:8080/?ctf=1
+```
+
+Unlike instructor mode, the URL parameter is UI convenience, **not** a
+secret. `frontend/dist` is served to every browser that connects and a
+CTF player's whole job is to go looking, so the sequence check and the
+flag both live in `phaser_ctf.py` on the backend. The panel only
+renders what the backend reports.
+
+**Neither the flag nor the target sequence is in this repo.** Both are
+read from the environment, or from `ctf_flag.txt` / `ctf_sequence.txt`
+next to the backend (both gitignored, and `deploy.py` does not copy
+them — same treatment as `config.py`). Without them the module falls
+back to a harmless demo sequence and a placeholder flag, so the panel
+is still developable.
+
+```bash
+export PHASER_CTF_SEQUENCE="3 1 4 1 2"
+export PHASER_CTF_FLAG="flag{...}"
+export PHASER_CTF_ALLOW_SIM=0        # optional: hardware-only flag issue
+python phaser_headless.py
+```
+
+Sectors default to five bins centred at −60/−30/0/+30/+60° with ±12°
+tolerance and a 2 s dwell; all of that is constructor arguments on
+`CtfMode`. The mode is passive — it watches the commanded `phaseList`
+and answers `ctf_status` / `ctf_reset`, and does nothing at all unless
+a browser asks. `python test_phaser_ctf.py` covers the state machine
+with no hardware and no backend.
+
 ## Local development
 
 ```bash

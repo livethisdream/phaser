@@ -21,6 +21,12 @@ release/
 calibration.json
 hb100_cal.txt
 
+# CTF mode secrets — the flag and the target sector sequence live on the Pi
+# (or in the environment), never in the repo. phaser_ctf.py falls back to a
+# harmless demo sequence and a placeholder flag when these are absent.
+ctf_flag.txt
+ctf_sequence.txt
+
 # Logs
 logs/
 

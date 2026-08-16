@@ -58,6 +58,7 @@ from phaser_functions import load_hb100_cal
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
+from phaser_ctf import CtfMode  # GRCon26 CTF sector-sequence mode (additive)
 
 
 class PhaserHeadless:
@@ -255,6 +256,13 @@ class PhaserHeadless:
         self.phase_step = 2.8125  # 7 bits = 360/128
         self.steer_min = -90
         self.steer_max = 90
+
+        # GRCon26 CTF sector-sequence mode. Passive: it only watches the
+        # commanded phaseList and answers ctf_status / ctf_reset, so it has no
+        # effect on the workshop app unless a browser asks for it. Flag and
+        # target sequence come from the environment or gitignored sidecar
+        # files — see phaser_ctf.py.
+        self.ctf = CtfMode()
 
         # Tx mode
         self.Tx_mode = "Transmit Disabled"
@@ -887,6 +895,10 @@ class PhaserHeadless:
             if "phaseList" in state:
                 incoming = list(state["phaseList"])[:8]
                 self.phaseList = [float(v) for v in (incoming + [0.0] * 8)[:8]]
+                # Where the operator deliberately pointed the beam. Hooked
+                # here rather than in do_sweep, which walks every steer angle
+                # in the range by design and would swamp the state machine.
+                self.ctf.observe(self.phaseList, self.ConvertPhaseToSteerAngle)
             if "Tx_mode" in state:
                 self.set_tx_mode(state["Tx_mode"])
             if "Averages" in state:
@@ -947,6 +959,13 @@ class PhaserHeadless:
                     self.phase_step = float(state["steer_res"])
                     print(f"Steering resolution set to {self.phase_step}°")
             return {"status": "ok"}
+
+        elif cmd == "ctf_status":
+            return self.ctf.status(sim_mode=self.sim_mode)
+
+        elif cmd == "ctf_reset":
+            self.ctf.reset()
+            return self.ctf.status(sim_mode=self.sim_mode)
 
         elif cmd == "run_calibration":
             return self.run_calibration(data.get("task_name", "find_hb100"))

@@ -83,6 +83,10 @@ def main():
         "phaser_cal_headless.py",
         "phaser_find_hb100_headless.py",
         "phaser_cw_radar.py",
+        # Imported at module top by phaser_headless.py. Note the flag and
+        # sequence sidecars (ctf_flag.txt / ctf_sequence.txt) are NOT deployed
+        # — they live on the Pi only, same reasoning as config.py below.
+        "phaser_ctf.py",
         # Helpers that phaser_headless.py imports at module top. The Pi
         # historically shipped its own copies; now that these live in the
         # repo they're deployed as one atomic set to prevent version skew.

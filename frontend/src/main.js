@@ -36,6 +36,13 @@ const state = {
 // Simulator Interferer accordion. Students never see it.
 const instructorMode = new URLSearchParams(window.location.search).get('instructor') === '1';
 
+// CTF mode: ?ctf=1 reveals the GRCon26 sector-sequence panel. Unlike
+// instructor mode this parameter is UI convenience only, NOT a secret —
+// the sequence check and the flag live in the backend, because this bundle
+// is served to every browser that connects and a CTF player's whole job is
+// to go looking. Everything below only displays what the backend reports.
+const ctfMode = new URLSearchParams(window.location.search).get('ctf') === '1';
+
 // When switching Manual -> MVDR, we zero B0/B1 so residual manual weights
 // don't fight the adaptive algorithm. These snapshots restore them on the
 // way back.
@@ -1006,6 +1013,85 @@ function revealSimInterfererIfEligible(serverState) {
     el.hidden = !showIt;
 }
 
+/* --- CTF Mode (GRCon26) ---
+   A display for backend state, nothing more. It polls ctf_status rather than
+   computing anything: the backend needs a poll to advance its dwell clock
+   anyway, since a player who steers and then holds still sends no further
+   commands. */
+let ctfPollTimer = null;
+
+function renderCtfStatus(data) {
+    if (!data) return;
+
+    const sectorsEl = document.getElementById('ctf-sectors');
+    if (sectorsEl && Array.isArray(data.sectors) && !sectorsEl.dataset.filled) {
+        sectorsEl.textContent = 'Sectors: ' + data.sectors
+            .map(s => `${s.sector} @ ${s.centre_deg}°`).join('   ');
+        sectorsEl.dataset.filled = '1';
+    }
+
+    const currentEl = document.getElementById('ctf-current');
+    if (currentEl) {
+        const angle = Number.isFinite(data.current_angle_deg)
+            ? `${data.current_angle_deg.toFixed(1)}°` : '—';
+        const sector = data.current_sector ? `sector ${data.current_sector}` : 'between sectors';
+        currentEl.textContent = `Beam: ${angle}  (${sector})`;
+    }
+
+    const progressEl = document.getElementById('ctf-progress');
+    if (progressEl) {
+        if (data.matched) {
+            progressEl.textContent = `Sequence complete (${data.sequence_length} of ${data.sequence_length}).`;
+        } else if (Number.isFinite(data.progress)) {
+            progressEl.textContent = `Progress: ${data.progress} of ${data.sequence_length}`
+                + `  ·  hold a sector ${data.dwell_s}s to lock it in`;
+        } else {
+            progressEl.textContent = `Hold each sector ${data.dwell_s}s to lock it in`;
+        }
+    }
+
+    const flagEl = document.getElementById('ctf-flag');
+    if (flagEl) {
+        if (data.flag) {
+            flagEl.textContent = data.flag;
+        } else if (data.flag_withheld_in_sim) {
+            flagEl.textContent = 'Sequence complete — but this backend is in sim mode, so no flag. Come find the array.';
+        } else if (data.matched && !data.configured) {
+            flagEl.textContent = 'Sequence complete — no flag configured on this backend.';
+        } else {
+            flagEl.textContent = '';
+        }
+    }
+}
+
+async function pollCtfStatus() {
+    try {
+        const resp = await transport.invoke('ctf_status', {});
+        if (resp?.status === 'ok') renderCtfStatus(resp.data);
+    } catch (err) {
+        // A dropped poll is not worth logging every 700 ms; the next one retries.
+    }
+}
+
+function revealCtfIfEligible() {
+    const el = document.getElementById('accordion-ctf');
+    if (!el) return;
+    el.hidden = !ctfMode;
+    if (ctfMode && !ctfPollTimer) {
+        pollCtfStatus();
+        ctfPollTimer = setInterval(pollCtfStatus, 700);
+    }
+}
+
+document.getElementById('btn-ctf-reset')?.addEventListener('click', async () => {
+    try {
+        const resp = await transport.invoke('ctf_reset', {});
+        if (resp?.status === 'ok') renderCtfStatus(resp.data);
+    } catch (err) {
+        addRuntimeLog('warn', 'CTF', 'Could not reset: ' + err);
+    }
+});
+
 const simInterfererEnable = document.getElementById('sim-interferer-enable');
 if (simInterfererEnable) {
     simInterfererEnable.addEventListener('change', (e) => {
@@ -1262,6 +1348,7 @@ async function loadStateFromServer() {
         // ?instructor=1 AND (b) backend is running in sim mode. Also
         // hydrate the panel's controls from the current server state.
         revealSimInterfererIfEligible(msg.data);
+        revealCtfIfEligible();
         if (typeof msg.data.sim_interferer_enable === 'boolean') {
             state.sim_interferer_enable = msg.data.sim_interferer_enable;
             const el = document.getElementById('sim-interferer-enable');

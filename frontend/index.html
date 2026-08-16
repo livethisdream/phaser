@@ -402,6 +402,20 @@
                 </div>
             </div>
 
+            <div class="accordion-item" id="accordion-ctf" hidden>
+                <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="7"></span> CTF Mode <span>▼</span></button>
+                <div class="accordion-body">
+                    <div id="ctf-sectors" class="mt-2" style="font-size:0.8rem; color:var(--text-muted);"></div>
+                    <div id="ctf-current" class="mt-2" style="font-size:0.9rem;">Beam: —</div>
+                    <div id="ctf-progress" class="mt-2" style="font-size:0.9rem;">Progress: —</div>
+                    <div id="ctf-flag" class="mt-2" style="font-size:0.95rem; font-weight:600; word-break:break-all;"></div>
+                    <button class="btn btn-outline btn-small mt-2" id="btn-ctf-reset">Start Over</button>
+                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0.5rem 0 0; line-height:1.35;">
+                      Steer the beam into each sector in turn and hold it there. Only visible with <code>?ctf=1</code> in the URL. The sequence check and the flag live in the backend — there is nothing to find in this page.
+                    </p>
+                </div>
+            </div>
+
             </div>
 
           <!-- Theme Toggle (bottom of sidebar) -->
