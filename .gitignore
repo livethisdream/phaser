@@ -78,6 +78,7 @@ graphify-out/
 # Reference material (kept locally, not in repo — too large for git,
 # and it's binary reference material, not source)
 docs/*.pdf
+!docs/2025_Phaser_labs_Python.pdf
 
 # Documentation artifacts (generated)
 COMPLETE_SOLUTION.md
