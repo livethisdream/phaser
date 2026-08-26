@@ -39,9 +39,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           # Must stay on the Node major whose bundled npm generated the
           # committed lockfiles. Node 20 ships npm 10, which builds a
