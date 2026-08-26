@@ -34,6 +34,38 @@ and a Pi that has already been provisioned (below). No Node required.
 python phaser_headless.py --sim   # then open http://localhost:8080
 ```
 
+### Install on a Pi (any OS, two lines)
+
+```
+ssh analog@phaser.local
+curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
+```
+
+That is the whole install, from Windows, macOS or Linux, because line one is
+just `ssh` -- which every OS ships -- and line two runs on the Pi.
+
+`install.sh` runs **on the Pi** on purpose. The Pi is the one machine whose
+environment we control; every deployment bug this project has had came from the
+client side instead -- cmd.exe not expanding globs, PATHEXT and `npm.cmd`, no
+ControlMaster in Windows OpenSSH, BatchMode refusing password auth, `ssh -t`
+defeated by a stdin redirect, ConPTY and sudo, a Microsoft Store alias
+masquerading as `python`. None of that is about installing Phaser. Moving the
+logic to the Pi deletes all of it, and `sudo` simply works because you are
+sitting at an interactive shell.
+
+It is idempotent: run it again to update. It updates a drifted systemd unit,
+replaces the frontend atomically rather than merging over stale hashed assets,
+and never overwrites an existing `config.py`.
+
+Options: `PHASER_REF=<branch-or-tag>` to install something other than `main`;
+`PHASER_SRC=/path/to/repo` to install from a local copy with no download at all
+(useful when the Pi has no internet); `GH_TOKEN` if the repo is private.
+
+### Deploying while you work on it
+
+`install.sh` provisions. For an edit/test loop, `deploy.py` copies your working
+tree straight to the Pi without a round trip through GitHub -- see below.
+
 ### Prerequisites
 
 `deploy.py` imports **only the standard library**, so any Python 3.9+ runs it
