@@ -43,11 +43,21 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Must stay on the Node major whose bundled npm generated the
+          # committed lockfiles. Node 20 ships npm 10, which builds a
+          # different @emnapi optional-dep tree for rolldown's wasm
+          # binding and rejects an npm 11 lockfile as out of sync.
+          node-version: '24'
           cache: npm
           cache-dependency-path: |
             frontend/package-lock.json
             frontend-radar/package-lock.json
+
+      # Belt and braces: pin the npm major explicitly so a future Node 24.x
+      # that bundles npm 12 cannot silently reintroduce the lockfile
+      # mismatch above. Bump this together with the lockfiles.
+      - name: Pin npm
+        run: npm install -g npm@11
 
       # `npm run build` runs the prebuild hook, which copies Plotly out of
       # node_modules into public/vendor/ so the bundle has no CDN deps.
