@@ -34,6 +34,23 @@ and a Pi that has already been provisioned (below). No Node required.
 python phaser_headless.py --sim   # then open http://localhost:8080
 ```
 
+### Prerequisites
+
+`deploy.py` imports **only the standard library**, so any Python 3.9+ runs it
+with nothing installed -- no venv, no `uv sync`, no pip. A test enforces that
+(`tests/test_deploy_deps.py`), because the alternative is telling a tester to
+install a toolchain before they can deploy anything.
+
+You also need an ssh client. On Windows that is
+Settings > Apps > Optional features > OpenSSH Client.
+
+**On Windows, do not rely on `python` already being on PATH.** Windows ships a
+Microsoft Store *App Execution Alias* at
+`...\AppData\Local\Microsoft\WindowsApps\python.exe`, which `where.exe python`
+happily finds and which is not an interpreter -- `python --version` fails on it.
+Install a real one from python.org (tick "Add python.exe to PATH"), or, if you
+have `uv`, `uv python install`.
+
 ### First-time Pi provisioning
 
 A Pi straight out of the box needs its Python deps installed once.
