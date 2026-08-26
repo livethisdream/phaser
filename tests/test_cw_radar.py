@@ -17,7 +17,24 @@ from pathlib import Path
 # Backend modules live at the repo root, one level up from tests/.
 # Anchored to __file__ so this works regardless of the working directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from phaser_cw_radar import process_cw_frame, DEFAULTS
+# pytest is optional. This file predates the suite and is still meant to run as
+# a plain script on the Pi -- which has no pytest -- so importing it
+# unconditionally would break the way it is actually used there.
+try:
+    import pytest
+except ImportError:
+    pytest = None
+
+try:
+    from phaser_cw_radar import process_cw_frame, DEFAULTS
+except Exception as exc:  # noqa: BLE001 - libiio absent or ABI-mismatched
+    # pyadi-iio binds libiio at import; where that is missing or a different
+    # ABI (a container without the matching .so, say) the failure is an
+    # AttributeError rather than ImportError, so importorskip does not help.
+    # Skip the module rather than failing collection for the whole suite.
+    if pytest is None:
+        raise
+    pytest.skip(f"phaser_cw_radar unavailable: {exc}", allow_module_level=True)
 
 
 def synthesize(fs, n, signal_freq, doppler_velocity_mps, output_freq, snr_db=20):
@@ -70,13 +87,27 @@ def run_case(velocity, label):
     json.dumps(result)
 
 
+# These cases have always been here and have always asserted something real --
+# monotonic axis, no NaN, peak velocity within three bins, JSON round-trip --
+# but nothing in the file was named test_*, so pytest collected zero tests and
+# passed vacuously. main() is kept so the file still runs as a script.
+CASES = (-12.0, -2.5, 0.0, 5.0, 17.0)
+
+
+if pytest is not None:
+    @pytest.mark.parametrize("velocity", CASES)
+    def test_recovers_simulated_velocity(velocity):
+        np.random.seed(0)   # synthesize() adds noise; keep the result decidable
+        run_case(velocity, f"v={velocity:+.1f}")
+
+
 def main():
     print("phaser_cw_radar.process_cw_frame() synthetic test")
     print("-" * 60)
     print(f"  fs={DEFAULTS['sample_rate']} Hz, fft={DEFAULTS['fft_size']}, "
           f"sig_freq={DEFAULTS['signal_freq']} Hz, output_freq={DEFAULTS['output_freq']/1e9} GHz")
     np.random.seed(0)
-    for v in (-12.0, -2.5, 0.0, 5.0, 17.0):
+    for v in CASES:
         run_case(v, f"v={v:+.1f}")
     print("\nAll cases passed.")
 

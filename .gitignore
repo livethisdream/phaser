@@ -49,10 +49,14 @@ sim_data.json
 electron/
 src-tauri/
 
+# NOTE: scripts/ and tests/ used to be listed here as legacy. They are not
+# legacy any more -- c7a2f29 moved the setup scripts and the test suite into
+# them and tracked the contents. The stale rules silently swallowed every NEW
+# file added to either directory (already-tracked files ignore .gitignore, so
+# nothing looked wrong). Do not re-add them.
+
 # Legacy files (kept locally, not in repo)
 radar/
-scripts/
-tests/
 diagnose_hardware.py
 phaser_app.py
 phaser_cal.py
