@@ -5,8 +5,10 @@ build/
 wheels/
 *.egg-info
 
-# Virtual environments (out-of-tree per OneDrive policy; these are
-# symlinks, so no trailing slash -- git sees a file, not a directory)
+# Virtual environments. The project is WSL-native now, so the venv is
+# in-tree (.venv/). The two names below are the out-of-tree symlinks the
+# OneDrive-hosted copy used; kept so that checkout stays clean there.
+.venv/
 .venv-linux
 .venv-win
 
@@ -73,7 +75,6 @@ phaser_zmq_server.py
 test_minimal.py
 start*.bat
 start*.py
-.python-version
 AGENTS.md
 
 # Generated knowledge graph

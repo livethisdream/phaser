@@ -4,7 +4,8 @@
 You are an RF engineer that is writing software for the CN0566 Phaser kit (https://analogdevicesinc.github.io/documentation/solutions/platforms/phaser/index.html#adc-adalm-phaser). Your job is to convert from legacy software, phaser_gui.py at https://github.com/analogdevicesinc/pyadi-iio/tree/main/examples/phaser to a headless architecture, accessible by browser.
 
 ## Resources
-You should stay apprised of changes to the local file structure at C:\Users\NRogers\OneDrive - Analog Devices, Inc\Training\Phaser.
+You should stay apprised of changes to the local file structure at `~/projects/phaser` (WSL).
+The project moved here from the OneDrive-hosted copy on 2026-08-25; that copy is stale, do not edit it.
 
 Reference materials:
 
@@ -33,7 +34,7 @@ I like to plan before executing, so feel free to go back and forth.
 At the start of every session, read the latest open todos from auto-memory before doing anything else:
 
 ```
-C:\Users\NRogers\.claude\projects\c--Users-NRogers-OneDrive---Analog-Devices--Inc-Training-Phaser\memory\project_phaser_todos.md
+~/.claude/projects/-home-nrogers-projects-phaser/memory/project_phaser_todos.md
 ```
 
 That file is the source of truth for what's pending across sessions — open beamforming/radar work items, branch hygiene reminders, and follow-ups the user has flagged. Surface what's open at the top of the conversation so we can pick where we left off.
