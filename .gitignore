@@ -56,10 +56,6 @@ frontend/phaser_desktop.html
 frontend/src/assets/
 frontend/src/counter.js
 frontend/src/ipc-bridge-native.js
-frontend/src/transport-ipc.js
-frontend/src/transport-web.js
-frontend/src/transport-electron.js
-frontend/src/transport-tauri.js
 frontend/src/vendor/
 
 # Dev utilities
