@@ -5,9 +5,15 @@ build/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv-linux/
-.venv-win/
+# Virtual environments (out-of-tree per OneDrive policy; these are
+# symlinks, so no trailing slash -- git sees a file, not a directory)
+.venv-linux
+.venv-win
+
+# Stray root lockfile: there is no root package.json. Anchored with a
+# leading slash so frontend/ and frontend-radar/ lockfiles stay tracked
+# (CI needs them for npm ci).
+/package-lock.json
 
 # IDE
 .idea/
@@ -33,7 +39,6 @@ sim_data.json
 # Electron/Tauri (not using these)
 electron/
 src-tauri/
-package-lock.json
 
 # Legacy files (kept locally, not in repo)
 radar/
@@ -48,7 +53,6 @@ phaser_ipc_worker.py
 phaser_server.py
 requirements.txt
 frontend/phaser_desktop.html
-frontend/public/
 frontend/src/assets/
 frontend/src/counter.js
 frontend/src/ipc-bridge-native.js

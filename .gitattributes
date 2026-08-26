@@ -1,0 +1,9 @@
+# setup.sh / setup-pi.sh are piped into `bash -s` on the Pi (see setup.ps1).
+# Without this, core.autocrlf=true hands Linux a CRLF script and every line
+# dies with "$'\r': command not found".
+*.sh text eol=lf
+
+# Vendored/binary assets: never touch.
+*.woff2 binary
+*.png   binary
+*.pkl   binary

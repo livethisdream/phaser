@@ -9,6 +9,88 @@ vanilla-JS + Plotly frontend connects over WebSocket from any machine on
 the same network. A local **simulation mode** lets you develop against
 physics-based hardware stubs when no Phaser is attached.
 
+**The built UI is committed to this repo and is fully self-contained.**
+You do not need Node, npm, or an internet connection to deploy or run it
+— see [No-build deployment](#no-build-deployment).
+
+## Quickstart
+
+From a fresh clone, with your Phaser kit on the same network:
+
+```bash
+python deploy.py                  # default host: phaser.local
+python deploy.py 192.168.1.42     # or an explicit IP
+```
+
+Then open `http://phaser.local:8080`.
+
+**Prerequisites**: Python 3.11+ and an OpenSSH client on your machine,
+passwordless ssh to `analog@<pi>` (`ssh-copy-id analog@<pi>` if not),
+and a Pi that has already been provisioned (below). No Node required.
+
+**No Phaser attached?** Run sim mode locally instead:
+
+```bash
+python phaser_headless.py --sim   # then open http://localhost:8080
+```
+
+### First-time Pi provisioning
+
+A Pi straight out of the box needs Python deps and the systemd unit
+installed once. `setup.sh` / `setup.ps1` do that, then deploy. These
+two scripts still require Node + npm locally and rebuild the frontend
+themselves -- only this first-time step does:
+
+```powershell
+.\setup.ps1                       # Windows PowerShell
+.\setup.ps1 192.168.1.42
+```
+
+```bash
+./setup.sh                        # macOS / Linux / WSL
+./setup.sh 192.168.1.42
+```
+
+After that, `python deploy.py` is all you need for every subsequent
+update.
+
+## No-build deployment
+
+`frontend/dist/` and `frontend-radar/dist/` are **committed to the
+repo**, built by GitHub Actions
+([`.github/workflows/build-frontends.yml`](.github/workflows/build-frontends.yml))
+on every push that touches frontend sources. CI owns `dist/`; you
+normally never build it by hand.
+
+Two consequences worth knowing:
+
+**1. Clone → deploy, with no toolchain.** `deploy.py` does not build by
+default. A machine with only Python and ssh can deploy a working UI.
+Building is opt-in via `--build`.
+
+**2. The UI is fully offline.** Plotly and the Inter/Outfit webfonts are
+vendored into the build rather than pulled from a CDN, so the page
+renders on an isolated network with no internet route. The CI job fails
+the build if an external `<script src>`, `<link href>`, or CSS `url()`
+creeps back in.
+
+Vendoring lives in two places:
+
+- `tools/vendor_plotly.mjs` — copies `plotly.js-dist-min` out of
+  `node_modules` into `public/vendor/plotly.min.js` at a **stable**
+  filename (not a hashed Vite asset, so git stores one blob instead of
+  a fresh 3.5 MB one per rebuild). Wired as the `prebuild` npm hook, so
+  `npm run build` picks it up automatically. Plotly is pinned to exactly
+  `2.30.0` — the UI is tuned against that version.
+- `tools/fetch_fonts.py` — refetches the woff2 files into
+  `frontend/public/fonts/` and mirrors them to `frontend-radar/`. Only
+  needed if you change fonts; the files are committed (~180 KB, latin +
+  latin-ext subsets only).
+
+`deploy.py` warns if your frontend sources look newer than the committed
+build. That's advisory only — mtimes are unreliable across clones and
+OneDrive sync — but it stops a stale `dist/` from shipping silently.
+
 ## Architecture
 
 ```text
@@ -35,29 +117,32 @@ Servers on the Pi:
 
 ## Deploying to the Pi
 
-Edit files locally, then run one command to build the frontend, scp the
-Python files, and restart the systemd service:
-
 ```bash
-python deploy.py                  # deploys to phaser.local (default)
-python deploy.py 192.168.1.42     # deploys to a specific host
-python deploy.py --build-only     # just runs `npm run build`
-python deploy.py --no-radar       # skips the CW radar frontend
+python deploy.py                  # deploy committed build to phaser.local
+python deploy.py 192.168.1.42     # deploy to a specific host
+python deploy.py --radar          # also deploy the CW radar app
+python deploy.py --sim-only       # prepare for --sim, don't deploy
+python deploy.py --build          # rebuild from source first (needs Node)
+python deploy.py --build-only     # rebuild, don't deploy
 ```
 
-The Pi runs `phaser-headless.service`; `deploy.py` restarts it over ssh
-after the scp. Open `http://phaser.local:8080` in a browser and you're
-there.
+The CW radar frontend is **opt-in** via `--radar`. It's a separate app on
+:8081 with no simulation path, so it isn't deployed unless you ask for
+it. (`--no-radar` is still accepted, and is now a no-op.)
+
+If the committed build is missing entirely, `deploy.py` builds it for you
+when npm is available, and tells you what to do when it isn't.
 
 `deploy.py` copies:
 
 - Backend Python entrypoints and their helper modules (see the file for
   the exact list)
-- Built frontend (`frontend/dist/*` → `www/`)
-- Radar frontend (`frontend-radar/dist/*`) if present
+- Built frontend (`frontend/dist/*`)
+- Radar frontend (`frontend-radar/dist/*`) with `--radar`
 
 It deliberately **does not** copy `config.py`, so any Pi-specific values
-(URIs, calibrated defaults) survive.
+(URIs, calibrated defaults) survive. It restarts `phaser-headless.service`
+over ssh after the scp.
 
 ## Simulation mode (no Phaser required)
 
@@ -100,23 +185,24 @@ The panel is also hidden if the backend isn't in sim mode, so a
 student loading the *real* Pi app with `?instructor=1` still doesn't
 see it.
 
-## Local development
+## Frontend development
+
+Only needed if you're changing the UI. Everyone else can ignore this
+section — CI builds `dist/` on push.
 
 ```bash
-# One-time
 cd frontend
-npm install
-
-# Iterating on frontend
-cd frontend
-npm run build       # writes to frontend/dist
+npm install         # one-time
+npm run build       # writes to frontend/dist (prebuild hook vendors Plotly)
 ```
 
 `npm run dev` (Vite hot-reload) is **not** wired to the backend — it
 can't reach `ws://localhost:8765` because Vite's dev server doesn't
-proxy WebSockets to the backend. Use `npm run build` + reload the
-browser, or run `python phaser_headless.py --sim` and use its HTTP
-server.
+proxy WebSockets. Use `npm run build` + reload the browser, or run
+`python phaser_headless.py --sim` and use its HTTP server.
+
+You can commit `dist/` yourself or let CI rebuild it on push; CI is
+authoritative and will overwrite with its own build either way.
 
 Backend edits: no build step. Restart `phaser_headless.py` (locally or
 on the Pi via `deploy.py`).
@@ -155,7 +241,7 @@ Top-level Python:
 - `phaser_service.py` — legacy desktop-app service layer (older
   PyWebView path; still used by the release bundle)
 - `config.py` — hardware URIs and default frequencies
-- `deploy.py` — build + scp + restart-service workflow
+- `deploy.py` — scp + restart-service workflow (build is opt-in)
 
 Frontend (`frontend/`):
 
@@ -164,7 +250,16 @@ Frontend (`frontend/`):
 - `src/style.css` — theme, layout
 - `src/transport.js` — WebSocket transport facade
 - `index.html` — sidebar structure + accordion sections
-- `dist/` — built output (deployed as-is; committed for the Pi)
+- `public/fonts/`, `public/vendor/` — vendored webfonts and Plotly,
+  copied verbatim into `dist/` by Vite
+- `dist/` — built output, **committed** and deployed as-is
+
+Tooling:
+
+- `tools/vendor_plotly.mjs` — `prebuild` hook, vendors Plotly
+- `tools/fetch_fonts.py` — refetch the webfont subsets
+- `.github/workflows/build-frontends.yml` — builds both frontends,
+  verifies they're self-contained, commits `dist/` back
 
 ## Reference
 

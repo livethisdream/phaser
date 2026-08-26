@@ -8,9 +8,14 @@ pnpm-debug.log*
 lerna-debug.log*
 
 node_modules
-dist
 dist-ssr
 *.local
+
+# dist/ IS committed: it's built by CI so a fresh clone can deploy without
+# Node installed. See .github/workflows/build-frontends.yml.
+# The vendored Plotly copy is regenerated from node_modules by the npm
+# `prebuild` script, so only the dist/ copy is tracked.
+public/vendor/
 
 # Editor directories and files
 .vscode/*

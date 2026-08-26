@@ -36,16 +36,37 @@ Frontend is vanilla JS + Plotly.js (not Solid.js), bundled with Vite.
 
 ## Deployment
 
-Use `deploy.py` to build and deploy:
+`frontend/dist/` and `frontend-radar/dist/` are **committed** (built by
+`.github/workflows/build-frontends.yml`), so `deploy.py` does NOT build by
+default — a clone with only Python + ssh can deploy. Building is opt-in.
+
 ```
-python deploy.py                  # Deploy to default host (192.168.86.20)
+python deploy.py                  # Deploy committed build to phaser.local
 python deploy.py 192.168.1.100    # Deploy to specific host
-python deploy.py --build-only     # Just build frontend, don't deploy
+python deploy.py --radar          # Also deploy the CW radar app
+python deploy.py --sim-only       # Prepare for --sim, don't deploy
+python deploy.py --build          # Rebuild from source first (needs Node)
+python deploy.py --build-only     # Rebuild, don't deploy
 ```
 
-Steps: `npm run build` → scp backend .py files → scp `frontend/dist/*` to Pi's `www/` → restart `phaser-headless` systemd service.
+Steps: (optional build) -> scp backend .py files -> scp `frontend/dist/*` to
+the Pi -> restart `phaser-headless` systemd service. If the committed build is
+missing entirely, deploy.py builds it when npm is available and errors with
+guidance when it isn't. It warns (advisory only) when sources look newer than
+the committed build.
 
-Local `npm run dev` won't connect to the backend (no WebSocket on localhost:8765). You must deploy to the Pi to test.
+The CW radar frontend (`frontend-radar/`, served on :8081) is **opt-in** via
+`--radar`. `--no-radar` is still accepted as a no-op.
+
+The built UI is fully offline-capable: Plotly (pinned 2.30.0) is vendored by
+the `prebuild` hook `tools/vendor_plotly.mjs` into `public/vendor/` at a stable
+filename, and Inter/Outfit woff2 subsets live in `public/fonts/`
+(`tools/fetch_fonts.py` refetches them). No CDN, no Google Fonts. CI fails the
+build if an external `<script src>`, `<link href>`, or CSS `url()` reappears.
+
+Local `npm run dev` won't connect to the backend (no WebSocket on
+localhost:8765). Deploy to the Pi to test, or run `python phaser_headless.py
+--sim`.
 
 ## Codebase Knowledge Graph
 

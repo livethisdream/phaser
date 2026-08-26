@@ -1,76 +1,69 @@
 #!/bin/bash
+# Phaser Pi one-time provisioning.
 #
-# Phaser Pi Setup Script
-# Run this on the Raspberry Pi to install/update the Phaser backend
+# This script runs ON THE PI. It:
+#   1. Installs Python dependencies phaser_headless.py needs
+#   2. Writes /etc/systemd/system/phaser-headless.service
+#   3. Enables the service (does not start it — deploy.py will do that
+#      after scp'ing the actual Python files)
 #
-# Usage:
-#   curl -sSL https://raw.githubusercontent.com/.../setup-pi.sh | bash
-#   or
-#   ./setup-pi.sh
+# Idempotent: safe to re-run.
 #
+# Typical invocation (from a laptop):
+#   ssh analog@phaser.local 'bash -s' < setup-pi.sh
+#
+# The laptop-side setup.sh / setup.ps1 wrappers pipe this file over ssh
+# automatically; you rarely need to run it by hand.
 
 set -e
 
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║              ADI Phaser Pi Setup Script                      ║"
-echo "╚══════════════════════════════════════════════════════════════╝"
-echo ""
-
-# Check if running on Pi
-if [[ ! -f /etc/os-release ]] || ! grep -q "Raspberry" /etc/os-release 2>/dev/null; then
-    echo "Warning: This doesn't appear to be a Raspberry Pi"
-    read -p "Continue anyway? [y/N] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
-
-# Default paths
 INSTALL_DIR="/home/analog/pyadi-iio/examples/phaser"
 SERVICE_NAME="phaser-headless"
-FRONTEND_DIR="/var/www/phaser"
+SERVICE_USER="analog"
+PYTHON_BIN="/usr/bin/python3"
 
-# Check for sudo
-if [[ $EUID -ne 0 ]]; then
-    SUDO="sudo"
-else
-    SUDO=""
+echo "=== Phaser Pi provisioning ==="
+echo "Install dir : $INSTALL_DIR"
+echo "Service     : $SERVICE_NAME"
+echo "Python      : $PYTHON_BIN"
+echo
+
+# ---- sanity ------------------------------------------------------------------
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "ERROR: $PYTHON_BIN not found. This script expects the Phaser Pi image."
+    exit 1
+fi
+if ! id "$SERVICE_USER" > /dev/null 2>&1; then
+    echo "ERROR: user '$SERVICE_USER' does not exist. This script expects the Phaser Pi image."
+    exit 1
 fi
 
-echo "[1/5] Installing Python dependencies..."
-pip3 install --user pyzmq msgpack websockets 2>/dev/null || {
-    echo "Trying with sudo..."
-    $SUDO pip3 install pyzmq msgpack websockets
-}
+# ---- Python deps -------------------------------------------------------------
+echo "[1/3] Installing Python dependencies for user '$SERVICE_USER'..."
+# pyadi-iio and numpy are already on the Phaser image. Install the rest.
+sudo -u "$SERVICE_USER" "$PYTHON_BIN" -m pip install --user --upgrade \
+    pyzmq msgpack websockets
 
-echo "[2/5] Creating directories..."
-$SUDO mkdir -p "$INSTALL_DIR"
-$SUDO mkdir -p "$FRONTEND_DIR"
-$SUDO chown -R analog:analog "$FRONTEND_DIR" 2>/dev/null || true
-
-echo "[3/5] Installing phaser_headless.py..."
-# If running from repo, copy local file; otherwise download
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "$SCRIPT_DIR/phaser_headless.py" ]]; then
-    $SUDO cp "$SCRIPT_DIR/phaser_headless.py" "$INSTALL_DIR/"
-    echo "  Copied from local: $SCRIPT_DIR/phaser_headless.py"
-else
-    echo "  Error: phaser_headless.py not found in $SCRIPT_DIR"
-    echo "  Please copy phaser_headless.py to $INSTALL_DIR manually"
+# ---- install dir -------------------------------------------------------------
+echo "[2/3] Ensuring install dir exists..."
+if [ ! -d "$INSTALL_DIR" ]; then
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 fi
 
-echo "[4/5] Installing systemd service..."
-cat << 'EOF' | $SUDO tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null
+# ---- systemd unit ------------------------------------------------------------
+echo "[3/3] Installing systemd unit..."
+sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" > /dev/null <<EOF
 [Unit]
-Description=Phaser Headless Backend
+Description=Phaser Headless Backend (browser-hosted beamforming + CW radar)
 After=network.target
 
 [Service]
 Type=simple
-User=analog
-WorkingDirectory=/home/analog/pyadi-iio/examples/phaser
-ExecStart=/usr/bin/python3 -u /home/analog/pyadi-iio/examples/phaser/phaser_headless.py
+User=$SERVICE_USER
+WorkingDirectory=$INSTALL_DIR
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$PYTHON_BIN -u $INSTALL_DIR/phaser_headless.py
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -80,39 +73,13 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
-$SUDO systemctl daemon-reload
-$SUDO systemctl enable ${SERVICE_NAME}
+sudo systemctl daemon-reload
+sudo systemctl enable "${SERVICE_NAME}"
 
-echo "[5/5] Starting service..."
-$SUDO systemctl restart ${SERVICE_NAME}
-sleep 2
-
-# Check if running
-if systemctl is-active --quiet ${SERVICE_NAME}; then
-    echo ""
-    echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║                    Setup Complete!                           ║"
-    echo "╠══════════════════════════════════════════════════════════════╣"
-    echo "║  Service Status: RUNNING                                     ║"
-    echo "║                                                              ║"
-    IP=$(hostname -I | awk '{print $1}')
-    printf "║  Web UI:     http://%-15s:8080                   ║\n" "$IP"
-    printf "║  WebSocket:  ws://%-15s:8765                     ║\n" "$IP"
-    echo "║                                                              ║"
-    echo "║  Commands:                                                   ║"
-    echo "║    sudo systemctl status phaser-headless                     ║"
-    echo "║    sudo journalctl -u phaser-headless -f                     ║"
-    echo "╚══════════════════════════════════════════════════════════════╝"
-else
-    echo ""
-    echo "ERROR: Service failed to start"
-    echo "Check logs with: sudo journalctl -u ${SERVICE_NAME} -n 50"
-    exit 1
-fi
-
-echo ""
-echo "To install the web frontend, copy the frontend/dist folder to:"
-echo "  $FRONTEND_DIR"
-echo ""
-echo "Or serve from local development with:"
-echo "  cd frontend && npm run dev"
+echo
+echo "=== Provisioning complete ==="
+echo "The service is enabled but not running yet (no files deployed"
+echo "to $INSTALL_DIR). Return to the laptop and run:"
+echo "    python deploy.py <this-pi-host>"
+echo
+echo "That will scp the Python + frontend files and restart the service."
