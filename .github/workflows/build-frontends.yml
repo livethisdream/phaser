@@ -7,8 +7,9 @@ name: Build frontends
 
 on:
   push:
-    # Both listed so CI keeps working across the browser-based -> main rename.
-    branches: [browser-based, main]
+    # radar-dev is where the CW/FMCW radar app is developed before merging
+    # to main; it needs its dist/ built the same way.
+    branches: [main, radar-dev]
     paths:
       - 'frontend/src/**'
       - 'frontend/public/**'
