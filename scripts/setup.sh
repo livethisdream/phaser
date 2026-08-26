@@ -116,12 +116,23 @@ fi
 # ---- ssh sanity check --------------------------------------------------------
 echo
 echo "[3/4] Provisioning Pi at analog@$HOST..."
-if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "analog@$HOST" 'echo ok' > /dev/null 2>&1; then
-    echo "  ERROR: cannot ssh to analog@$HOST without a password."
-    echo "  Fix: copy your ssh key with 'ssh-copy-id analog@$HOST', then retry."
+# Reachability and credentials are separate questions. BatchMode=yes refuses
+# password auth, so testing only that conflates "Pi is off" with "no key
+# installed" -- and rejects a Pi that ssh would happily prompt for. Check the
+# TCP port first, then treat a missing key as a note, not an error.
+if ! timeout 5 bash -c "echo > /dev/tcp/$HOST/22" 2> /dev/null; then
+    echo "  ERROR: cannot reach $HOST on port 22."
+    echo "  The Pi is off, on another network, or the name does not resolve."
+    echo "  Check: ssh analog@$HOST 'echo ok'"
     exit 1
 fi
-echo "  OK: passwordless ssh to analog@$HOST works"
+if ssh -o BatchMode=yes -o ConnectTimeout=5 "analog@$HOST" 'echo ok' > /dev/null 2>&1; then
+    echo "  OK: key-based ssh to analog@$HOST works"
+else
+    echo "  NOTE: $HOST is reachable, but your key is not authorized on it."
+    echo "        You will be prompted for the Pi's password. To avoid that:"
+    echo "          ssh-copy-id analog@$HOST"
+fi
 
 # Pipe setup-pi.sh to the Pi. sudo may prompt for a password interactively
 # via ssh -t; that's fine — the tester enters it once.

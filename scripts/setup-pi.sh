@@ -1,9 +1,16 @@
 #!/bin/bash
 # Phaser Pi one-time provisioning.
 #
-# This script runs ON THE PI. It:
-#   1. Installs Python dependencies phaser_headless.py needs
-#   2. Ensures the install dir exists
+# This script runs ON THE PI, as the service user, and needs NO sudo.
+#   1. Installs Python dependencies phaser_headless.py needs (into ~/.local)
+#   2. Ensures the install dir exists (it lives inside the user's own home)
+#
+# Staying sudo-free is load-bearing, not tidiness. setup.sh pipes this file in
+# over `ssh -t ... 'bash -s' < setup-pi.sh`; with stdin redirected from a file
+# ssh cannot allocate a pty, so any sudo that needs a password fails outright
+# -- and on the stock Phaser image sudo-to-root does need one. The old
+# `sudo mkdir`/`sudo chown` ran only when the install dir was missing, i.e.
+# only on a genuinely new Pi, which is the one case this script exists for.
 #
 # It deliberately does NOT write the systemd unit. deploy.py owns that now:
 # it renders scripts/phaser-headless.service.template from the same constants
@@ -42,6 +49,14 @@ if ! id "$SERVICE_USER" > /dev/null 2>&1; then
     echo "ERROR: user '$SERVICE_USER' does not exist. This script expects the Phaser Pi image."
     exit 1
 fi
+# Everything below writes into $SERVICE_USER's own home, so it must BE that
+# user. Running as anyone else would put the packages in the wrong ~/.local
+# and the service would start without them.
+if [ "$(id -un)" != "$SERVICE_USER" ]; then
+    echo "ERROR: this script must run as '$SERVICE_USER', but is running as '$(id -un)'."
+    echo "       Connect as that user:  ssh $SERVICE_USER@<host>"
+    exit 1
+fi
 
 # ---- Python deps -------------------------------------------------------------
 echo "[1/2] Installing Python dependencies for user '$SERVICE_USER'..."
@@ -53,32 +68,41 @@ echo "[1/2] Installing Python dependencies for user '$SERVICE_USER'..."
 # intended escape hatch for a single-purpose appliance like this one. Note that
 # --user must stay: the unit runs as $SERVICE_USER, so the packages have to be
 # importable by that user, not by root.
-if ! sudo -u "$SERVICE_USER" "$PYTHON_BIN" -m pip install --user --upgrade \
-        pyzmq msgpack websockets; then
+# Install only what is actually missing, and never --upgrade. This script's job
+# is "make sure these three import", not "keep them latest": a workshop Pi that
+# already works should not have a known-good pyzmq swapped under it because
+# someone re-ran setup. Re-running on a provisioned Pi is now a no-op.
+MISSING=""
+for pair in zmq:pyzmq msgpack:msgpack websockets:websockets; do
+    mod="${pair%%:*}"
+    pkg="${pair##*:}"
+    "$PYTHON_BIN" -c "import $mod" > /dev/null 2>&1 || MISSING="$MISSING $pkg"
+done
+
+if [ -z "$MISSING" ]; then
+    echo "  all present; nothing to install"
+elif ! "$PYTHON_BIN" -m pip install --user $MISSING; then
     echo "  pip refused; retrying with --break-system-packages (PEP 668 image)..."
-    sudo -u "$SERVICE_USER" "$PYTHON_BIN" -m pip install --user --upgrade \
-        --break-system-packages pyzmq msgpack websockets
+    "$PYTHON_BIN" -m pip install --user --break-system-packages $MISSING
 fi
 
-# Verify through the exact interpreter the unit's ExecStart will use. A
-# --user install lands in ~/.local for $SERVICE_USER, and if sudo did not hand
-# it the right HOME the install "succeeds" somewhere the service cannot import
-# from -- which shows up only as a crash loop after deploy.
+# Verify through the exact interpreter the unit's ExecStart will use. A --user
+# install lands in $HOME/.local, and if it landed anywhere the service cannot
+# import from, the install still "succeeds" -- the failure shows up only as a
+# crash loop after deploy.
 echo "  Verifying imports as $SERVICE_USER..."
-if ! sudo -u "$SERVICE_USER" "$PYTHON_BIN" -c "import zmq, msgpack, websockets"; then
+if ! "$PYTHON_BIN" -c "import zmq, msgpack, websockets"; then
     echo "ERROR: packages installed but not importable as $SERVICE_USER."
     echo "       The service would crash-loop. Check where pip put them:"
-    echo "       sudo -u $SERVICE_USER $PYTHON_BIN -m pip show -f pyzmq"
+    echo "       $PYTHON_BIN -m pip show -f pyzmq"
     exit 1
 fi
 echo "  OK: zmq, msgpack, websockets importable"
 
 # ---- install dir -------------------------------------------------------------
 echo "[2/2] Ensuring install dir exists..."
-if [ ! -d "$INSTALL_DIR" ]; then
-    sudo mkdir -p "$INSTALL_DIR"
-    sudo chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
-fi
+# Inside $HOME, so no sudo and no chown needed -- it is created owned by us.
+mkdir -p "$INSTALL_DIR"
 
 echo
 echo "=== Provisioning complete ==="
