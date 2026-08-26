@@ -1,0 +1,29 @@
+# systemd unit for the Phaser headless backend -- TEMPLATE, not a live unit.
+#
+# This is the only definition of the unit. deploy.py reads it, substitutes the
+# at-sign placeholders below from its own DEFAULT_USER / REMOTE_DIR /
+# REMOTE_PYTHON constants, and installs the result on the Pi whenever
+# /etc/systemd/system/phaser-headless.service is absent. Rendering from
+# deploy.py's constants is the point: the unit's WorkingDirectory cannot drift
+# away from the directory deploy.py actually scp's files into.
+#
+# setup-pi.sh deliberately does NOT write this file. It used to carry its own
+# heredoc copy of the unit, a second definition free to drift from this one.
+
+[Unit]
+Description=Phaser Headless Backend (browser-hosted beamforming + CW radar)
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@INSTALL_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON@ -u @INSTALL_DIR@/phaser_headless.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

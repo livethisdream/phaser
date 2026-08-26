@@ -36,9 +36,9 @@ python phaser_headless.py --sim   # then open http://localhost:8080
 
 ### First-time Pi provisioning
 
-A Pi straight out of the box needs Python deps and the systemd unit
-installed once. `scripts/setup.sh` / `scripts/setup.ps1` do that, then
-deploy. Like `deploy.py`, they use the committed build and need no Node:
+A Pi straight out of the box needs its Python deps installed once.
+`scripts/setup.sh` / `scripts/setup.ps1` do that, then deploy. Like
+`deploy.py`, they use the committed build and need no Node:
 
 ```powershell
 .\scripts\setup.ps1               # Windows PowerShell
@@ -56,6 +56,26 @@ They can be run from anywhere; both anchor themselves to the repo root.
 
 After that, `python deploy.py` is all you need for every subsequent
 update.
+
+The systemd unit is **not** part of this step. `deploy.py` owns it: before
+restarting, it checks for `/etc/systemd/system/phaser-headless.service` and,
+if the Pi has none, renders `scripts/phaser-headless.service.template` and
+installs + enables it. So a deploy to a never-provisioned Pi ends with a
+running service instead of a `WARN:` line under a "Deployment complete!"
+banner. `deploy.py` also verifies `pyzmq`, `msgpack` and `websockets` are
+importable by `analog` through `/usr/bin/python3` — the exact user and
+interpreter the unit runs as — and fails with a pointer to `setup.sh` when
+they aren't, rather than leaving you a crash-looping service.
+
+Expect **one** sudo prompt on the Pi. First-time provisioning installs,
+enables and starts the unit in a single `ssh -t` session, because sudo's
+credential timestamp is per-tty and a second session would prompt again. A
+redeploy to an already-provisioned Pi prompts once too, for the restart.
+`ssh-copy-id analog@<host>` removes the separate *ssh* password prompt; on
+macOS/Linux/WSL a single shared connection is used for the whole deploy, so
+even without a key you are asked once rather than once per file. (Windows
+OpenSSH has no `ControlMaster`, so PowerShell users on a password-only Pi are
+prompted per copy — copy a key over to avoid it.)
 
 ## No-build deployment
 
@@ -145,9 +165,12 @@ when npm is available, and tells you what to do when it isn't.
 - Built frontend (`frontend/dist/*`)
 - Radar frontend (`frontend-radar/dist/*`) with `--radar`
 
-It deliberately **does not** copy `config.py`, so any Pi-specific values
-(URIs, calibrated defaults) survive. It restarts `phaser-headless.service`
-over ssh after the scp.
+It deliberately **does not overwrite** `config.py`, so any Pi-specific
+values (URIs, calibrated defaults) survive. It does seed one when the Pi has
+none at all — a from-scratch install dir is otherwise an immediate
+`import config` crash loop, since `phaser_headless.py` exits at module level
+without it. It installs the systemd unit if absent, then restarts
+`phaser-headless.service` over ssh.
 
 ## Simulation mode (no Phaser required)
 
@@ -272,8 +295,12 @@ Tooling:
 
 - `setup.sh`, `setup.ps1` — first-time Pi provisioning, then deploy
 - `setup-pi.sh` — the Pi-side half, piped over ssh by the two above.
-  It writes the systemd unit inline, so there is no `.service` file to
-  keep in sync
+  Installs the Python deps and the install dir. It does **not** write the
+  systemd unit; `deploy.py` does
+- `phaser-headless.service.template` — the single definition of the systemd
+  unit. `deploy.py` renders the `@USER@` / `@INSTALL_DIR@` / `@PYTHON@`
+  placeholders from its own constants, which is what keeps the unit's
+  `WorkingDirectory` and the scp destination from drifting apart
 - `build-installer.py` — legacy single-tarball packager, not used by the
   supported setup/deploy path and not exercised by CI
 

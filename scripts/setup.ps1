@@ -1,13 +1,14 @@
 # One-stop Phaser setup for Windows testers (PowerShell).
 #
-# This is the FIRST-TIME provisioning path: it installs Python deps and the
-# systemd unit on the Pi, which deploy.py does not do. After running it once,
-# `python deploy.py` is all you need for every subsequent update.
+# This is the FIRST-TIME provisioning path: it installs the Python deps on the
+# Pi, which deploy.py does not do. After running it once, `python deploy.py` is
+# all you need for every subsequent update. (The systemd unit is deploy.py's
+# job either way -- it installs one whenever the Pi has none.)
 #
 #   1. Verifies local prereqs (Python 3.11+, ssh, scp; node/npm only to build)
 #   2. Uses the committed frontend build, or builds it if absent/-Build
-#   3. ssh to the Pi and provision it (installs deps + systemd unit)
-#   4. Runs deploy.py to copy files + start the service
+#   3. ssh to the Pi and provision it (installs Python deps)
+#   4. Runs deploy.py to copy files, install the unit, start the service
 #
 # Usage:
 #   .\scripts\setup.ps1                  # Pi at phaser.local (default)
