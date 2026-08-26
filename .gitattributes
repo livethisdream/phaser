@@ -8,7 +8,7 @@
 # for byte. Every tracked text blob is already LF, so this is a no-op today.
 * text=auto eol=lf
 
-# setup.sh / setup-pi.sh are piped into `bash -s` on the Pi (see setup.ps1).
+# scripts/setup-pi.sh is piped into `bash -s` on the Pi by scripts/setup.sh
 # Covered by the rule above, but called out because the failure mode is ugly:
 # a CRLF script hands Linux "$'\r': command not found" on every line.
 *.sh text eol=lf

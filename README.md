@@ -37,19 +37,22 @@ python phaser_headless.py --sim   # then open http://localhost:8080
 ### First-time Pi provisioning
 
 A Pi straight out of the box needs Python deps and the systemd unit
-installed once. `setup.sh` / `setup.ps1` do that, then deploy. These
-two scripts still require Node + npm locally and rebuild the frontend
-themselves -- only this first-time step does:
+installed once. `scripts/setup.sh` / `scripts/setup.ps1` do that, then
+deploy. Like `deploy.py`, they use the committed build and need no Node:
 
 ```powershell
-.\setup.ps1                       # Windows PowerShell
-.\setup.ps1 192.168.1.42
+.\scripts\setup.ps1               # Windows PowerShell
+.\scripts\setup.ps1 192.168.1.42
+.\scripts\setup.ps1 -Build        # force a frontend rebuild (needs Node)
 ```
 
 ```bash
-./setup.sh                        # macOS / Linux / WSL
-./setup.sh 192.168.1.42
+./scripts/setup.sh                # macOS / Linux / WSL
+./scripts/setup.sh 192.168.1.42
+./scripts/setup.sh --build        # force a frontend rebuild (needs Node)
 ```
+
+They can be run from anywhere; both anchor themselves to the repo root.
 
 After that, `python deploy.py` is all you need for every subsequent
 update.
@@ -137,6 +140,8 @@ when npm is available, and tells you what to do when it isn't.
 
 - Backend Python entrypoints and their helper modules (see the file for
   the exact list)
+- The `LTE*.ftr` AD9361 filter configs, which
+  `phaser_find_hb100_headless.py` loads by bare filename at runtime
 - Built frontend (`frontend/dist/*`)
 - Radar frontend (`frontend-radar/dist/*`) with `--radar`
 
@@ -242,6 +247,8 @@ Top-level Python:
   PyWebView path; still used by the release bundle)
 - `config.py` — hardware URIs and default frequencies
 - `deploy.py` — scp + restart-service workflow (build is opt-in)
+- `LTE5/10/20_MHz.ftr` — AD9361 filter configs, loaded by bare filename
+  relative to the process CWD, so they must sit beside the entrypoints
 
 Frontend (`frontend/`):
 
@@ -261,11 +268,27 @@ Tooling:
 - `.github/workflows/build-frontends.yml` — builds both frontends,
   verifies they're self-contained, commits `dist/` back
 
+`scripts/`:
+
+- `setup.sh`, `setup.ps1` — first-time Pi provisioning, then deploy
+- `setup-pi.sh` — the Pi-side half, piped over ssh by the two above.
+  It writes the systemd unit inline, so there is no `.service` file to
+  keep in sync
+- `build-installer.py` — legacy single-tarball packager, not used by the
+  supported setup/deploy path and not exercised by CI
+
+`tests/` — pytest suite (`pythonpath = ["."]` in `pyproject.toml` lets it
+import the root modules).
+
+`archive/` — superseded design and troubleshooting notes; see
+[`archive/README.md`](archive/README.md). Nothing there is current.
+
 ## Reference
 
 - `docs/2025_Phaser_labs_Python.pdf` — canonical workshop labs
-  document (gitignored, kept locally). Lab presets in the sidebar are
-  aligned to this document's initial-state instructions.
+  document, tracked in the repo (`.gitignore` excludes `docs/*.pdf` but
+  allowlists this one). Lab presets in the sidebar are aligned to this
+  document's initial-state instructions.
 - `graphify-out/graph.json` — knowledge graph of the codebase for the
   `/graphify` slash command.
 - `CLAUDE.md` — project instructions for Claude Code sessions.

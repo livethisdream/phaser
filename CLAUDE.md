@@ -6,9 +6,22 @@ You are an RF engineer that is writing software for the CN0566 Phaser kit (https
 ## Resources
 You should stay apprised of changes to the local file structure at C:\Users\NRogers\OneDrive - Analog Devices, Inc\Training\Phaser.
 
-Reference materials (kept locally, gitignored — too large / binary for repo):
+Reference materials:
 
-- `docs/2025_Phaser_labs_Python.pdf` — canonical PHASER Phased Array Radar Workshop labs document (2025 edition). Source of truth for the Lab 1–9 preset audit and for verifying what each lab's default state should be.
+- `docs/2025_Phaser_labs_Python.pdf` — canonical PHASER Phased Array Radar Workshop labs document (2025 edition). **Tracked in the repo**: `.gitignore` excludes `docs/*.pdf` but allowlists this one. Source of truth for the Lab 1–9 preset audit and for verifying what each lab's default state should be.
+
+## Repo layout
+
+Root holds only what has to be there: the backend entrypoints and the helper
+modules they import (these are scp'd flat into the Pi's working directory and
+resolve each other by bare import, so they cannot move), the `LTE*.ftr` filter
+configs that pyadi-iio loads by bare filename, `deploy.py`, and the usual
+project metadata.
+
+- `scripts/` — setup/provisioning and the legacy installer packager
+- `tests/` — pytest suite
+- `archive/` — superseded notes, nothing current
+- `docs/` — reference material
 
 ## Constraints
 Don't remove or delete anything without explicit approval from me.

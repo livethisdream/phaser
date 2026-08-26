@@ -24,6 +24,11 @@ phaser-installer/
 phaser-installer.tar.gz
 release/
 
+# Stale duplicate of the systemd unit. scripts/setup-pi.sh writes the real
+# one inline via heredoc, and this copy had already drifted from it
+# (missing PYTHONUNBUFFERED, hardcoded /usr/bin/python3, old Description).
+phaser-headless.service
+
 # Calibration data (device-specific)
 *.pkl
 calibration.json
@@ -82,17 +87,4 @@ graphify-out/
 docs/*.pdf
 !docs/2025_Phaser_labs_Python.pdf
 
-# Documentation artifacts (generated)
-COMPLETE_SOLUTION.md
-DELIVERY_SUMMARY.md
-DIAGNOSTIC_IMPROVEMENTS.md
-DOCUMENTATION_INDEX.md
-ELECTRON_MIGRATION_PLAN.md
-FIND_HB100_FIX.md
-HARDWARE_URI_DIAGNOSIS.md
-NETWORK_FIX_SUMMARY.md
-NETWORK_SETUP_GUIDE.md
-QUICK_REFERENCE.md
-SOLUTION_COMPLETE.md
-START_HERE.md
-VISUAL_SUMMARY.md
+# Superseded design/status notes now live in archive/ and are tracked.

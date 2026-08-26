@@ -13,7 +13,10 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, ".")  # importable from project root
+from pathlib import Path
+# Backend modules live at the repo root, one level up from tests/.
+# Anchored to __file__ so this works regardless of the working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from phaser_cw_radar import process_cw_frame, DEFAULTS
 
 
