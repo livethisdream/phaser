@@ -94,6 +94,12 @@ class PhaserHeadless:
         self.cal_process = None
         self.cal_task = None
         self.cal_log = []
+        # The outcome of the last finished run. get_calibration_status used to
+        # report a finished run exactly once and then forget it, so a client
+        # that was reconnecting during that single 2s poll never learned the
+        # run had failed -- the modal simply sat there. Retained until the next
+        # run starts, so the answer is the same however often you ask.
+        self.cal_last_result = None
 
         # Initialize hardware
         self._init_hardware()
@@ -692,7 +698,14 @@ class PhaserHeadless:
         try:
             for line in iter(self.cal_process.stdout.readline, ''):
                 if line:
-                    self.cal_log.append(line.rstrip('\n'))
+                    text = line.rstrip('\n')
+                    self.cal_log.append(text)
+                    # Also to the journal. Without this the subprocess's output
+                    # -- including any traceback -- existed only in cal_log,
+                    # which a browser has to be connected at the right moment to
+                    # see. An ImportError that killed the HB100 search in 50ms
+                    # was invisible on the Pi for exactly this reason.
+                    print(f"[CAL:{self.cal_task}] {text}", flush=True)
                 if self.cal_process.poll() is not None:
                     break
             # Read any remaining output
@@ -701,6 +714,7 @@ class PhaserHeadless:
                 for line in remaining.strip().split('\n'):
                     if line:
                         self.cal_log.append(line)
+                        print(f"[CAL:{self.cal_task}] {line}", flush=True)
         except Exception as e:
             self.cal_log.append(f"[Read error: {e}]")
 
@@ -724,6 +738,7 @@ class PhaserHeadless:
         print(f"Starting calibration: {task_name}")
         self.cal_task = task_name
         self.cal_log = []
+        self.cal_last_result = None
 
         # Need to stop any active mode during calibration. _set_mode handles
         # CW teardown (restoring SDR state) before the calibration subprocess
@@ -756,6 +771,10 @@ class PhaserHeadless:
     def get_calibration_status(self):
         """Get calibration process status"""
         if self.cal_process is None:
+            # Replay the last outcome rather than reporting a bare idle, so a
+            # client that reconnects after a run finished still sees how it went.
+            if self.cal_last_result is not None:
+                return dict(self.cal_last_result)
             return {"status": "ok", "running": False, "task": None}
 
         if self.cal_process.poll() is None:
@@ -784,14 +803,24 @@ class PhaserHeadless:
             # Reload calibration if successful
             if returncode == 0:
                 self._reload_calibration(self.cal_task)
+            else:
+                print(f"[CAL:{self.cal_task}] FAILED, exit {returncode}", flush=True)
 
+            self.cal_last_result = dict(result)
             self.cal_process = None
             self.cal_task = None
             return result
 
     def cancel_calibration(self):
         """Cancel running calibration process"""
-        if self.cal_process is None or self.cal_process.poll() is not None:
+        if self.cal_process is not None and self.cal_process.poll() is not None:
+            # It exited on its own before the cancel arrived -- which is what a
+            # crash looks like from here. Harvest the outcome so the caller
+            # learns why, instead of being told nothing was running.
+            return self.get_calibration_status()
+        if self.cal_process is None:
+            if self.cal_last_result is not None:
+                return dict(self.cal_last_result)
             return {"status": "error", "message": "No calibration running"}
 
         try:
