@@ -208,6 +208,17 @@ def main():
         "ADAR_pyadi_functions.py",
         "SDR_functions.py",
         "phaser_functions.py",
+        # AD9361 filter configs. phaser_find_hb100_headless.py does
+        # `my_sdr.filter = "LTE20_MHz.ftr"`, which pyadi-iio resolves relative
+        # to the process CWD — i.e. REMOTE_DIR, per the systemd unit's
+        # WorkingDirectory. It used to resolve only because pyadi-iio's own
+        # examples/phaser directory happens to ship these; that made the
+        # deploy depend on what was already on the target. The load is wrapped
+        # in a try/except that merely warns, so a missing file degrades to an
+        # unfiltered wideband HB100 search instead of failing loudly.
+        "LTE5_MHz.ftr",
+        "LTE10_MHz.ftr",
+        "LTE20_MHz.ftr",
     ]
     for filename in backend_files:
         py_file = script_dir / filename

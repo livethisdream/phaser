@@ -18,8 +18,10 @@ wheels/
 # IDE
 .idea/
 
-# Build artifacts (staging dir only, keep the tarball)
+# Build artifacts. phaser-installer.tar.gz is build-installer.py output;
+# it was tracked by mistake and is stale (see archive/ notes).
 phaser-installer/
+phaser-installer.tar.gz
 release/
 
 # Calibration data (device-specific)
@@ -30,8 +32,8 @@ hb100_cal.txt
 # Logs
 logs/
 
-# LTE test files
-*.ftr
+# NOTE: LTE*.ftr are NOT ignored. They are AD9361 filter configs that
+# phaser_find_hb100_headless.py loads at runtime, and deploy.py ships them.
 
 # Simulation data
 sim_data.json
