@@ -1,5 +1,8 @@
+import json
 import os
 import pickle
+import tempfile
+import time
 
 import numpy as np
 
@@ -9,6 +12,116 @@ REPO_DIR = os.path.dirname(__file__)
 
 def _repo_path(filename):
     return os.path.join(REPO_DIR, filename)
+
+
+CALIBRATION_JSON = "calibration.json"
+
+# Legacy stores, still READ so a Pi calibrated before this change keeps working.
+# Each is superseded the next time that particular calibration is re-run.
+LEGACY_PICKLES = {
+    "phase_cal": "phase_cal_val.pkl",
+    "gain_cal": "gain_cal_val.pkl",
+    "channel_cal": "channel_cal_val.pkl",
+}
+LEGACY_HB100_TXT = "hb100_cal.txt"
+
+
+def load_calibration():
+    """The whole calibration store as a dict, or {} if there is not one yet.
+
+    A malformed file returns {} rather than raising: callers fall back to the
+    legacy stores and then to defaults, and a corrupt calibration should not
+    stop the backend from starting.
+    """
+    try:
+        with open(_repo_path(CALIBRATION_JSON), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_calibration(**updates):
+    """Merge `updates` into the store and write it atomically.
+
+    Merge, not replace: calibrations are run individually, so writing phase
+    must not discard gain. Atomic because the alternative -- a truncated JSON
+    file after a power cut mid-workshop -- loses every value at once, which is
+    strictly worse than the per-file stores this replaces.
+    """
+    payload = load_calibration()
+    payload.update(updates)
+    payload["version"] = 1
+    payload["updated_at"] = time.time()
+
+    target = _repo_path(CALIBRATION_JSON)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or ".",
+                               prefix=".calibration-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return payload
+
+
+def _coerce_list(values, default, length, cast=float):
+    """Exactly `length` values of type `cast`, whatever nonsense came in."""
+    try:
+        out = [cast(v) for v in list(values)[:length]]
+    except (TypeError, ValueError):
+        return list(default)
+    return (out + list(default))[:length]
+
+
+def load_cal_values(key, default, length):
+    """One calibration array: JSON first, then the legacy pickle, then default.
+
+    Per-key rather than all-or-nothing, so a Pi that has re-run only its phase
+    calibration reads phase from JSON and gain from the old pickle, instead of
+    silently reverting phase to defaults.
+    """
+    stored = load_calibration().get(key)
+    if stored is not None:
+        return _coerce_list(stored, default, length)
+
+    legacy = LEGACY_PICKLES.get(key)
+    if legacy:
+        # A file this code wrote, on this Pi. Still: pickle executes on load,
+        # which is one of the reasons the store is moving to JSON.
+        values = _load_pickle_file(legacy, None)
+        if values is not None:
+            return _coerce_list(values, default, length)
+    return list(default)
+
+
+def save_phase_cal(values):
+    """Persist per-element phase offsets (degrees)."""
+    values = _coerce_list(values, [0.0] * 8, 8)
+    save_calibration(phase_cal=values)
+    return values
+
+
+def save_gain_cal(values):
+    """Persist per-element gain trims (0..1)."""
+    values = _coerce_list(values, [1.0] * 8, 8)
+    save_calibration(gain_cal=values)
+    return values
+
+
+def save_channel_cal(values):
+    """Persist the two-channel SDR gain correction (dB)."""
+    values = _coerce_list(values, [0.0] * 2, 2)
+    save_calibration(channel_cal=values)
+    return values
 
 
 def _load_pickle_file(filename, default_value):
@@ -21,8 +134,15 @@ def _load_pickle_file(filename, default_value):
 
 
 def load_hb100_cal():
-    """Load HB100 calibration signal frequency if it exists."""
-    cal_file = _repo_path("hb100_cal.txt")
+    """HB100 frequency in Hz. JSON first, then the legacy hb100_cal.txt."""
+    stored = load_calibration().get("hb100_freq_hz")
+    if stored is not None:
+        try:
+            return float(stored)
+        except (TypeError, ValueError):
+            pass
+
+    cal_file = _repo_path(LEGACY_HB100_TXT)
     if os.path.exists(cal_file):
         with open(cal_file, "r", encoding="utf-8") as f:
             try:
@@ -33,9 +153,11 @@ def load_hb100_cal():
 
 
 def save_hb100_cal(freq_hz):
-    cal_file = _repo_path("hb100_cal.txt")
-    with open(cal_file, "w", encoding="utf-8") as f:
-        f.write(str(float(freq_hz)))
+    """Persist the HB100 frequency. Writes JSON only; the old text file is
+    still read, so an existing Pi keeps working until this runs once."""
+    value = float(freq_hz)
+    save_calibration(hb100_freq_hz=value)
+    return value
 
 
 def spec_est(data, sample_rate, ref=2**12, plot=False):

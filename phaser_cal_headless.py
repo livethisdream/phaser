@@ -14,6 +14,9 @@ from phaser_functions import (
     gain_calibration,
     load_hb100_cal,
     phase_calibration,
+    save_channel_cal,
+    save_gain_cal,
+    save_phase_cal,
 )
 
 from adi import ad9361
@@ -101,20 +104,20 @@ def do_calibration():
             print("\n--- Channel Calibration ---")
             my_phaser.set_beam_phase_diff(0.0)
             channel_calibration(my_phaser, verbose=True)
-            my_phaser.save_channel_cal()
+            save_channel_cal(my_phaser.ccal)
             print(f"Channel calibration saved: {my_phaser.ccal}")
 
             # Gain calibration (same as phaser_examples.py)
             print("\n--- Gain Calibration ---")
             my_phaser.set_beam_phase_diff(0.0)
             gain_calibration(my_phaser, verbose=True)
-            my_phaser.save_gain_cal()
+            save_gain_cal(my_phaser.gcal)
             print(f"Gain calibration saved: {my_phaser.gcal}")
 
             # Phase calibration (same as phaser_examples.py)
             print("\n--- Phase Calibration ---")
             phase_calibration(my_phaser, verbose=True)
-            my_phaser.save_phase_cal()
+            save_phase_cal(my_phaser.pcal)
             print(f"Phase calibration saved: {my_phaser.pcal}")
 
             print("\n=== Calibration Complete ===")
