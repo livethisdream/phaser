@@ -92,7 +92,11 @@ jobs:
       - name: Smoke-test the simulator in a real browser
         working-directory: frontend
         run: |
-          npx --yes playwright@1 install --with-deps chromium
+          # Two separate things: the npm package (so the script below can
+          # import it) and the browser binaries. `npx playwright install`
+          # only does the latter.
+          npm install --no-save playwright@1
+          npx playwright install --with-deps chromium
           node --input-type=module -e "
           import { chromium } from 'playwright';
           import http from 'node:http';
