@@ -1861,64 +1861,47 @@ document.getElementById('btn-cal-action')?.addEventListener('click', (e) => {
 });
 startCalibrationPolling();
 
-// Simulation mode toggle (Electron only)
-let simModeActive = false;
+/* --- Simulation mode toggle -------------------------------------------------
+ *
+ * Flips between the live backend and the in-browser simulator by toggling
+ * ?sim=1 and reloading. A reload rather than swapping the transport in place:
+ * it reuses the whole startup path (readiness probe, state load, control
+ * population) instead of duplicating it, the URL stays shareable and
+ * bookmarkable, and there is no half-torn-down WebSocket to reason about.
+ */
 const simBtn = document.getElementById('btn-sim-mode');
-if (simBtn && window.electronAPI?.startSim) {
-    // Reveal: HTML hides it by default so the button never flashes in browser mode.
+if (simBtn) {
+    const simActive = resolveTransportMode() === 'sim';
     simBtn.hidden = false;
-    // Listen for sim status changes
-    window.electronAPI.onSimStatus?.((status) => {
-        simModeActive = status.running;
-        updateSimButton();
-    });
 
-    // Check initial status
-    window.electronAPI.getSimStatus?.().then((status) => {
-        simModeActive = status?.running || false;
-        updateSimButton();
-    });
-
-    simBtn.addEventListener('click', async () => {
-        if (simModeActive) {
-            // Stop sim
-            simBtn.disabled = true;
-            simBtn.textContent = 'Stopping...';
-            addRuntimeLog('info', 'SIM', 'Stopping simulator...');
-            await window.electronAPI.stopSim();
-        } else {
-            // Start sim with default data file
-            simBtn.disabled = true;
-            simBtn.textContent = 'Starting...';
-            addRuntimeLog('info', 'SIM', 'Starting simulator...');
-            const resp = await window.electronAPI.startSim(null);
-            if (resp.status !== 'ok') {
-                addRuntimeLog('error', 'SIM', resp.message || 'Failed to start simulator');
-                alert('Failed to start simulator:\n' + (resp.message || 'Unknown error'));
-            }
-        }
-        updateSimButton();
-    });
-
-    function updateSimButton() {
-        simBtn.disabled = false;
-        if (simModeActive) {
-            simBtn.textContent = 'Stop Sim';
-            simBtn.style.background = '#f59e0b';
-            simBtn.style.borderColor = '#f59e0b';
-            simBtn.style.color = '#000';
-        } else {
-            simBtn.textContent = 'Sim';
-            simBtn.style.background = '';
-            simBtn.style.borderColor = '';
-            simBtn.style.color = '';
-        }
+    if (simActive) {
+        simBtn.textContent = 'Exit Sim';
+        simBtn.title = 'Leave simulation and reconnect to Phaser hardware';
+        simBtn.classList.add('btn-sim-active');
+    } else {
+        simBtn.textContent = 'Sim';
+        simBtn.title = 'Run the built-in simulator — no Phaser hardware required';
     }
-} else if (simBtn) {
-    // Hide button if not in Electron
-    simBtn.style.display = 'none';
+
+    simBtn.addEventListener('click', () => {
+        const url = new URL(window.location.href);
+        if (simActive) {
+            // Explicit sim=0 rather than deleting the parameter, so this still
+            // leaves simulation on a build that defaults to it (GitHub Pages).
+            url.searchParams.set('sim', '0');
+        } else {
+            url.searchParams.set('sim', '1');
+        }
+        window.location.href = url.toString();
+    });
 }
 
+/* Banner: simulated traces must never be mistakable for hardware measurements.
+ * This is a teaching tool, and a student screenshotting a sim sweep as a lab
+ * result is a real failure mode. */
+if (resolveTransportMode() === 'sim') {
+    document.getElementById('sim-banner')?.removeAttribute('hidden');
+}
 
 const settingsPanel = document.getElementById('settings-panel');
 const dashboard = document.querySelector('.dashboard');
