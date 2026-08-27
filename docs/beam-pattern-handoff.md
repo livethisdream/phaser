@@ -67,8 +67,17 @@ The simulator now models the latch (elements carry a shadow and a latched beam
 state) and an intrinsic per-element phase error, which is what makes those
 tests sensitive to these bugs at all.
 
-**Not verified on hardware.** No session so far has had a network path to the
-Pi. That is the open item.
+**Verified on hardware**, 2026-08-27, on `analog@phaser` with the HB100 on the
+bench, all four fixes installed and `Rx_gain = 30`:
+
+    points 162
+    min -19.53  max 9.03  range 28.56 dB
+    peak at -9.2 deg
+
+28.56 dB of pattern where there had been a flat line, slightly better than the
+simulator predicted. The peak sits at -9.2 deg rather than boresight simply
+because that is where the horn was pointing; the sim pins its target at 0 deg,
+the bench does not.
 
 ## The Pi
 
@@ -124,6 +133,21 @@ If it is still flat after all of the above, it is something not yet found. Get
 the sweep data itself rather than the log -- `ArrayGain` and `ArrayAngle` off
 the WebSocket, or a screenshot of the plot. The useful question is whether the
 gain values vary at all across angle, and by how much.
+
+## Open question: is the front end compressing
+
+The hardware sweep above peaks at +9.03 dBFS. That reference is `2**11`,
+inherited from legacy `phaser_gui.py`, so a positive number is not proof of
+anything on its own -- it is a convention, not a measured full scale. But two
+12-bit channels summed cannot exceed +6.02 dB against that reference, and this
+reads higher, which is at least consistent with the Rx front end compressing
+at `Rx_gain = 30`.
+
+Worth settling because clipping distorts the pattern *shape* -- null depth and
+sidelobe levels -- while leaving the peak looking healthy. The test is cheap:
+sweep at `Rx_gain = 30`, then at 20, and compare the range. If the range gets
+*larger* at the lower gain, the higher setting was compressing and 30 is too
+hot for this bench geometry.
 
 ## Known cosmetic issue, deliberately not fixed
 
