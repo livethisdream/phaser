@@ -27,6 +27,9 @@
 #
 # Offline / no-token install: fetch the repo however you like, then
 #   PHASER_SRC=/path/to/repo bash install.sh
+#
+# Fully offline, including the Python packages:
+#   PHASER_SRC=/path/to/repo PHASER_WHEELS=/path/to/wheels bash install.sh
 
 set -euo pipefail
 
@@ -111,12 +114,24 @@ if [ -z "$MISSING" ]; then
     say "OK: all present"
 else
     say "Installing:$MISSING"
+    # PHASER_WHEELS points at a directory of pre-downloaded wheels, which is the
+    # only way a Pi with no internet can be provisioned from scratch: everything
+    # else here works offline, but pip does not. --no-index makes the failure
+    # honest -- if a wheel is absent it says so rather than silently reaching
+    # for the network and hanging on a Pi that has none.
+    PIP_SRC=()
+    if [ -n "${PHASER_WHEELS:-}" ]; then
+        [ -d "$PHASER_WHEELS" ] || die "PHASER_WHEELS=$PHASER_WHEELS is not a directory."
+        say "Using local wheels from $PHASER_WHEELS (no network)"
+        PIP_SRC=(--no-index --find-links "$PHASER_WHEELS")
+    fi
     # A bookworm-based image marks the system Python PEP 668 externally-managed,
     # so a plain --user install exits non-zero. Bullseye needs no such thing.
     # No sudo: --user writes to this user's ~/.local.
-    "$PYTHON_BIN" -m pip install --user $MISSING \
-      || "$PYTHON_BIN" -m pip install --user --break-system-packages $MISSING \
-      || die "pip failed."
+    "$PYTHON_BIN" -m pip install --user "${PIP_SRC[@]}" $MISSING \
+      || "$PYTHON_BIN" -m pip install --user --break-system-packages "${PIP_SRC[@]}" $MISSING \
+      || die "pip failed.${PHASER_WHEELS:+
+     Check $PHASER_WHEELS holds cp39 linux_armv7l wheels for:$MISSING}"
     "$PYTHON_BIN" -c "import zmq, msgpack, websockets" \
       || die "installed, but not importable as $SERVICE_USER -- the service would crash-loop."
     say "OK: installed and importable"
