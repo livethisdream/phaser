@@ -93,3 +93,6 @@ docs/*.pdf
 !docs/2025_Phaser_labs_Python.pdf
 
 # Superseded design/status notes now live in archive/ and are tracked.
+
+# One-off Windows spike; kept locally, not part of the repo.
+tools/phase0_spike.py
