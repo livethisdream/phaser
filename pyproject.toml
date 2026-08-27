@@ -56,7 +56,12 @@ filterwarnings = [
 ]
 
 [tool.setuptools]
-# Root-level Python modules only; subdirectories are not packages.
+# phaser_deploy/ is the deploy tool's internals, split out so the ssh/argv seam
+# is unit-testable. Naming it explicitly keeps setuptools' auto-discovery from
+# tripping over a repo that has both root modules and a package.
+packages = ["phaser_deploy"]
+
+# Root-level Python modules only; other subdirectories are not packages.
 # The previous list named six modules that no longer exist (phaser_app,
 # phaser_cal, phaser_find_hb100, phaser_gui, phaser_ipc_worker,
 # phaser_server) -- leftovers from the pre-headless GUI architecture.
