@@ -87,10 +87,30 @@ PHASER_SRC=/tmp/phaser-src bash /tmp/phaser-src/install.sh
 in PowerShell that name is an alias for `Invoke-WebRequest`, which takes
 different flags.
 
-**One limitation.** Installing Python packages needs the network, so a fully
-offline install only works on a Pi that already has `pyzmq`, `msgpack` and
-`websockets`. Do the *first* install while the Pi has wifi -- that is the only
-step that needs it -- and use this route for every update afterwards.
+That covers everything except the Python packages, which `pip` normally
+fetches from the network. For a Pi that has **never** been online, carry those
+too. On your laptop, alongside the tarball:
+
+```bash
+pip download --only-binary=:all: \
+    --platform linux_armv7l --python-version 39 --implementation cp \
+    --index-url https://www.piwheels.org/simple \
+    --extra-index-url https://pypi.org/simple \
+    -d wheels pyzmq msgpack websockets
+scp -r wheels analog@phaser.local:/tmp/
+```
+
+Then add `PHASER_WHEELS` to the install:
+
+```bash
+PHASER_SRC=/tmp/phaser-src PHASER_WHEELS=/tmp/wheels bash /tmp/phaser-src/install.sh
+```
+
+About 1.2 MB in total. The `--platform`/`--python-version`/`--implementation`
+flags matter: they fetch `cp39` `linux_armv7l` wheels for the Pi rather than
+wheels for your laptop, and piwheels is the index that actually has ARM builds
+of `pyzmq`. With `PHASER_WHEELS` set, pip runs `--no-index`, so a missing wheel
+is a clear error instead of a silent reach for a network that isn't there.
 
 ### Other options
 
