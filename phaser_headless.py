@@ -258,8 +258,19 @@ class PhaserHeadless:
         # frontend Phase Control sliders write here via set_state.
         self.phaseList = [0.0] * 8
 
-        # Sweep settings
+        # Sweep settings. phase_step and steer_res are DIFFERENT quantities
+        # and used to be the same attribute, which is why the Phase Shift
+        # Bits slider silently coarsened the sweep itself:
+        #   phase_step -- the ADAR1000 phase-shifter LSB, 360/2**bits. Only
+        #                 ever a quantization step handed to ADAR_set_Phase.
+        #   steer_res  -- how finely the sweep steps across the scan, in
+        #                 degrees of steering angle.
+        # ignore_res mirrors the legacy "ignore steering resolution" switch:
+        # when set, the sweep walks phase one LSB at a time instead of
+        # walking angle in steer_res steps.
         self.phase_step = 2.8125  # 7 bits = 360/128
+        self.steer_res = 2.8125   # degrees of steering angle per sweep point
+        self.ignore_res = True
         self.steer_min = -90
         self.steer_max = 90
 
@@ -301,9 +312,17 @@ class PhaserHeadless:
             calibrated.append(int(max(0, min(127, round(value * gain_mult)))))
         return calibrated
 
-    def ConvertPhaseToSteerAngle(self, PhDelta):
-        """Convert phase delta to steering angle"""
-        value1 = (self.c * np.radians(np.abs(PhDelta))) / (2 * 3.14159 * self.SignalFreq * self.d)
+    def ConvertPhaseToSteerAngle(self, PhDelta, freq=None):
+        """Convert phase delta to steering angle.
+
+        `freq` is the frequency the phases were computed at. It defaults to
+        SignalFreq, but a beam-squint sweep computes phases at
+        (SignalFreq - BW) and has to invert them at the same frequency,
+        otherwise the angle axis disagrees with the phases actually loaded.
+        """
+        if freq is None:
+            freq = self.SignalFreq
+        value1 = (self.c * np.radians(np.abs(PhDelta))) / (2 * 3.14159 * freq * self.d)
         clamped = max(min(1, value1), -1)
         theta = np.degrees(np.arcsin(clamped))
         return theta if PhDelta >= 0 else -theta
@@ -369,15 +388,29 @@ class PhaserHeadless:
         error_func = []    # Monopulse error function
         angles = []
 
-        # Convert steering angle range to phase values (like phaser_gui.py)
-        steer_res = self.phase_step  # Use phase_step as steering resolution
-        SteerValues = np.arange(self.steer_min, self.steer_max + steer_res, steer_res)
-
-        # Beam squint: calculate phases for (SignalFreq - BW) but measure at SignalFreq
+        # Beam squint: calculate phases for (SignalFreq - BW) but measure at
+        # SignalFreq.
         calc_freq = self.SignalFreq - self.BW * 1e6
-        PhaseValues = np.degrees(
-            2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
-        )
+
+        if self.ignore_res:
+            # Legacy "ignore steering resolution": step the phase delta one
+            # ADAR LSB at a time and let the angle axis fall out of it.
+            phase_limit = (
+                int(225 / self.phase_step) * self.phase_step + self.phase_step
+            )
+            PhaseValues = np.arange(-phase_limit, phase_limit, self.phase_step)
+            SteerValues = np.array(
+                [self.ConvertPhaseToSteerAngle(ph, calc_freq) for ph in PhaseValues]
+            )
+        else:
+            # Step the steering angle, and derive the phase each angle needs.
+            steer_res = max(self.steer_res, 0.1)
+            SteerValues = np.arange(
+                self.steer_min, self.steer_max + steer_res, steer_res
+            )
+            PhaseValues = np.degrees(
+                2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
+            )
 
         # User-set per-element phase offsets from the Phase Control sliders.
         # ADAR_set_Phase adds these to i*PhDelta (the steering ramp) per element.
@@ -614,6 +647,8 @@ class PhaserHeadless:
                 "gainList": self.gainList,
                 "phaseList": self.phaseList,
                 "phase_step": self.phase_step,
+                "steer_res": self.steer_res,
+                "ignore_res": self.ignore_res,
                 "steer_min": self.steer_min,
                 "steer_max": self.steer_max,
                 "Averages": self.Averages,
@@ -971,17 +1006,22 @@ class PhaserHeadless:
                     angle_deg=self.sim_interferer_angle_deg,
                     power_db=self.sim_interferer_power_db,
                 )
-            # Handle phase_step: ignore_res=true uses bits, ignore_res=false uses steer_res
-            ignore_res = state.get("ignore_res", True)
-            if ignore_res:
-                if "bits" in state:
-                    bits = int(state["bits"])
-                    self.phase_step = 360.0 / (2 ** bits)
-                    print(f"Phase step set to {self.phase_step}° ({bits} bits)")
-            else:
-                if "steer_res" in state:
-                    self.phase_step = float(state["steer_res"])
-                    print(f"Steering resolution set to {self.phase_step}°")
+            # Phase LSB and steering resolution are independent knobs, so
+            # take both whenever the frontend sends them. ignore_res only
+            # decides which one drives the sweep -- it must not make the
+            # Bits slider overwrite the steering resolution, which is what
+            # used to collapse the pattern to a handful of points whenever
+            # a lab dropped the phase shifter to 3 or 4 bits.
+            if "bits" in state:
+                bits = max(int(state["bits"]), 1)
+                self.phase_step = 360.0 / (2 ** bits)
+                print(f"Phase shift LSB set to {self.phase_step}° ({bits} bits)")
+            if "steer_res" in state:
+                self.steer_res = max(float(state["steer_res"]), 0.1)
+                print(f"Steering resolution set to {self.steer_res}°")
+            if "ignore_res" in state:
+                self.ignore_res = bool(state["ignore_res"])
+                print(f"Ignore steering resolution: {self.ignore_res}")
             return {"status": "ok"}
 
         elif cmd == "run_calibration":

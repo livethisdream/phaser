@@ -19,18 +19,46 @@ class _StubGPIOs:
 
 
 class _StubElement:
-    """One element slot on the ADAR array. Records rx_gain / rx_phase writes."""
+    """One element slot on the ADAR array.
+
+    Models the two-stage write the real part has: `rx_gain` / `rx_phase` land
+    in SPI shadow registers, and only a latch (RX_LOAD / `rx_load_spi`) moves
+    them into the beam state the RF path actually uses. `latched_gain` and
+    `latched_phase` are that beam state, and they are what SimSDR reads.
+
+    Modelling this is the point, not pedantry: a caller that writes phases and
+    forgets to latch gets a beam that never moves, on the real array and here
+    alike -- which is the flat-line-instead-of-a-beam-pattern failure.
+    """
 
     def __init__(self):
+        # SPI shadow registers (what the driver writes).
         self.rx_gain = 100
         self.rx_phase = 0.0
+        self.rx_attenuator = False
+        # Live beam state (what the RF path uses). Starts matching the
+        # shadow, so a correctly-latching caller behaves exactly as before.
+        self.latched_gain = 100
+        self.latched_phase = 0.0
+
+    def latch(self):
+        self.latched_gain = 0 if self.rx_attenuator else self.rx_gain
+        self.latched_phase = self.rx_phase
+
+
+class _StubChannel:
+    """One of the four Rx channels on an ADAR1000 chip."""
+
+    def __init__(self):
+        self.rx_enable = False
 
 
 class _StubDevice:
-    """One ADAR1000 chip. reset() / mode = 'rx' are no-ops."""
+    """One ADAR1000 chip. reset() is a no-op; register writes are recorded."""
 
     def __init__(self):
         self.mode = "rx"
+        self.channels = [_StubChannel() for _ in range(4)]
 
     def reset(self):
         pass
@@ -42,14 +70,22 @@ class _StubADARArray:
     Exposes:
       - elements: dict {1..8 -> _StubElement}, written by ADAR_set_Taper/Phase
       - devices:  dict {name -> _StubDevice}, iterated by ADAR_init/ADAR_set_mode
+      - latch_rx_settings(), which commits the element writes to beam state
 
-    The SDR stub reads back .elements[k].rx_gain / .rx_phase to build the
-    per-element weighting used to synthesize IQ.
+    The SDR stub reads back the *latched* gain/phase to build the per-element
+    weighting used to synthesize IQ.
     """
 
     def __init__(self):
         self.elements = {i + 1: _StubElement() for i in range(8)}
         self.devices = {"BEAM0": _StubDevice(), "BEAM1": _StubDevice()}
+        self.latch_count = 0
+
+    def latch_rx_settings(self):
+        """Commit every element's shadow registers to its beam state."""
+        for element in self.elements.values():
+            element.latch()
+        self.latch_count += 1
 
 
 class SimSDR:
@@ -143,8 +179,10 @@ class SimSDR:
         theta_rad = np.radians(arrival_angle_deg)
         for k in range(8):
             el = self._array.elements[k + 1]
-            gain = max(0.0, min(127.0, float(el.rx_gain))) / 127.0
-            rx_phase_rad = np.radians(float(el.rx_phase))
+            # Latched beam state, not the shadow registers -- an unlatched
+            # write must not steer the simulated array either.
+            gain = max(0.0, min(127.0, float(el.latched_gain))) / 127.0
+            rx_phase_rad = np.radians(float(el.latched_phase))
             phi_incident = 2 * np.pi * (k * self._d / wavelength) * np.sin(theta_rad)
             elem_signal = amplitude * gain * wave * np.exp(
                 1j * (phi_incident - rx_phase_rad)
