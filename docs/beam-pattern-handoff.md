@@ -134,20 +134,41 @@ the sweep data itself rather than the log -- `ArrayGain` and `ArrayAngle` off
 the WebSocket, or a screenshot of the plot. The useful question is whether the
 gain values vary at all across angle, and by how much.
 
-## Open question: is the front end compressing
+## Rx gain: turn it DOWN, not up
 
-The hardware sweep above peaks at +9.03 dBFS. That reference is `2**11`,
-inherited from legacy `phaser_gui.py`, so a positive number is not proof of
-anything on its own -- it is a convention, not a measured full scale. But two
-12-bit channels summed cannot exceed +6.02 dB against that reference, and this
-reads higher, which is at least consistent with the Rx front end compressing
-at `Rx_gain = 30`.
+Counterintuitive enough to be worth writing down: this bench got 10 dB more
+beam pattern by *reducing* Rx gain. Measured 2026-08-27 by stepping
+`set_rx_gain` live over the WebSocket:
 
-Worth settling because clipping distorts the pattern *shape* -- null depth and
-sidelobe levels -- while leaving the peak looking healthy. The test is cheap:
-sweep at `Rx_gain = 30`, then at 20, and compare the range. If the range gets
-*larger* at the lower gain, the higher setting was compressing and 30 is too
-hot for this bench geometry.
+     gain    peak     null    range   peak@
+        5    -5.01   -44.19   39.18    -5.5 deg
+       10    -0.02   -39.44   39.42    -4.6 deg
+       15    +4.28   -35.72   40.00    -3.7 deg
+       20    +7.58   -30.63   38.21    -5.5 deg
+       25    +9.03   -27.17   36.20    -6.5 deg
+       30    +9.03   -20.45   29.48    -9.2 deg
+
+Read the peak column as deltas per 5 dB step: +4.99, +4.30, +3.30, +1.45,
++0.00. The nulls track the gain all the way up; the peak stops. By 30 the
+converter is pinned -- 5 dB more gain moves the peak not at all -- and the
+clipped, flattened main lobe also drags the reported peak angle out to -9.2 deg.
+
+**`Rx_gain = 10`** is the setting. Not 15, even though 15 shows the largest
+range: 39.18 / 39.42 / 40.00 across 5/10/15 is a 0.8 dB spread on a metric
+built from one time-domain peak sample at `Averages = 1`, which is inside
+run-to-run scatter. Gain 10 is the last point where the peak tracks gain
+exactly (+4.99 for +5.00), so it is the real edge of the linear region, and it
+leaves 5 dB of headroom for a horn moved closer.
+
+Note this is bench geometry, not a universal number -- it depends on how far
+the HB100 sits from the array. The repo's `config.py` still ships
+`Rx_gain = 30`, which hard-clips on this bench. That default is only used to
+seed a Pi that has no config at all, so it has been left alone, but it is worth
+a decision.
+
+The `peak@` column scatters about 2 degrees within the linear region. That is
+measurement noise; `Averages` is 1. Raising it to 4 tightens both the pattern
+and the peak-angle estimate, at the cost of sweep rate.
 
 ## Known cosmetic issue, deliberately not fixed
 
