@@ -1,31 +1,25 @@
 import os
-import pickle
 import time
 
-_REPO_DIR = os.path.dirname(__file__)
+from phaser_functions import load_cal_values
 
+def load_phase_cal(default=None, filename=None):
+    """Per-element phase offsets, from calibration.json.
 
-def _load_pickle(filename, default):
-    path = os.path.join(_REPO_DIR, filename)
-    try:
-        with open(path, "rb") as f:
-            return pickle.load(f)
-    except FileNotFoundError:
-        return default
-
-
-def load_phase_cal(default=None, filename="phase_cal_val.pkl"):
+    Falls back to the legacy phase_cal_val.pkl inside load_cal_values, so a Pi
+    calibrated before the JSON store existed keeps working until its next run.
+    `filename` is accepted and ignored for backwards compatibility.
+    """
     if default is None:
         default = [0.0] * 8
-    values = list(_load_pickle(filename, default))
-    return (values + [0.0] * 8)[:8]
+    return load_cal_values("phase_cal", default, 8)
 
 
-def load_gain_cal(default=None, filename="gain_cal_val.pkl"):
+def load_gain_cal(default=None, filename=None):
+    """Per-element gain trims. Same JSON-then-legacy path as load_phase_cal."""
     if default is None:
         default = [1.0] * 8
-    values = list(_load_pickle(filename, default))
-    return (values + [1.0] * 8)[:8]
+    return load_cal_values("gain_cal", default, 8)
 
 
 def ADAR_init(device):

@@ -1,23 +1,20 @@
 import adi
 import os
-import pickle
 import time
 import numpy as np
 
+from phaser_functions import load_cal_values
 
-_REPO_DIR = os.path.dirname(__file__)
 
+def load_channel_cal(default=None, filename=None):
+    """Two-channel SDR gain correction, from calibration.json.
 
-def load_channel_cal(default=None, filename="channel_cal_val.pkl"):
+    Falls back to the legacy channel_cal_val.pkl. `filename` is accepted and
+    ignored for backwards compatibility.
+    """
     if default is None:
         default = [0.0] * 2
-    path = os.path.join(_REPO_DIR, filename)
-    try:
-        with open(path, "rb") as f:
-            values = list(pickle.load(f))
-    except FileNotFoundError:
-        values = list(default)
-    return (values + [0.0] * 2)[:2]
+    return load_cal_values("channel_cal", default, 2)
 
 
 def _set_channel_map_with_fallback(sdr, attr_name, preferred):
