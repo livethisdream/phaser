@@ -6,6 +6,15 @@ stub synthesizes element-level IQ from a boresight HB100 tone, applies the
 element phases + taper the ADAR stub has captured, sums into two digital
 sub-arrays (chan0 = elements 1-4, chan1 = elements 5-8), and returns the
 same [chan0, chan1] shape SDR_getData produces on real hardware.
+
+PORTED TO JAVASCRIPT. frontend/src/sim/ runs this same physics in the browser
+so the dashboard works with no Pi attached (and so the GitHub Pages demo works
+at all). This file is the source of truth; the port follows it.
+
+Changing the physics here means:
+  1. python tools/gen_sim_constants.py   -- if a constant moved
+  2. mirror the change in frontend/src/sim/
+  3. pytest tests/test_sim_parity.py     -- which will fail until you do
 """
 
 import numpy as np

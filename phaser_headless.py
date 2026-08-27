@@ -420,7 +420,15 @@ class PhaserHeadless:
         return w.ravel()
 
     def do_sweep(self):
-        """Perform one beam sweep and return data including monopulse delta/error"""
+        """Perform one beam sweep and return data including monopulse delta/error
+
+        PORTED TO JAVASCRIPT, along with the helpers above it
+        (_apply_gain_cal, _apply_phase_cal, ConvertPhaseToSteerAngle,
+        _mvdr_weights): frontend/src/sim/engine.js runs this pipeline in the
+        browser for --sim-without-a-Pi and the GitHub Pages demo. This is the
+        source of truth. tests/test_sim_parity.py compares the two and fails on
+        drift, so a change here needs the same change there.
+        """
         max_signal = -1000
         data_fft = None
         gain = []          # Sum beam (chan1 + chan2)
