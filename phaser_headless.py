@@ -100,6 +100,7 @@ class PhaserHeadless:
         # run had failed -- the modal simply sat there. Retained until the next
         # run starts, so the answer is the same however often you ask.
         self.cal_last_result = None
+        self.cal_started_at = None
 
         # Initialize hardware
         self._init_hardware()
@@ -737,6 +738,10 @@ class PhaserHeadless:
 
         print(f"Starting calibration: {task_name}")
         self.cal_task = task_name
+        # Reported in the status payload. The UI keys its post-run state reload
+        # on it; without it the key was constant across runs, so the reload
+        # happened once ever and later runs left stale values on screen.
+        self.cal_started_at = time.time()
         self.cal_log = []
         self.cal_last_result = None
 
@@ -783,6 +788,7 @@ class PhaserHeadless:
                 "status": "ok",
                 "running": True,
                 "task": self.cal_task,
+                "started_at": getattr(self, "cal_started_at", None),
                 "last_lines": self.cal_log[-20:],
             }
         else:
@@ -795,6 +801,7 @@ class PhaserHeadless:
                 "status": "ok",
                 "running": False,
                 "task": self.cal_task,
+                "started_at": getattr(self, "cal_started_at", None),
                 "returncode": returncode,
                 "success": returncode == 0,
                 "last_lines": self.cal_log,
