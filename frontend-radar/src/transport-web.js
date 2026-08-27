@@ -2,17 +2,36 @@
 // Connects to the same backend WebSocket the beamforming GUI uses.
 // All radar-specific commands invoke()'d here have to be implemented
 // as new branches in phaser_headless.py's handle_command().
+
+// Where the backend's WebSocket lives, given how this page was served.
+//
+// Plain http on the LAN: the backend serves the frontend on 8080 and the
+// WebSocket on 8765, so point straight at 8765.
+//
+// https: the page is behind a TLS reverse proxy -- a Tailscale Funnel, say.
+// Two things change. The browser refuses a plain ws:// from an https:// page
+// as mixed content, and 8765 is not exposed through that proxy anyway (a
+// Funnel only publishes 443/8443/10000). So go same-origin over wss:// and
+// let the proxy route /ws to 8765. The backend's handler ignores the request
+// path, so it does not care whether the proxy strips the prefix.
+function backendWsUrl() {
+    if (window.location.protocol === 'https:') {
+        return `wss://${window.location.host}/ws`;
+    }
+    const host = window.location.hostname || 'localhost';
+    return `ws://${host}:8765`;
+}
+
 export function createWebTransport(callbacks = {}) {
     let ws = null;
     let reconnectTimer = null;
     let pendingRequests = new Map();
     let requestId = 0;
-    const host = window.location.hostname || 'localhost';
 
     function connect() {
         if (ws && ws.readyState === WebSocket.OPEN) return;
 
-        ws = new WebSocket(`ws://${host}:8765`);
+        ws = new WebSocket(backendWsUrl());
 
         ws.onopen = () => {
             callbacks.onLog?.('info', 'WS', 'Connected');
