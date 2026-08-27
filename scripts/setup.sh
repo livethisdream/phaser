@@ -1,14 +1,15 @@
 #!/bin/bash
 # One-stop Phaser setup for Unix / macOS / WSL testers.
 #
-# This is the FIRST-TIME provisioning path: it installs Python deps and the
-# systemd unit on the Pi, which deploy.py does not do. After running it once,
-# `python deploy.py` is all you need for every subsequent update.
+# This is the FIRST-TIME provisioning path: it installs the Python deps on the
+# Pi, which deploy.py does not do. After running it once, `python deploy.py` is
+# all you need for every subsequent update. (The systemd unit is deploy.py's
+# job either way -- it installs one whenever the Pi has none.)
 #
 #   1. Verifies local prereqs (Python 3.11+; node/npm only if building)
 #   2. Uses the committed frontend build, or builds it if absent/--build
-#   3. ssh to the Pi and provision it (installs deps + systemd unit)
-#   4. Runs deploy.py to copy files + start the service
+#   3. ssh to the Pi and provision it (installs Python deps)
+#   4. Runs deploy.py to copy files, install the unit, start the service
 #
 # Usage:
 #   ./scripts/setup.sh                  # Pi at phaser.local (default)
@@ -115,12 +116,23 @@ fi
 # ---- ssh sanity check --------------------------------------------------------
 echo
 echo "[3/4] Provisioning Pi at analog@$HOST..."
-if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "analog@$HOST" 'echo ok' > /dev/null 2>&1; then
-    echo "  ERROR: cannot ssh to analog@$HOST without a password."
-    echo "  Fix: copy your ssh key with 'ssh-copy-id analog@$HOST', then retry."
+# Reachability and credentials are separate questions. BatchMode=yes refuses
+# password auth, so testing only that conflates "Pi is off" with "no key
+# installed" -- and rejects a Pi that ssh would happily prompt for. Check the
+# TCP port first, then treat a missing key as a note, not an error.
+if ! timeout 5 bash -c "echo > /dev/tcp/$HOST/22" 2> /dev/null; then
+    echo "  ERROR: cannot reach $HOST on port 22."
+    echo "  The Pi is off, on another network, or the name does not resolve."
+    echo "  Check: ssh analog@$HOST 'echo ok'"
     exit 1
 fi
-echo "  OK: passwordless ssh to analog@$HOST works"
+if ssh -o BatchMode=yes -o ConnectTimeout=5 "analog@$HOST" 'echo ok' > /dev/null 2>&1; then
+    echo "  OK: key-based ssh to analog@$HOST works"
+else
+    echo "  NOTE: $HOST is reachable, but your key is not authorized on it."
+    echo "        You will be prompted for the Pi's password. To avoid that:"
+    echo "          ssh-copy-id analog@$HOST"
+fi
 
 # Pipe setup-pi.sh to the Pi. sudo may prompt for a password interactively
 # via ssh -t; that's fine — the tester enters it once.

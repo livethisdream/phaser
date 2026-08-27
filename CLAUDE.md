@@ -64,9 +64,17 @@ python deploy.py --build-only     # Rebuild, don't deploy
 ```
 
 Steps: (optional build) -> scp backend .py files -> scp `frontend/dist/*` to
-the Pi -> restart `phaser-headless` systemd service. If the committed build is
-missing entirely, deploy.py builds it when npm is available and errors with
-guidance when it isn't. It warns (advisory only) when sources look newer than
+the Pi -> check provisioning -> restart `phaser-headless` systemd service. If
+the committed build is missing entirely, deploy.py builds it when npm is
+available and errors with guidance when it isn't.
+
+The provisioning check is what makes a fresh Pi work: deploy.py verifies the
+runtime imports and installs + enables the unit from
+`scripts/phaser-headless.service.template` when the Pi has none. That template
+is the only definition of the unit — `setup-pi.sh` used to carry a second,
+drift-prone heredoc copy and no longer does. deploy.py now exits non-zero when
+the restart fails, instead of printing "Deployment complete!" over a service
+that never started. It warns (advisory only) when sources look newer than
 the committed build.
 
 The CW radar frontend (`frontend-radar/`, served on :8081) is **opt-in** via

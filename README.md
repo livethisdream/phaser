@@ -34,11 +34,60 @@ and a Pi that has already been provisioned (below). No Node required.
 python phaser_headless.py --sim   # then open http://localhost:8080
 ```
 
+### Install on a Pi (any OS, two lines)
+
+```
+ssh analog@phaser.local
+curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
+```
+
+That is the whole install, from Windows, macOS or Linux, because line one is
+just `ssh` -- which every OS ships -- and line two runs on the Pi.
+
+`install.sh` runs **on the Pi** on purpose. The Pi is the one machine whose
+environment we control; every deployment bug this project has had came from the
+client side instead -- cmd.exe not expanding globs, PATHEXT and `npm.cmd`, no
+ControlMaster in Windows OpenSSH, BatchMode refusing password auth, `ssh -t`
+defeated by a stdin redirect, ConPTY and sudo, a Microsoft Store alias
+masquerading as `python`. None of that is about installing Phaser. Moving the
+logic to the Pi deletes all of it, and `sudo` simply works because you are
+sitting at an interactive shell.
+
+It is idempotent: run it again to update. It updates a drifted systemd unit,
+replaces the frontend atomically rather than merging over stale hashed assets,
+and never overwrites an existing `config.py`.
+
+Options: `PHASER_REF=<branch-or-tag>` to install something other than `main`;
+`PHASER_SRC=/path/to/repo` to install from a local copy with no download at all
+(useful when the Pi has no internet); `GH_TOKEN` if the repo is private.
+
+### Deploying while you work on it
+
+`install.sh` provisions. For an edit/test loop, `deploy.py` copies your working
+tree straight to the Pi without a round trip through GitHub -- see below.
+
+### Prerequisites
+
+`deploy.py` imports **only the standard library**, so any Python 3.9+ runs it
+with nothing installed -- no venv, no `uv sync`, no pip. A test enforces that
+(`tests/test_deploy_deps.py`), because the alternative is telling a tester to
+install a toolchain before they can deploy anything.
+
+You also need an ssh client. On Windows that is
+Settings > Apps > Optional features > OpenSSH Client.
+
+**On Windows, do not rely on `python` already being on PATH.** Windows ships a
+Microsoft Store *App Execution Alias* at
+`...\AppData\Local\Microsoft\WindowsApps\python.exe`, which `where.exe python`
+happily finds and which is not an interpreter -- `python --version` fails on it.
+Install a real one from python.org (tick "Add python.exe to PATH"), or, if you
+have `uv`, `uv python install`.
+
 ### First-time Pi provisioning
 
-A Pi straight out of the box needs Python deps and the systemd unit
-installed once. `scripts/setup.sh` / `scripts/setup.ps1` do that, then
-deploy. Like `deploy.py`, they use the committed build and need no Node:
+A Pi straight out of the box needs its Python deps installed once.
+`scripts/setup.sh` / `scripts/setup.ps1` do that, then deploy. Like
+`deploy.py`, they use the committed build and need no Node:
 
 ```powershell
 .\scripts\setup.ps1               # Windows PowerShell
@@ -56,6 +105,26 @@ They can be run from anywhere; both anchor themselves to the repo root.
 
 After that, `python deploy.py` is all you need for every subsequent
 update.
+
+The systemd unit is **not** part of this step. `deploy.py` owns it: before
+restarting, it checks for `/etc/systemd/system/phaser-headless.service` and,
+if the Pi has none, renders `scripts/phaser-headless.service.template` and
+installs + enables it. So a deploy to a never-provisioned Pi ends with a
+running service instead of a `WARN:` line under a "Deployment complete!"
+banner. `deploy.py` also verifies `pyzmq`, `msgpack` and `websockets` are
+importable by `analog` through `/usr/bin/python3` — the exact user and
+interpreter the unit runs as — and fails with a pointer to `setup.sh` when
+they aren't, rather than leaving you a crash-looping service.
+
+Expect **one** sudo prompt on the Pi. First-time provisioning installs,
+enables and starts the unit in a single `ssh -t` session, because sudo's
+credential timestamp is per-tty and a second session would prompt again. A
+redeploy to an already-provisioned Pi prompts once too, for the restart.
+`ssh-copy-id analog@<host>` removes the separate *ssh* password prompt; on
+macOS/Linux/WSL a single shared connection is used for the whole deploy, so
+even without a key you are asked once rather than once per file. (Windows
+OpenSSH has no `ControlMaster`, so PowerShell users on a password-only Pi are
+prompted per copy — copy a key over to avoid it.)
 
 ## No-build deployment
 
@@ -145,9 +214,12 @@ when npm is available, and tells you what to do when it isn't.
 - Built frontend (`frontend/dist/*`)
 - Radar frontend (`frontend-radar/dist/*`) with `--radar`
 
-It deliberately **does not** copy `config.py`, so any Pi-specific values
-(URIs, calibrated defaults) survive. It restarts `phaser-headless.service`
-over ssh after the scp.
+It deliberately **does not overwrite** `config.py`, so any Pi-specific
+values (URIs, calibrated defaults) survive. It does seed one when the Pi has
+none at all — a from-scratch install dir is otherwise an immediate
+`import config` crash loop, since `phaser_headless.py` exits at module level
+without it. It installs the systemd unit if absent, then restarts
+`phaser-headless.service` over ssh.
 
 ## Simulation mode (no Phaser required)
 
@@ -272,8 +344,12 @@ Tooling:
 
 - `setup.sh`, `setup.ps1` — first-time Pi provisioning, then deploy
 - `setup-pi.sh` — the Pi-side half, piped over ssh by the two above.
-  It writes the systemd unit inline, so there is no `.service` file to
-  keep in sync
+  Installs the Python deps and the install dir. It does **not** write the
+  systemd unit; `deploy.py` does
+- `phaser-headless.service.template` — the single definition of the systemd
+  unit. `deploy.py` renders the `@USER@` / `@INSTALL_DIR@` / `@PYTHON@`
+  placeholders from its own constants, which is what keeps the unit's
+  `WorkingDirectory` and the scp destination from drifting apart
 - `build-installer.py` — legacy single-tarball packager, not used by the
   supported setup/deploy path and not exercised by CI
 

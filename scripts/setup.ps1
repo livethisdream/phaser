@@ -1,13 +1,14 @@
 # One-stop Phaser setup for Windows testers (PowerShell).
 #
-# This is the FIRST-TIME provisioning path: it installs Python deps and the
-# systemd unit on the Pi, which deploy.py does not do. After running it once,
-# `python deploy.py` is all you need for every subsequent update.
+# This is the FIRST-TIME provisioning path: it installs the Python deps on the
+# Pi, which deploy.py does not do. After running it once, `python deploy.py` is
+# all you need for every subsequent update. (The systemd unit is deploy.py's
+# job either way -- it installs one whenever the Pi has none.)
 #
 #   1. Verifies local prereqs (Python 3.11+, ssh, scp; node/npm only to build)
 #   2. Uses the committed frontend build, or builds it if absent/-Build
-#   3. ssh to the Pi and provision it (installs deps + systemd unit)
-#   4. Runs deploy.py to copy files + start the service
+#   3. ssh to the Pi and provision it (installs Python deps)
+#   4. Runs deploy.py to copy files, install the unit, start the service
 #
 # Usage:
 #   .\scripts\setup.ps1                  # Pi at phaser.local (default)
@@ -138,15 +139,32 @@ if ($SkipPi) {
 Write-Host ""
 Write-Host "[3/4] Provisioning Pi at analog@$PiHost..."
 
-# Non-interactive probe: BatchMode disables password prompts. Silent success = key works.
-& ssh -o BatchMode=yes -o ConnectTimeout=5 "analog@$PiHost" 'echo ok' 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "  ERROR: cannot ssh to analog@$PiHost without a password."
-    Write-Host "  Fix: copy your ssh key to the Pi. From PowerShell, e.g.:"
-    Write-Host "    type `$HOME\.ssh\id_ed25519.pub | ssh analog@$PiHost 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'"
+# Reachability and credentials are separate questions. BatchMode=yes refuses
+# password auth, so testing only that conflates "Pi is off" with "no key
+# installed" -- and rejects a Pi that ssh would happily prompt for. Check the
+# TCP port first, then treat a missing key as a note, not an error.
+$reachable = $false
+$tcp = New-Object System.Net.Sockets.TcpClient
+try {
+    if ($tcp.ConnectAsync($PiHost, 22).Wait(5000)) { $reachable = $tcp.Connected }
+} catch { $reachable = $false } finally { $tcp.Dispose() }
+if (-not $reachable) {
+    Write-Host "  ERROR: cannot reach $PiHost on port 22."
+    Write-Host "  The Pi is off, on another network, or the name does not resolve."
+    Write-Host "  Check: ssh analog@$PiHost 'echo ok'"
     exit 1
 }
-Write-Host "  OK: passwordless ssh to analog@$PiHost works"
+
+# Non-interactive probe: BatchMode disables password prompts. Silent success = key works.
+& ssh -o BatchMode=yes -o ConnectTimeout=5 "analog@$PiHost" 'echo ok' 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "  OK: key-based ssh to analog@$PiHost works"
+} else {
+    Write-Host "  NOTE: $PiHost is reachable, but your key is not authorized on it."
+    Write-Host "        You will be prompted for the Pi's password on each copy."
+    Write-Host "        Windows OpenSSH has no ControlMaster, so to avoid that, copy a key:"
+    Write-Host "    type `$HOME\.ssh\id_ed25519.pub | ssh analog@$PiHost 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'"
+}
 
 # Pipe setup-pi.sh over ssh. sudo prompts on the Pi go through ssh -t.
 Get-Content (Join-Path $PSScriptRoot 'setup-pi.sh') -Raw | & ssh -t "analog@$PiHost" 'bash -s'
