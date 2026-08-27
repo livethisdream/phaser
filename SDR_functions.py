@@ -63,12 +63,36 @@ def SDR_init(ip, sample_rate, tx_lo, rx_lo, rx_gain, tx_gain, buffer_size=1024*1
     return sdr
 
 def SDR_LO_init(rpi_ip, lo_freq):
-    """Initialise the ADF4159 LO and return the synth object so callers can
-    keep it alive (preventing GC from closing the libiio context)."""
-    print(f"Initializing external LO on {rpi_ip} to {lo_freq} Hz")
+    """Set the CN0566 LO to `lo_freq` Hz and return the synth object.
+
+    The object is returned so callers can keep it alive; letting it be garbage
+    collected closes the libiio context underneath it.
+
+    `lo_freq` is the LO the mixer sees. The ADF4159 register takes a QUARTER of
+    that, because the CN0566 divides by 4 ahead of the PLL's RFIN -- pyadi-iio's
+    own CN0566.lo setter is literally `self.frequency = int(value / 4)`, and
+    every ADI phaser example writes `(SignalFreq + Rx_freq) // 4`.
+
+    This helper wrote `lo_freq` undivided, which asked for an LO four times too
+    high. Nothing complained: the attribute write is accepted and reads straight
+    back, so there was no error to notice -- the PLL simply could not lock there
+    and the array received noise. Both calibration scripts do their own division
+    and so always worked, which is exactly why "find HB100 sees 53 dB SNR but
+    the live sweep shows only the noise floor".
+    """
+    target = int(lo_freq / 4)
+    print(f"Initializing external LO on {rpi_ip} to {lo_freq} Hz "
+          f"(ADF4159 register {target} Hz, /4)")
     try:
         synth = adi.adf4159(rpi_ip)
-        synth.frequency = int(lo_freq)
+        synth.frequency = target
+        # Read back. The write is accepted silently even when the value is
+        # nonsense, so a mismatch here is the only way to catch a bad LO before
+        # it shows up as an inexplicably empty spectrum.
+        actual = int(synth.frequency)
+        if abs(actual - target) > 1000:
+            print(f"WARNING: ADF4159 readback {actual} Hz != requested {target} Hz "
+                  f"-- LO is not where it should be; expect no signal.")
         return synth
     except Exception as e:
         print(f"Failed to set ADF4159 LO: {e}")
