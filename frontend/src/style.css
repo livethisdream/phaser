@@ -109,17 +109,6 @@ h1, h2, h3 {
 }
 
 /* Electron uses native CSS drag region */
-.desktop-titlebar__drag.electron-drag {
-  -webkit-app-region: drag;
-}
-
-.desktop-titlebar__drag.electron-drag * {
-  -webkit-app-region: no-drag;
-  cursor: grab;
-  /* pywebview easy_drag handles this via .pywebview-drag-region class */
-  -webkit-app-region: no-drag;
-  user-select: none;
-}
 
 .desktop-titlebar__drag:active {
   cursor: grabbing;
@@ -259,7 +248,6 @@ h1, h2, h3 {
   line-height: 1;
   flex-shrink: 0;
 }
-
 
 .transport-badge {
   display: inline-flex;

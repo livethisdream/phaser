@@ -240,7 +240,8 @@ Servers on the Pi:
 
 - **HTTP :8080** — serves `frontend/dist` (main beamforming UI)
 - **WebSocket :8765** — browser command channel + live sweep frames
-- **ZMQ PUB :5555 / REP :5556** — for legacy desktop/Electron clients
+- **ZMQ PUB :5555 / REP :5556** — sweep frames + command channel for local
+  scripts; unused by the browser UI
 - **HTTP :8081** — CW Doppler radar app (separate `frontend-radar/dist`)
 
 ## Deploying to the Pi
