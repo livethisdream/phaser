@@ -1731,17 +1731,25 @@ async function refreshCalibrationStatus() {
     try {
         const msg = await transport.getCalibrationStatus();
         if (msg.status === 'ok') {
-            updateCalibrationPill(msg.data);
-            updateCalibrationModal(msg.data);
-            trackCalibrationLogUpdates(msg.data);
-            if (msg.data && !msg.data.running && msg.data.returncode === 0) {
+            // The websocket transport resolves the raw backend reply, and
+            // get_calibration_status answers FLAT -- {status, running, task,
+            // returncode, ...} with no `data` envelope. Reading msg.data gave
+            // undefined on every poll, and updateCalibrationModal() starts with
+            // `if (!data) return`, so the modal sat on "Running..." forever
+            // even though the run had finished successfully. That is the
+            // "find HB100 hangs" symptom. Accept either shape.
+            const cal = msg.data ?? msg;
+            updateCalibrationPill(cal);
+            updateCalibrationModal(cal);
+            trackCalibrationLogUpdates(cal);
+            if (cal && !cal.running && cal.returncode === 0) {
                 const reloadableTasks = new Set(['find_hb100', 'phaser_cal']);
-                if (reloadableTasks.has(msg.data.task)) {
-                    const reloadKey = `${msg.data.task}:${msg.data.started_at}:${msg.data.returncode}`;
+                if (reloadableTasks.has(cal.task)) {
+                    const reloadKey = `${cal.task}:${cal.started_at}:${cal.returncode}`;
                     if (reloadKey !== calibrationLogState.lastReloadKey) {
                         calibrationLogState.lastReloadKey = reloadKey;
                         await loadStateFromServer();
-                        addRuntimeLog('info', 'CAL', `Reloaded UI state after ${msg.data.task}`);
+                        addRuntimeLog('info', 'CAL', `Reloaded UI state after ${cal.task}`);
                     }
                 }
             }
