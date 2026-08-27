@@ -41,25 +41,61 @@ ssh analog@phaser.local
 curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
 ```
 
-That is the whole install, from Windows, macOS or Linux, because line one is
-just `ssh` -- which every OS ships -- and line two runs on the Pi.
+That is the whole install, from Windows, macOS or Linux: line one is `ssh`,
+which every OS ships, and line two runs on the Pi. Nothing else is needed
+locally -- no Python, no clone, no toolchain.
 
-`install.sh` runs **on the Pi** on purpose. The Pi is the one machine whose
-environment we control; every deployment bug this project has had came from the
-client side instead -- cmd.exe not expanding globs, PATHEXT and `npm.cmd`, no
-ControlMaster in Windows OpenSSH, BatchMode refusing password auth, `ssh -t`
-defeated by a stdin redirect, ConPTY and sudo, a Microsoft Store alias
-masquerading as `python`. None of that is about installing Phaser. Moving the
-logic to the Pi deletes all of it, and `sudo` simply works because you are
-sitting at an interactive shell.
+Expect **one sudo prompt**, for the systemd unit. You are at an interactive
+shell, so it just asks.
 
-It is idempotent: run it again to update. It updates a drifted systemd unit,
+It is idempotent -- run it again to update. It updates a drifted systemd unit,
 replaces the frontend atomically rather than merging over stale hashed assets,
-and never overwrites an existing `config.py`.
+never overwrites an existing `config.py`, and installs only the Python packages
+that are actually missing. It finishes by checking the service stayed up and
+the UI answers 200, printing both the `.local` name and the IP.
 
-Options: `PHASER_REF=<branch-or-tag>` to install something other than `main`;
-`PHASER_SRC=/path/to/repo` to install from a local copy with no download at all
-(useful when the Pi has no internet); `GH_TOKEN` if the repo is private.
+If `phaser.local` does not resolve -- common on Windows without mDNS, or behind
+corporate DNS -- use the Pi's IP address instead.
+
+`install.sh` runs **on the Pi** deliberately. The Pi is the one machine whose
+environment we control; every deployment bug this project has had came from the
+client side instead (cmd.exe globbing, PATHEXT, no ControlMaster on Windows
+OpenSSH, `ssh -t` versus sudo, a Microsoft Store alias masquerading as
+`python`). None of that is about installing Phaser. The header comment in
+`install.sh` has the full account.
+
+### Installing without internet on the Pi
+
+Download on a machine that has internet, carry it over, install from the local
+copy. On your laptop:
+
+```bash
+curl -fsSL -o phaser.tar.gz https://codeload.github.com/livethisdream/phaser/tar.gz/refs/heads/main
+scp phaser.tar.gz analog@phaser.local:/tmp/
+```
+
+Then on the Pi:
+
+```bash
+ssh analog@phaser.local
+mkdir -p /tmp/phaser-src && tar -xzf /tmp/phaser.tar.gz -C /tmp/phaser-src --strip-components=1
+PHASER_SRC=/tmp/phaser-src bash /tmp/phaser-src/install.sh
+```
+
+`--strip-components=1` matters: GitHub wraps the tree in a
+`livethisdream-phaser-<sha>` directory. On Windows use `curl.exe`, not `curl` --
+in PowerShell that name is an alias for `Invoke-WebRequest`, which takes
+different flags.
+
+**One limitation.** Installing Python packages needs the network, so a fully
+offline install only works on a Pi that already has `pyzmq`, `msgpack` and
+`websockets`. Do the *first* install while the Pi has wifi -- that is the only
+step that needs it -- and use this route for every update afterwards.
+
+### Other options
+
+`PHASER_REF=<branch-or-tag>` installs something other than `main`.
+`GH_TOKEN` authenticates if the repo is ever made private again.
 
 ### Deploying while you work on it
 
