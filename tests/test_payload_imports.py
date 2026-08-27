@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DEPLOYED = [
     "phaser_headless.py", "phaser_cal_headless.py",
     "phaser_find_hb100_headless.py", "phaser_cw_radar.py",
+    "phaser_radar_dsp.py",
     "ADAR_pyadi_functions.py", "SDR_functions.py", "phaser_functions.py",
     "config.py",
 ]

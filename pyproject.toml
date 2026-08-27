@@ -72,6 +72,7 @@ py-modules = [
     "phaser_find_hb100_headless",
     "phaser_functions",
     "phaser_headless",
+    "phaser_radar_dsp",
     "phaser_service",
     "phaser_sim",
     "SDR_functions",

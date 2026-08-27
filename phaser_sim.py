@@ -145,6 +145,17 @@ class SimSDR:
     # compared.
     NOISE_SIGMA = 4.0
 
+    # CW radar scene. Each target is (velocity_mps, angle_deg, amplitude);
+    # velocity is positive for closing targets. The zero-velocity entry is the
+    # Tx->Rx leakage every real CW radar has, and it is deliberately the
+    # strongest return -- it is what puts the big spike at 0 m/s that the
+    # workshop asks you to look past.
+    CW_DEFAULT_TARGETS = (
+        (0.0, 0.0, 1.0),     # direct leakage / stationary clutter
+        (2.5, 0.0, 0.45),    # a walking target, closing
+        (-1.2, 15.0, 0.25),  # a slower one receding, off boresight
+    )
+
     def __init__(self, array, signal_freq, element_spacing, sample_rate=3e6,
                  buffer_size=1024 * 16):
         self._array = array
@@ -173,6 +184,18 @@ class SimSDR:
         self._interferer_angle_deg = 30.0
         self._interferer_power_db = 0.0   # relative to target amplitude
 
+        # CW radar state. Off until phaser_headless enters cw_radar mode, at
+        # which point rx() synthesizes Doppler returns instead of the plain
+        # HB100 beamforming scene.
+        self._cw_enable = False
+        self._cw_signal_freq = 100_000.0
+        self._cw_output_freq = 12.2e9
+        self._cw_targets = list(self.CW_DEFAULT_TARGETS)
+
+        # Tx buffer bookkeeping, so enter_cw_mode's tx()/tx_destroy_buffer()
+        # calls have something to land on.
+        self._tx_buffer = None
+
         self._rng = np.random.default_rng(0)
 
     def set_signal_freq(self, freq_hz):
@@ -189,6 +212,78 @@ class SimSDR:
             self._interferer_angle_deg = float(angle_deg)
         if power_db is not None:
             self._interferer_power_db = float(power_db)
+
+    def set_cw_mode(self, enable, signal_freq=None, output_freq=None,
+                    targets=None):
+        """Switch the synthesized scene between beamforming and CW radar.
+
+        phaser_headless calls this when entering/leaving cw_radar mode, so
+        --sim exercises the whole radar path -- capture, Doppler processing,
+        waterfall, taper response -- with no Phaser attached. Radar mode used
+        to be refused outright under --sim, which meant the radar UI could not
+        be developed or demonstrated without hardware on the bench.
+        """
+        self._cw_enable = bool(enable)
+        if signal_freq is not None:
+            self._cw_signal_freq = float(signal_freq)
+        if output_freq is not None:
+            self._cw_output_freq = float(output_freq)
+        if targets is not None:
+            self.set_cw_targets(targets)
+
+    def set_cw_targets(self, targets):
+        """Replace the simulated CW scene. Each entry is (v_mps, angle_deg, amp)."""
+        scene = []
+        for entry in targets or ():
+            try:
+                v, angle, amp = entry
+            except (TypeError, ValueError):
+                continue
+            scene.append((float(v), float(angle), float(amp)))
+        self._cw_targets = scene or list(self.CW_DEFAULT_TARGETS)
+
+    # enter_cw_mode loads a cyclic Tx buffer and tears it down again. Nothing
+    # in the sim transmits, but the calls have to succeed.
+    def tx(self, data):
+        self._tx_buffer = data
+
+    def tx_destroy_buffer(self):
+        self._tx_buffer = None
+
+    def _synthesize_cw(self):
+        """CW radar scene: the IF tone plus one Doppler-shifted line per target.
+
+        A target closing at v shifts the return by f_d = 2*v*f_carrier/c, so it
+        lands at (signal_freq + f_d) in the baseband spectrum. That is exactly
+        the relation process_cw_frame inverts to get velocity back, which makes
+        this a real round trip rather than a canned plot: get the LO or the
+        carrier wrong and the recovered velocity is wrong with it.
+        """
+        N = self.rx_buffer_size
+        fs = float(self.sample_rate)
+        t = np.arange(N) / fs
+
+        c = 299_792_458.0
+        # Spatial phase uses the transmitted carrier, not the HB100 SignalFreq:
+        # in radar mode the array is receiving our own echo at output_freq.
+        wavelength = c / max(self._cw_output_freq, 1.0)
+
+        chan_sub = [
+            np.zeros(N, dtype=np.complex64),
+            np.zeros(N, dtype=np.complex64),
+        ]
+
+        for velocity, angle_deg, amplitude in self._cw_targets:
+            f_doppler = 2.0 * velocity * self._cw_output_freq / c
+            self._superpose_source(
+                chan_sub, t,
+                if_hz=self._cw_signal_freq + f_doppler,
+                arrival_angle_deg=angle_deg,
+                amplitude=amplitude,
+                wavelength=wavelength,
+            )
+
+        return chan_sub
 
     def _superpose_source(self, chan_sub, t, if_hz, arrival_angle_deg,
                           amplitude, wavelength):
@@ -225,6 +320,9 @@ class SimSDR:
     def _synthesize_channels(self):
         """Return (chan0, chan1) as 1D complex arrays, shape (buffer_size,).
 
+        In CW radar mode the scene comes from _synthesize_cw() instead (the
+        Doppler returns), and only the scaling and noise below are shared.
+
         Sums:
           - Target: plane wave at TARGET_ANGLE_DEG, IF = TARGET_IF_HZ, unit amp
           - Interferer (if enabled): plane wave at interferer_angle_deg,
@@ -233,36 +331,40 @@ class SimSDR:
         """
         N = self.rx_buffer_size
         fs = float(self.sample_rate)
-        t = np.arange(N) / fs
 
-        c = 299_792_458.0
-        wavelength = c / self._SignalFreq
+        if self._cw_enable:
+            chan_sub = self._synthesize_cw()
+        else:
+            t = np.arange(N) / fs
 
-        chan_sub = [
-            np.zeros(N, dtype=np.complex64),
-            np.zeros(N, dtype=np.complex64),
-        ]
+            c = 299_792_458.0
+            wavelength = c / self._SignalFreq
 
-        # Target (always present)
-        self._superpose_source(
-            chan_sub, t,
-            if_hz=self.TARGET_IF_HZ,
-            arrival_angle_deg=self.TARGET_ANGLE_DEG,
-            amplitude=1.0,
-            wavelength=wavelength,
-        )
+            chan_sub = [
+                np.zeros(N, dtype=np.complex64),
+                np.zeros(N, dtype=np.complex64),
+            ]
 
-        # Interferer (only when instructor mode has enabled it). Uses the
-        # same IF as the target — see class comment for rationale.
-        if self._interferer_enable:
-            interf_amp = 10.0 ** (self._interferer_power_db / 20.0)
+            # Target (always present)
             self._superpose_source(
                 chan_sub, t,
-                if_hz=self.INTERFERER_IF_HZ,
-                arrival_angle_deg=self._interferer_angle_deg,
-                amplitude=interf_amp,
+                if_hz=self.TARGET_IF_HZ,
+                arrival_angle_deg=self.TARGET_ANGLE_DEG,
+                amplitude=1.0,
                 wavelength=wavelength,
             )
+
+            # Interferer (only when instructor mode has enabled it). Uses the
+            # same IF as the target — see class comment for rationale.
+            if self._interferer_enable:
+                interf_amp = 10.0 ** (self._interferer_power_db / 20.0)
+                self._superpose_source(
+                    chan_sub, t,
+                    if_hz=self.INTERFERER_IF_HZ,
+                    arrival_angle_deg=self._interferer_angle_deg,
+                    amplitude=interf_amp,
+                    wavelength=wavelength,
+                )
 
         amp = self.AMP_SCALE
         chan0 = chan_sub[0] * amp

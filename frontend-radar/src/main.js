@@ -13,6 +13,7 @@ const state = {
     db_floor: -100,
     db_ceil: 0,
     vel_max: 20,
+    taper: 'blackman',
 };
 
 /* --- Theme --- */
@@ -217,7 +218,13 @@ linkComboSlider('rx-gain', 'val-rx-gain', (v) => maybePushParams({ rx_gain: v })
 linkComboSlider('tx-gain', 'val-tx-gain', (v) => maybePushParams({ tx_gain: v }));
 linkComboSlider('db-floor', 'val-db-floor', (v) => { state.db_floor = v; refreshWaterfallScale(); });
 linkComboSlider('db-ceil', 'val-db-ceil', (v) => { state.db_ceil = v; refreshWaterfallScale(); });
-linkComboSlider('vel-max', 'val-vel-max', (v) => { state.vel_max = v; refreshAxisRanges(); });
+linkComboSlider('vel-max', 'val-vel-max', (v) => {
+    state.vel_max = v;
+    refreshAxisRanges();
+    // The backend crops the Doppler window before sending it, so widening the
+    // axis without telling it just adds empty margin to the plot.
+    maybePushParams({ vel_max: v });
+});
 linkComboSlider('waterfall-depth', 'val-waterfall-depth', (v) => {
     state.waterfall_depth = parseInt(v, 10);
     state.waterfall = null;  // reset; will reinit on next frame
@@ -235,14 +242,15 @@ document.getElementById('opt-autoscale')?.addEventListener('change', (e) => {
     });
 });
 
-/* Taper preset buttons (purely UI for now; backend uses default Blackman) */
+/* Taper preset buttons. The backend latches these into the ADAR1000: live
+   while running, and via readParams() on the next Start when it is not. */
 document.querySelectorAll('#taper-rect, #taper-hann, #taper-black').forEach(b => {
     b.addEventListener('click', () => {
         document.querySelectorAll('#taper-rect, #taper-hann, #taper-black').forEach(x => x.classList.remove('active'));
         b.classList.add('active');
         const map = { 'taper-rect': 'rect', 'taper-hann': 'hann', 'taper-black': 'blackman' };
-        const taper = map[b.id];
-        maybePushParams({ taper });
+        state.taper = map[b.id];
+        maybePushParams({ taper: state.taper });
     });
 });
 
@@ -413,6 +421,8 @@ function readParams() {
         rx_gain: parseFloat(document.getElementById('rx-gain').value),
         tx_gain: parseFloat(document.getElementById('tx-gain').value),
         fft_window: document.getElementById('fft-window').value,
+        taper: state.taper,
+        vel_max: state.vel_max,
     };
 }
 

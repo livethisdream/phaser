@@ -58,6 +58,7 @@ from phaser_functions import load_hb100_cal
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
+import phaser_radar_dsp  # pure radar DSP/config; importable without pyadi-iio
 from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additive)
 
 
@@ -639,20 +640,35 @@ class PhaserHeadless:
             # Leave current mode
             if self.mode == "cw_radar":
                 try:
-                    phaser_cw_radar.exit_cw_mode(self.sdr, self.cw_saved_sdr)
+                    self._restore_from_cw()
                 except Exception as e:
                     print(f"[CW] exit_cw_mode failed: {e}")
                 self.cw_saved_sdr = {}
+                self._sim_set_cw(False)
 
             # Enter new mode
             if new_mode == "cw_radar":
                 try:
                     self.cw_saved_sdr = {}
                     self.cw_params = phaser_cw_radar.enter_cw_mode(
-                        self.sdr, self.cw_params, self.cw_saved_sdr
+                        self.sdr,
+                        self.cw_params,
+                        self.cw_saved_sdr,
+                        array=self.array,
+                        rpi_ip=self._cw_rpi_ip(),
                     )
+                    self._sim_set_cw(True)
                 except Exception as e:
                     print(f"[CW] enter_cw_mode failed: {e}")
+                    # Unwind whatever did land. enter_cw_mode moves the LO and
+                    # the taper before it touches the SDR, so a failure partway
+                    # through used to leave the array illuminated for radar and
+                    # the LO parked on the CW mixing frequency -- and the next
+                    # sweep then saw nothing, with no error to explain it.
+                    try:
+                        self._restore_from_cw()
+                    except Exception as unwind_err:
+                        print(f"[CW] unwind after failed enter failed: {unwind_err}")
                     self.mode = "idle"
                     self.sweeping = False
                     return {"status": "error", "message": f"enter_cw_mode failed: {e}"}
@@ -664,10 +680,48 @@ class PhaserHeadless:
 
     # --- CW Radar handlers ------------------------------------------------
 
+    def _cw_rpi_ip(self):
+        """The Phaser IP to program the ADF4159 through, or None in sim mode.
+
+        Sim mode has no libiio to reach, so the LO write is skipped there; the
+        simulator is told the CW carrier directly via _sim_set_cw instead.
+        """
+        return None if self.sim_mode else self.rpi_ip
+
+    def _restore_from_cw(self):
+        """Put the SDR, LO and array back the way the sweep path expects them.
+
+        The taper goes back through _apply_gain_cal, not raw: self.gainList is
+        on the frontend's 0-100 scale and the ADAR1000 register is 0-127, so
+        restoring it raw would leave the array at 79% of full scale with the
+        gain calibration dropped. apply_taper writes register codes, which is
+        the right scale for the CW presets and the wrong one for gainList.
+        """
+        phaser_cw_radar.exit_cw_mode(
+            self.sdr,
+            self.cw_saved_sdr,
+            array=self.array,
+            rpi_ip=self._cw_rpi_ip(),
+            restore_taper=self._apply_gain_cal(self.gainList),
+            restore_lo_freq=self.LO_freq,
+        )
+
+    def _sim_set_cw(self, enable):
+        """Point the simulator at the CW scene (no-op on real hardware)."""
+        if not self.sim_mode or not hasattr(self.sdr, "set_cw_mode"):
+            return
+        cfg = {**phaser_radar_dsp.DEFAULTS, **(self.cw_params or {})}
+        try:
+            self.sdr.set_cw_mode(
+                enable,
+                signal_freq=cfg["signal_freq"],
+                output_freq=cfg["output_freq"],
+            )
+        except Exception as e:
+            print(f"[CW] sim set_cw_mode failed: {e}")
+
     def start_cw_radar(self, params):
         """Switch to CW radar mode. If a sweep is running, it is stopped first."""
-        if self.sim_mode:
-            return {"status": "error", "message": "CW radar not available in --sim mode"}
         # Merge requested params on top of stored ones (with defaults applied later
         # by phaser_cw_radar.enter_cw_mode).
         if params:
@@ -690,6 +744,15 @@ class PhaserHeadless:
         # Apply gain changes live if running
         if self.mode == "cw_radar":
             try:
+                # The taper is an array write, not an SDR one, and it is live:
+                # the frontend's Rect/Hann/Black buttons pushed it here and it
+                # went no further than this dict until now.
+                if "taper" in params:
+                    gains = phaser_cw_radar.apply_taper(self.array, params["taper"])
+                    if gains is not None:
+                        print(f"[CW] Taper applied: {gains}")
+                if "signal_freq" in params or "output_freq" in params:
+                    self._sim_set_cw(True)
                 if "rx_gain" in params:
                     self.sdr.rx_hardwaregain_chan0 = int(params["rx_gain"])
                     if hasattr(self.sdr, "rx_hardwaregain_chan1"):
@@ -709,7 +772,7 @@ class PhaserHeadless:
 
     def get_cw_radar_state(self):
         """Return current CW radar config and mode."""
-        cfg = {**phaser_cw_radar.DEFAULTS, **(self.cw_params or {})}
+        cfg = {**phaser_radar_dsp.DEFAULTS, **(self.cw_params or {})}
         return {
             "status": "ok",
             "data": {
@@ -721,14 +784,15 @@ class PhaserHeadless:
 
     def do_cw_radar_frame(self):
         """Capture and process a single CW radar frame. Returns the broadcast payload."""
-        cfg = {**phaser_cw_radar.DEFAULTS, **(self.cw_params or {})}
+        cfg = {**phaser_radar_dsp.DEFAULTS, **(self.cw_params or {})}
         iq = phaser_cw_radar.capture_cw_frame(self.sdr)
-        return phaser_cw_radar.process_cw_frame(
+        return phaser_radar_dsp.process_cw_frame(
             iq,
             fs=cfg["sample_rate"],
             signal_freq=cfg["signal_freq"],
             output_freq=cfg["output_freq"],
             fft_window=cfg.get("fft_window", "blackman"),
+            vel_max=cfg.get("vel_max"),
         )
 
     def shutdown_permitted(self):
