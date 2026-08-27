@@ -97,18 +97,31 @@ def ADAR_set_Taper(array, taper_list):
     array.latch_rx_settings()
 
 def ADAR_set_Phase(array, PhDelta, phase_step_size, phaseList):
-    """ Set array phases for given steering angle/delta """
+    """Set array phases for a given steering delta.
+
+    `phase_step_size` quantizes the STEERING RAMP only, which is what legacy
+    does:
+
+        (rint(PhDelta * i / step) * step + phaseList[i] + pcal[i]) % 360
+
+    The distinction matters. phase_step_size is the "phase shift bits" knob,
+    and a lab that drops it to 3 bits is asking what a 45-degree phase shifter
+    does to the beam -- not asking to round the phase calibration off to the
+    nearest 45 degrees as well. Quantizing the sum did the latter, which threw
+    away the per-element correction that makes the elements add coherently,
+    exactly when the pattern was already at its most fragile.
+
+    `phaseList` carries the user's per-element offsets with the phase
+    calibration already folded in by the caller.
+    """
     for i in range(8):
         element_id = i + 1
-        base_phase = phaseList[i] + i * PhDelta
-        # Quantize it
-        q_phase = round(base_phase / phase_step_size) * phase_step_size
-        
-        # Keep between 0 and 360
-        q_phase = q_phase % 360
+        # Quantize the steering ramp; leave the offsets at full resolution.
+        ramp = round(i * PhDelta / phase_step_size) * phase_step_size
+        q_phase = (ramp + phaseList[i]) % 360
         if q_phase < 0:
             q_phase += 360
-            
+
         array.elements[element_id].rx_phase = q_phase
     # Same as the taper: the rx_phase writes above sit in SPI shadow
     # registers until they are latched. Sweeping without this leaves the

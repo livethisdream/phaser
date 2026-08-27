@@ -249,9 +249,23 @@ class PhaserHeadless:
                 ADAR_init(device)
                 ADAR_set_mode(device, "rx")
 
-        # Default taper (all elements equal)
+        # Channel calibration trims the two SDR Rx channels against each
+        # other. It was loaded, printed and then never used -- so the sum and
+        # delta beams were built from two channels with an uncorrected gain
+        # mismatch. Legacy applies it inside SDR_functions (ccal[0]/ccal[1] on
+        # the two rx_hardwaregain attributes); phaser_service applies it here,
+        # at the caller, and this now matches.
+        SDR_setRx(
+            self.sdr,
+            self.Rx_gain + self.channel_cal[0],
+            self.Rx_gain + self.channel_cal[1],
+        )
+
+        # Default taper (all elements equal). Through _apply_gain_cal, or the
+        # array runs on uncalibrated element gains until someone happens to
+        # touch a taper slider.
         self.gainList = [100, 100, 100, 100, 100, 100, 100, 100]
-        ADAR_set_Taper(self.array, self.gainList)
+        ADAR_set_Taper(self.array, self._apply_gain_cal(self.gainList))
 
         # Per-element user phase offsets (degrees). Added to each element's
         # steering phase inside ADAR_set_Phase. Zeros by default; the
@@ -305,12 +319,39 @@ class PhaserHeadless:
         print("Hardware Initialization Complete.")
 
     def _apply_gain_cal(self, taper_values):
-        """Apply gain calibration to taper values"""
+        """Apply gain calibration to taper values.
+
+        Taper values arrive on the frontend's 0-100 scale; the ADAR1000
+        rx_gain register is 0-127. Legacy scales between the two --
+        `int(gainList[i] * 127 / 100 * gcal[i])` -- and this did not, so a
+        taper commanded to 100 only ever reached 79% of full scale.
+        """
         calibrated = []
         for idx, value in enumerate((list(taper_values) + [100] * 8)[:8]):
             gain_mult = self.gain_cal[idx] if idx < len(self.gain_cal) else 1.0
-            calibrated.append(int(max(0, min(127, round(value * gain_mult)))))
+            scaled = value * 127.0 / 100.0 * gain_mult
+            calibrated.append(int(max(0, min(127, round(scaled)))))
         return calibrated
+
+    def _apply_phase_cal(self, phase_values):
+        """Fold the per-element phase calibration into the user's offsets.
+
+        self.phase_cal was loaded at init, printed, and then never applied to
+        anything -- the single reason a swept array here would not form a
+        clean main lobe. pcal is what makes the eight elements add coherently;
+        without it each element sits at its own uncorrected phase error and
+        the pattern smears out into something with no recognisable beam.
+
+        Legacy adds pcal[i] inside ADAR_set_Phase itself. This repo moved cal
+        application out to the caller (phaser_service does the same thing with
+        its own _apply_phase_cal), so it belongs here -- adding it in the
+        helper as well would double-apply it for that caller.
+        """
+        base = (list(phase_values) + [0.0] * 8)[:8]
+        return [
+            float(base[idx] + (self.phase_cal[idx] if idx < len(self.phase_cal) else 0.0))
+            for idx in range(8)
+        ]
 
     def ConvertPhaseToSteerAngle(self, PhDelta, freq=None):
         """Convert phase delta to steering angle.
@@ -412,9 +453,10 @@ class PhaserHeadless:
                 2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
             )
 
-        # User-set per-element phase offsets from the Phase Control sliders.
-        # ADAR_set_Phase adds these to i*PhDelta (the steering ramp) per element.
-        phaseList = list(self.phaseList)
+        # Per-element phase offsets: the user's Phase Control sliders PLUS the
+        # phase calibration. ADAR_set_Phase adds these to the i*PhDelta
+        # steering ramp per element.
+        phaseList = self._apply_phase_cal(self.phaseList)
 
         for i, PhDelta in enumerate(PhaseValues):
             ADAR_set_Phase(self.array, PhDelta, self.phase_step, phaseList)
@@ -673,7 +715,13 @@ class PhaserHeadless:
     def set_rx_gain(self, gain):
         """Set Rx gain and apply to hardware"""
         self.Rx_gain = int(gain)
-        SDR_setRx(self.sdr, self.Rx_gain, self.Rx_gain)
+        # Keep the per-channel trim -- setting both channels to the same raw
+        # gain here silently threw away the channel calibration.
+        SDR_setRx(
+            self.sdr,
+            self.Rx_gain + self.channel_cal[0],
+            self.Rx_gain + self.channel_cal[1],
+        )
         print(f"Rx gain set to {self.Rx_gain} dB")
         return {"status": "ok"}
 

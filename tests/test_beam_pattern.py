@@ -184,3 +184,102 @@ def test_ignore_res_steps_phase_by_one_lsb():
     assert len(angle) > 20
     assert gain.max() - gain.min() > 6
     assert abs(angle[int(np.argmax(gain))]) < 5
+
+
+# --- calibration actually reaching the hardware ------------------------
+#
+# phaser_headless loaded phase_cal and channel_cal at init, printed them, and
+# then used neither. Legacy applies both -- pcal inside ADAR_set_Phase, ccal
+# on the two rx_hardwaregain attributes in SDR_functions -- and phaser_service
+# applies both at the caller. phaser_headless was the outlier on each.
+
+def test_phase_calibration_reaches_the_array():
+    h = _headless()
+    h.phase_cal = [0.0, 12.0, -7.5, 30.0, 3.25, -18.0, 44.0, -1.5]
+    h.phaseList = [0.0] * 8
+
+    from ADAR_pyadi_functions import ADAR_set_Phase
+    ADAR_set_Phase(h.array, 0.0, h.phase_step, h._apply_phase_cal(h.phaseList))
+
+    got = [h.array.elements[i + 1].latched_phase for i in range(8)]
+    assert got == pytest.approx([c % 360 for c in h.phase_cal]), (
+        "phase calibration never reached the elements"
+    )
+
+
+def _pattern_quality(gain, angle):
+    """Peak level, where it points, and how far the sidelobes sit below it.
+
+    Sidelobe level is the metric that matters for phase calibration. Element
+    phase errors barely move the peak -- they fill in the nulls and lift the
+    sidelobes, which is what turns a beam pattern into a shapeless blob.
+    """
+    peak = gain.max()
+    return peak, angle[int(np.argmax(gain))], peak - gain[np.abs(angle) > 20].max()
+
+
+def test_phase_calibration_recovers_a_smeared_pattern():
+    """The whole point of pcal: eight elements that add coherently.
+
+    The simulated array is given per-element phase errors; loading the
+    matching calibration has to restore the pattern. Both runs see the same
+    seeded noise sequence, so the comparison is exact.
+    """
+    errors = [0.0, 37.0, -22.0, 15.0, 48.0, -31.0, 9.0, 25.0]
+
+    uncal = _headless()
+    uncal.array.element_phase_error = list(errors)
+    uncal.phase_cal = [0.0] * 8
+    peak_u, angle_u, sll_u = _pattern_quality(*_sweep(uncal))
+
+    cal = _headless()
+    cal.array.element_phase_error = list(errors)
+    cal.phase_cal = list(errors)
+    peak_c, angle_c, sll_c = _pattern_quality(*_sweep(cal))
+
+    assert sll_u < 8, (
+        f"uncalibrated sidelobes are already {sll_u:.1f} dB down -- the "
+        "simulated array is too well matched for this test to mean anything"
+    )
+    assert sll_c > 10, (
+        f"sidelobes only {sll_c:.1f} dB down with calibration loaded; "
+        "the pattern is still smeared"
+    )
+    assert sll_c > sll_u + 3
+    assert peak_c > peak_u, "calibration did not recover array gain"
+    assert abs(angle_c) < 1.5
+
+
+def test_channel_calibration_reaches_the_rx_gains():
+    h = _headless()
+    assert (
+        h.sdr.rx_hardwaregain_chan1 - h.sdr.rx_hardwaregain_chan0
+        == pytest.approx(h.channel_cal[1] - h.channel_cal[0])
+    )
+
+    h.channel_cal = [-2.0, 3.0]
+    h.set_rx_gain(20)
+    assert h.sdr.rx_hardwaregain_chan0 == 18
+    assert h.sdr.rx_hardwaregain_chan1 == 23
+
+
+def test_taper_reaches_full_scale():
+    """UI taper is 0-100; the rx_gain register is 0-127."""
+    h = _headless()
+    h.gain_cal = [1.0] * 8
+    assert h._apply_gain_cal([100] * 8) == [127] * 8
+    assert h._apply_gain_cal([0] * 8) == [0] * 8
+
+
+def test_coarse_phase_bits_do_not_quantize_the_calibration():
+    """`bits` coarsens the steering ramp, not the per-element correction."""
+    from ADAR_pyadi_functions import ADAR_set_Phase
+
+    array = _sim_array()
+    offsets = [1.4, -2.6, 3.1, 0.0, -4.7, 5.2, 0.9, -1.1]
+    ADAR_set_Phase(array, 0.0, 45.0, offsets)  # 3-bit phase shifter
+
+    got = [array.elements[i + 1].latched_phase for i in range(8)]
+    assert got == pytest.approx([o % 360 for o in offsets]), (
+        "a coarse bits setting rounded the calibration away"
+    )

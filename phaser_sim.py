@@ -80,6 +80,11 @@ class _StubADARArray:
         self.elements = {i + 1: _StubElement() for i in range(8)}
         self.devices = {"BEAM0": _StubDevice(), "BEAM1": _StubDevice()}
         self.latch_count = 0
+        # Intrinsic per-element phase error, degrees -- the thing the phase
+        # calibration exists to cancel. Zero by default, so a plain sim run is
+        # a perfectly matched array; a test sets it to give pcal something
+        # real to correct.
+        self.element_phase_error = [0.0] * 8
 
     def latch_rx_settings(self):
         """Commit every element's shadow registers to its beam state."""
@@ -183,7 +188,12 @@ class SimSDR:
             # write must not steer the simulated array either.
             gain = max(0.0, min(127.0, float(el.latched_gain))) / 127.0
             rx_phase_rad = np.radians(float(el.latched_phase))
-            phi_incident = 2 * np.pi * (k * self._d / wavelength) * np.sin(theta_rad)
+            # Intrinsic element phase error, which the commanded rx_phase has
+            # to absorb via the phase calibration.
+            err_rad = np.radians(float(self._array.element_phase_error[k]))
+            phi_incident = (
+                2 * np.pi * (k * self._d / wavelength) * np.sin(theta_rad) + err_rad
+            )
             elem_signal = amplitude * gain * wave * np.exp(
                 1j * (phi_incident - rx_phase_rad)
             )
