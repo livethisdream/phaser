@@ -24,7 +24,7 @@ import json
 import asyncio
 import numpy as np
 from pathlib import Path
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 
 try:
@@ -1286,7 +1286,23 @@ class PhaserHeadless:
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type')
                 super().end_headers()
 
-        server = HTTPServer(("0.0.0.0", self.http_port), Handler)
+        # ThreadingHTTPServer, not HTTPServer. The synchronous server handles
+        # one connection to completion in this thread, so a client that opens
+        # a TCP connection and does not send a request blocks it forever --
+        # HTTPServer sets no socket timeout, so that read never returns and
+        # the whole server is dead from that point on. Mobile Safari and
+        # Chrome both open speculative connections they may never use, which
+        # is exactly that case: ssh to the Pi keeps working, the page never
+        # loads, and nothing appears in any log.
+        #
+        # Handler.timeout closes a connection that goes idle mid-request, so a
+        # stalled client costs one thread for 30s rather than leaking it. The
+        # server timeout makes the accept loop notice self.running going false
+        # instead of blocking in accept() until the next connection.
+        Handler.timeout = 30
+        server = ThreadingHTTPServer(("0.0.0.0", self.http_port), Handler)
+        server.daemon_threads = True
+        server.timeout = 1.0
         print(f"HTTP server on port {self.http_port}")
 
         while self.running:
@@ -1335,7 +1351,10 @@ class PhaserHeadless:
                 super().end_headers()
 
         try:
-            server = HTTPServer(("0.0.0.0", self.radar_http_port), RadarHandler)
+            RadarHandler.timeout = 30
+            server = ThreadingHTTPServer(("0.0.0.0", self.radar_http_port), RadarHandler)
+            server.daemon_threads = True
+            server.timeout = 1.0
         except OSError as e:
             print(f"[RADAR-HTTP] Failed to bind port {self.radar_http_port}: {e}")
             return
