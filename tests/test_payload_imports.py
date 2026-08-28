@@ -20,7 +20,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Kept in step with deploy.py's BACKEND_FILES and install.sh's BACKEND_FILES.
+# Kept in step with install.sh's BACKEND_FILES.
 DEPLOYED = [
     "phaser_headless.py", "phaser_cal_headless.py",
     "phaser_find_hb100_headless.py", "phaser_cw_radar.py",

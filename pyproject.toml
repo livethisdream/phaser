@@ -56,10 +56,9 @@ filterwarnings = [
 ]
 
 [tool.setuptools]
-# phaser_deploy/ is the deploy tool's internals, split out so the ssh/argv seam
-# is unit-testable. Naming it explicitly keeps setuptools' auto-discovery from
-# tripping over a repo that has both root modules and a package.
-packages = ["phaser_deploy"]
+# No packages: the repo is root-level modules only. Naming an empty list keeps
+# setuptools' auto-discovery from guessing at directories like tests/ or docs/.
+packages = []
 
 # Root-level Python modules only; other subdirectories are not packages.
 # The previous list named six modules that no longer exist (phaser_app,

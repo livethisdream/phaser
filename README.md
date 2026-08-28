@@ -15,18 +15,18 @@ You do not need Node, npm, or an internet connection to deploy or run it
 
 ## Quickstart
 
-From a fresh clone, with your Phaser kit on the same network:
+Two lines, from any operating system:
 
 ```bash
-python deploy.py                  # default host: phaser.local
-python deploy.py 192.168.1.42     # or an explicit IP
+ssh analog@phaser.local
+curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
 ```
 
 Then open `http://phaser.local:8080`.
 
-**Prerequisites**: Python 3.11+ and an OpenSSH client on your machine,
-passwordless ssh to `analog@<pi>` (`ssh-copy-id analog@<pi>` if not),
-and a Pi that has already been provisioned (below). No Node required.
+That is the whole thing -- install *and* update. `install.sh` is idempotent,
+so re-running it is how you pick up a new version. It needs nothing on your
+machine but `ssh`, which every OS ships.
 
 **No Phaser attached?** Run sim mode locally instead:
 
@@ -34,16 +34,9 @@ and a Pi that has already been provisioned (below). No Node required.
 python phaser_headless.py --sim   # then open http://localhost:8080
 ```
 
-### Install on a Pi (any OS, two lines)
+### About the installer
 
-```
-ssh analog@phaser.local
-curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
-```
-
-That is the whole install, from Windows, macOS or Linux: line one is `ssh`,
-which every OS ships, and line two runs on the Pi. Nothing else is needed
-locally -- no Python, no clone, no toolchain.
+Nothing is needed locally beyond `ssh` -- no Python, no clone, no toolchain.
 
 Expect **one sudo prompt**, for the systemd unit. You are at an interactive
 shell, so it just asks.
@@ -117,19 +110,20 @@ is a clear error instead of a silent reach for a network that isn't there.
 `PHASER_REF=<branch-or-tag>` installs something other than `main`.
 `GH_TOKEN` authenticates if the repo is ever made private again.
 
-### Deploying while you work on it
+### Installing your own working tree
 
-`install.sh` provisions. For an edit/test loop, `deploy.py` copies your working
-tree straight to the Pi without a round trip through GitHub -- see below.
+`install.sh` normally fetches a tarball from GitHub, so a branch has to be
+pushed before the Pi can see it. To install a tree you have not pushed, copy it
+to the Pi and point `PHASER_SRC` at it:
+
+```bash
+scp -r . analog@phaser.local:/tmp/phaser-src
+ssh analog@phaser.local 'PHASER_SRC=/tmp/phaser-src bash /tmp/phaser-src/install.sh'
+```
 
 ### Prerequisites
 
-`deploy.py` imports **only the standard library**, so any Python 3.9+ runs it
-with nothing installed -- no venv, no `uv sync`, no pip. A test enforces that
-(`tests/test_deploy_deps.py`), because the alternative is telling a tester to
-install a toolchain before they can deploy anything.
-
-You also need an ssh client. On Windows that is
+An ssh client. On Windows that is
 Settings > Apps > Optional features > OpenSSH Client.
 
 **On Windows, do not rely on `python` already being on PATH.** Windows ships a
@@ -141,46 +135,20 @@ have `uv`, `uv python install`.
 
 ### First-time Pi provisioning
 
-A Pi straight out of the box needs its Python deps installed once.
-`scripts/setup.sh` / `scripts/setup.ps1` do that, then deploy. Like
-`deploy.py`, they use the committed build and need no Node:
+There is no separate provisioning step. `install.sh` does the whole job on a
+Pi straight out of the box: it installs any missing Python dependencies,
+places the files, renders and enables the systemd unit from
+`scripts/phaser-headless.service.template`, starts the service and checks the
+UI answers on :8080.
 
-```powershell
-.\scripts\setup.ps1               # Windows PowerShell
-.\scripts\setup.ps1 192.168.1.42
-.\scripts\setup.ps1 -Build        # force a frontend rebuild (needs Node)
-```
+It compares the unit's *content* rather than merely checking one exists, so a
+Pi provisioned by an older version picks up template changes instead of
+keeping a stale unit forever. `config.py` is never overwritten -- a Pi's copy
+may hold site-specific URIs and calibration.
 
-```bash
-./scripts/setup.sh                # macOS / Linux / WSL
-./scripts/setup.sh 192.168.1.42
-./scripts/setup.sh --build        # force a frontend rebuild (needs Node)
-```
-
-They can be run from anywhere; both anchor themselves to the repo root.
-
-After that, `python deploy.py` is all you need for every subsequent
-update.
-
-The systemd unit is **not** part of this step. `deploy.py` owns it: before
-restarting, it checks for `/etc/systemd/system/phaser-headless.service` and,
-if the Pi has none, renders `scripts/phaser-headless.service.template` and
-installs + enables it. So a deploy to a never-provisioned Pi ends with a
-running service instead of a `WARN:` line under a "Deployment complete!"
-banner. `deploy.py` also verifies `pyzmq`, `msgpack` and `websockets` are
-importable by `analog` through `/usr/bin/python3` — the exact user and
-interpreter the unit runs as — and fails with a pointer to `setup.sh` when
-they aren't, rather than leaving you a crash-looping service.
-
-Expect **one** sudo prompt on the Pi. First-time provisioning installs,
-enables and starts the unit in a single `ssh -t` session, because sudo's
-credential timestamp is per-tty and a second session would prompt again. A
-redeploy to an already-provisioned Pi prompts once too, for the restart.
-`ssh-copy-id analog@<host>` removes the separate *ssh* password prompt; on
-macOS/Linux/WSL a single shared connection is used for the whole deploy, so
-even without a key you are asked once rather than once per file. (Windows
-OpenSSH has no `ControlMaster`, so PowerShell users on a password-only Pi are
-prompted per copy — copy a key over to avoid it.)
+Expect **one** sudo prompt, for the systemd unit -- and none at all on a
+re-run where the unit is already current. You are sitting at an interactive
+shell on the Pi, so sudo simply asks the way it always does.
 
 ## No-build deployment
 
@@ -192,9 +160,9 @@ normally never build it by hand.
 
 Two consequences worth knowing:
 
-**1. Clone → deploy, with no toolchain.** `deploy.py` does not build by
-default. A machine with only Python and ssh can deploy a working UI.
-Building is opt-in via `--build`.
+**1. Install with no toolchain.** `install.sh` never builds; it ships the
+committed `dist/`. A Pi with no Node -- and a laptop with nothing but ssh --
+gets a working UI.
 
 **2. The UI is fully offline.** Plotly and the Inter/Outfit webfonts are
 vendored into the build rather than pulled from a CDN, so the page
@@ -215,9 +183,8 @@ Vendoring lives in two places:
   needed if you change fonts; the files are committed (~180 KB, latin +
   latin-ext subsets only).
 
-`deploy.py` warns if your frontend sources look newer than the committed
-build. That's advisory only — mtimes are unreliable across clones and
-OneDrive sync — but it stops a stale `dist/` from shipping silently.
+`install.sh` refuses to run if the source has no `frontend/dist/index.html`
+at all, rather than installing a backend with no UI in front of it.
 
 ## Architecture
 
@@ -244,39 +211,29 @@ Servers on the Pi:
   scripts; unused by the browser UI
 - **HTTP :8081** — CW Doppler radar app (separate `frontend-radar/dist`)
 
-## Deploying to the Pi
+## Updating a Pi
+
+Re-run the installer. It is idempotent, so this is both the install path and
+the update path:
 
 ```bash
-python deploy.py                  # deploy committed build to phaser.local
-python deploy.py 192.168.1.42     # deploy to a specific host
-python deploy.py --radar          # also deploy the CW radar app
-python deploy.py --sim-only       # prepare for --sim, don't deploy
-python deploy.py --build          # rebuild from source first (needs Node)
-python deploy.py --build-only     # rebuild, don't deploy
+ssh analog@phaser.local
+curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
 ```
 
-The CW radar frontend is **opt-in** via `--radar`. It's a separate app on
-:8081 with no simulation path, so it isn't deployed unless you ask for
-it. (`--no-radar` is still accepted, and is now a no-op.)
+`PHASER_REF=<branch-or-tag>` installs something other than `main`, which is
+how you try a branch before merging it.
 
-If the committed build is missing entirely, `deploy.py` builds it for you
-when npm is available, and tells you what to do when it isn't.
+It installs:
 
-`deploy.py` copies:
-
-- Backend Python entrypoints and their helper modules (see the file for
-  the exact list)
+- The backend entrypoints and their helper modules (`BACKEND_FILES` in
+  `install.sh` is the exact list)
 - The `LTE*.ftr` AD9361 filter configs, which
   `phaser_find_hb100_headless.py` loads by bare filename at runtime
-- Built frontend (`frontend/dist/*`)
-- Radar frontend (`frontend-radar/dist/*`) with `--radar`
-
-It deliberately **does not overwrite** `config.py`, so any Pi-specific
-values (URIs, calibrated defaults) survive. It does seed one when the Pi has
-none at all — a from-scratch install dir is otherwise an immediate
-`import config` crash loop, since `phaser_headless.py` exits at module level
-without it. It installs the systemd unit if absent, then restarts
-`phaser-headless.service` over ssh.
+- `frontend/dist/` and, when present, `frontend-radar/dist/` -- replaced
+  wholesale rather than merged, since Vite emits content-hashed filenames and
+  copying over the top would accumulate every old build's assets forever
+- `config.py`, **only** if the Pi has none
 
 ## Simulation mode (no Phaser required)
 
@@ -425,8 +382,8 @@ For the backend-connected path, use `npm run build` + reload, or run
 You can commit `dist/` yourself or let CI rebuild it on push; CI is
 authoritative and will overwrite with its own build either way.
 
-Backend edits: no build step. Restart `phaser_headless.py` (locally or
-on the Pi via `deploy.py`).
+Backend edits: no build step. Restart `phaser_headless.py` locally, or
+re-run `install.sh` on the Pi.
 
 ## Calibration files
 
@@ -462,7 +419,8 @@ Top-level Python:
 - `phaser_service.py` — legacy desktop-app service layer (older
   PyWebView path; still used by the release bundle)
 - `config.py` — hardware URIs and default frequencies
-- `deploy.py` — scp + restart-service workflow (build is opt-in)
+- `install.sh` — the installer; runs on the Pi, does deps, files, unit and
+  service in one idempotent pass
 - `LTE5/10/20_MHz.ftr` — AD9361 filter configs, loaded by bare filename
   relative to the process CWD, so they must sit beside the entrypoints
 
@@ -486,16 +444,12 @@ Tooling:
 
 `scripts/`:
 
-- `setup.sh`, `setup.ps1` — first-time Pi provisioning, then deploy
-- `setup-pi.sh` — the Pi-side half, piped over ssh by the two above.
-  Installs the Python deps and the install dir. It does **not** write the
-  systemd unit; `deploy.py` does
 - `phaser-headless.service.template` — the single definition of the systemd
-  unit. `deploy.py` renders the `@USER@` / `@INSTALL_DIR@` / `@PYTHON@`
+  unit. `install.sh` renders the `@USER@` / `@INSTALL_DIR@` / `@PYTHON@`
   placeholders from its own constants, which is what keeps the unit's
-  `WorkingDirectory` and the scp destination from drifting apart
+  `WorkingDirectory` and the install destination from drifting apart
 - `build-installer.py` — legacy single-tarball packager, not used by the
-  supported setup/deploy path and not exercised by CI
+  supported install path and not exercised by CI
 
 `tests/` — pytest suite (`pythonpath = ["."]` in `pyproject.toml` lets it
 import the root modules).

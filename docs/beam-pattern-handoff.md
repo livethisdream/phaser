@@ -83,7 +83,7 @@ the bench does not.
 
 `analog@phaser`, armv7l (32-bit), Python 3.9, install dir
 `/home/analog/pyadi-iio/examples/phaser`. Deployed with `install.sh`, which
-runs ON the Pi -- not `deploy.py`. Claude Code cannot be installed on it: no
+runs ON the Pi. Claude Code cannot be installed on it: no
 32-bit ARM binary exists. Drive it over ssh from elsewhere.
 
 Its startup log before this branch was installed:
