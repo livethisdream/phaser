@@ -91,10 +91,9 @@ scp -r . analog@phaser.local:/tmp/phaser-src
 ssh analog@phaser.local 'PHASER_SRC=/tmp/phaser-src bash /tmp/phaser-src/install.sh'
 ```
 
-Note that `frontend/dist/` is only rebuilt by CI on `main` and `radar-dev`
-(see [No-build deployment](#no-build-deployment)), so a feature branch carries
-whatever `dist/` was last committed to it. If you changed the UI on a branch,
-build it before copying.
+CI rebuilds `frontend/dist/` on every branch, so a pushed branch carries its
+own UI and `PHASER_REF=<branch>` installs the right one. Copying an unpushed
+tree skips CI, so run `npm run build` first if you changed the frontend.
 
 ### Installing with no internet on the Pi
 
@@ -154,18 +153,26 @@ a laptop-side deploy tool is not to be reintroduced.
 `frontend/dist/` and `frontend-radar/dist/` are **committed to the
 repo**, built by GitHub Actions
 ([`.github/workflows/build-frontends.yml`](.github/workflows/build-frontends.yml)),
-which runs on pushes to `main` and `radar-dev` that touch frontend sources and
-commits the result back. On those branches CI owns `dist/` and you normally
-never build it by hand; on any other branch, `dist/` is whatever you last
-committed.
+which runs on any branch push that touches frontend sources and commits the
+result back. CI owns `dist/`; you normally never build it by hand, and you may
+need to `git pull` after pushing frontend changes. Building every branch is
+deliberate: `PHASER_REF=<branch>` is how a branch gets tried on hardware, and a
+branch CI skipped would install a stale UI over a new backend.
 
-Two consequences worth knowing:
+Three consequences worth knowing:
 
 **1. Install with no toolchain.** `install.sh` never builds; it ships the
 committed `dist/`. A Pi with no Node -- and a laptop with nothing but ssh --
 gets a working UI.
 
-**2. The UI is fully offline.** Plotly and the Inter/Outfit webfonts are
+**2. A build says which backend it targets.** `frontend/vite.config.js` stamps
+`<meta name="phaser-transport" content="web|sim">` into `index.html`. Without
+it the two builds are indistinguishable -- Vite folds `VITE_TRANSPORT` away, so
+a simulator build and a hardware build have byte-identical HTML and differ only
+inside minified JS. See [Two builds, one
+tree](#two-builds-one-tree).
+
+**3. The UI is fully offline.** Plotly and the Inter/Outfit webfonts are
 vendored into the build rather than pulled from a CDN, so the page
 renders on an isolated network with no internet route. The CI job fails
 the build if an external `<script src>`, `<link href>`, or CSS `url()`
@@ -181,6 +188,46 @@ Vendoring lives in two places:
 - `tools/fetch_fonts.py` — refetches the woff2 subsets into
   `frontend/public/fonts/` and mirrors them to `frontend-radar/`. Only
   needed if you change fonts; the files are committed (~180 KB).
+
+## Two builds, one tree
+
+The hosted demo and the Pi run **the same code from the same branch**. They are
+not separate branches and not separate apps; they are one source tree built
+twice, differing by a single environment variable:
+
+| | `VITE_TRANSPORT` | Output | Published by | Default transport |
+|---|---|---|---|---|
+| Hardware | unset | `frontend/dist/` (committed) | `install.sh`, to the Pi | WebSocket to `phaser_headless.py` |
+| Demo | `sim` | `frontend/dist-pages/` (gitignored) | `deploy-pages.yml`, to Pages | in-browser simulator |
+
+Branching them would be the wrong shape. The simulator is not a variant of the
+app -- `transport.js` imports it unconditionally, so it ships *inside* the Pi
+build too, which is what makes `?sim=1` work on the Pi when the hardware dies
+mid-lab. And `tests/test_sim_parity.py` binds `frontend/src/sim/` to
+`phaser_sim.py` sample for sample; separating them would leave the only drift
+guard with nothing to compare.
+
+Three things keep the sim default away from hardware, because the failure is
+silent -- a simulated sweep looks like a real one, and the only tell is a pill
+in the corner:
+
+1. **The builds go to different directories.** `deploy-pages.yml` passes
+   `--outDir dist-pages`, so the committed `dist/` is never the demo build.
+2. **`vite.config.js` refuses** to write a `VITE_TRANSPORT=sim` build into
+   `dist/` at all. Vite's default `outDir` *is* `dist`, so reproducing the
+   Pages build locally and forgetting the flag would otherwise overwrite the
+   real frontend with a simulator.
+3. **The mode is stamped into `index.html`** as
+   `<meta name="phaser-transport" content="web|sim">`, and checked three times:
+   `build-frontends.yml` refuses to commit a `dist/` that is not `web`,
+   `deploy-pages.yml` refuses to publish one that is not `sim`, and `install.sh`
+   refuses to install a `sim` build onto a Pi (override with
+   `PHASER_ALLOW_SIM_FRONTEND=1`, though `?sim=1` on the URL is the better
+   answer for a one-off).
+
+The marker exists because the builds are otherwise indistinguishable: Vite
+constant-folds `VITE_TRANSPORT` at build time, leaving byte-identical HTML and
+a difference only inside minified JS.
 
 ## Architecture
 
@@ -354,9 +401,9 @@ http://localhost:5173/?sim=1&instructor=1     # with the interferer panel
 For the backend-connected path, use `npm run build` + reload, or run
 `python phaser_headless.py --sim` and use its HTTP server.
 
-On `main` and `radar-dev`, CI rebuilds `dist/` on push and commits it back, so
-you can leave it to CI. On any other branch it does not, so commit `dist/`
-yourself if you intend to install that branch to a Pi.
+CI rebuilds `dist/` on push and commits it back, on every branch, so leave it
+to CI rather than committing build output yourself -- and `git pull` before
+your next push.
 
 Backend edits: no build step. Restart `phaser_headless.py` locally, or
 re-run `install.sh` on the Pi.

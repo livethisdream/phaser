@@ -7,9 +7,12 @@ name: Build frontends
 
 on:
   push:
-    # radar-dev is where the CW/FMCW radar app is developed before merging
-    # to main; it needs its dist/ built the same way.
-    branches: [main, radar-dev]
+    # Every branch, not just main. install.sh's PHASER_REF=<branch> is how a
+    # branch gets tried on real hardware before merging, and it ships whatever
+    # dist/ that branch carries -- so a branch CI does not build installs a
+    # stale UI over a new backend, with nothing to say so. The cost is a
+    # "CI: rebuild frontends" commit landing on feature branches; pull before
+    # you push again.
     paths:
       - 'frontend/src/**'
       - 'frontend/public/**'
@@ -97,6 +100,22 @@ jobs:
           done < <(find frontend/dist frontend-radar/dist -name '*.css')
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "Both builds are fully self-contained."
+
+      # The other half of the guard in frontend/vite.config.js. That refuses to
+      # write a sim build into dist/; this refuses to commit one, covering a
+      # dist/ built before the marker existed or edited by hand. install.sh
+      # checks the same marker again at install time, because a bad dist/ that
+      # reaches a Pi is the failure that actually costs a lab.
+      - name: Verify the committed frontend targets hardware, not the simulator
+        run: |
+          mode="$(sed -n 's/.*<meta name="phaser-transport" content="\([a-z]*\)".*/\1/p' \
+                  frontend/dist/index.html | head -n1)"
+          if [ "$mode" != "web" ]; then
+            echo "::error::frontend/dist/ is marked '$mode', expected 'web'."
+            echo "install.sh ships this to real hardware; a sim build would fake every measurement."
+            exit 1
+          fi
+          echo "OK: frontend/dist/ targets the backend."
 
       - name: Commit built output
         run: |

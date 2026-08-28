@@ -157,6 +157,30 @@ fi
 # Frontend: replace rather than merge. Vite emits content-hashed filenames, so
 # copying over the top accumulates every old build's assets forever.
 if [ -f "$SRC/frontend/dist/index.html" ]; then
+    # Never install a simulator onto hardware. The Pages demo is built from
+    # this same source with VITE_TRANSPORT=sim, and Vite folds that flag away
+    # at build time -- the two builds' index.html were byte-identical until
+    # frontend/vite.config.js started stamping the marker below, so a sim build
+    # committed to dist/ by mistake would install here and the lab would run on
+    # synthesized IQ that looks entirely plausible. The only other tell is a
+    # pill in the corner of the UI.
+    #
+    # An older dist/ predating the marker has no meta tag at all; that is not an
+    # error, it just cannot be checked. Only an explicit "sim" is refused.
+    FE_MODE="$(sed -n 's/.*<meta name="phaser-transport" content="\([a-z]*\)".*/\1/p' \
+               "$SRC/frontend/dist/index.html" | head -n1)"
+    if [ "$FE_MODE" = "sim" ] && [ -z "${PHASER_ALLOW_SIM_FRONTEND:-}" ]; then
+        die "the frontend in this source is a SIMULATOR build, not a hardware build.
+     It would show synthesized data on real hardware.
+     Rebuild it with:  cd frontend && npm run build
+     Or, if a simulator UI is genuinely what you want on this Pi, re-run with
+     PHASER_ALLOW_SIM_FRONTEND=1. For a one-off, ?sim=1 on the URL is better --
+     it needs no reinstall and leaves the real build in place."
+    fi
+    if [ "$FE_MODE" = "sim" ]; then
+        say "WARN: installing a SIMULATOR frontend (PHASER_ALLOW_SIM_FRONTEND set)"
+    fi
+
     rm -rf "$INSTALL_DIR/frontend/dist.new"
     mkdir -p "$INSTALL_DIR/frontend"
     cp -r "$SRC/frontend/dist" "$INSTALL_DIR/frontend/dist.new"
