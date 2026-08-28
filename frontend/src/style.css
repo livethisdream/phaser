@@ -1469,3 +1469,21 @@ input[type=number]::-webkit-outer-spin-button {
 @media (max-width: 900px) {
   .sidebar-icons { display: none !important; }
 }
+
+/* A [0, 180] sector is a semicircle: twice as wide as it is tall. In the
+   near-square box the breakpoint above gives it, Plotly sizes it on width and
+   leaves the rest of the height empty -- 0.43 fill on a phone.
+   
+   Phones only, not the whole 900px range. Shrinking the stack for one tab
+   means the page reflows when you switch to it, and that trade only pays
+   where space is genuinely scarce: a phone goes 0.43 -> 0.65 fill for a 129px
+   shift, while an iPad was already at 0.57 and would shift 204px for it.
+   
+   :has() is ignored by browsers that lack it, which just leaves the tab at
+   the shared height -- the behaviour before this rule. */
+@media (max-width: 600px) {
+  .plots-stack:has(#tab-polar.active) {
+    height: min(34dvh, 62vw);
+    min-height: 190px;
+  }
+}
