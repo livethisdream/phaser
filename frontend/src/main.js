@@ -1350,6 +1350,12 @@ Plotly.newPlot('chart-polar', [
     // Trace 2: peak-gain marker (circle at peak dBFS)
     { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#10b981', width: 1.5, dash: 'dash' }, hoverinfo: 'skip', showlegend: false, visible: false },
 ], Object.assign({}, getLayoutBase(), {
+    // The shared margin is sized for a cartesian plot, whose y-axis labels sit
+    // well inside the right edge. A [0, 180] sector puts its outermost angular
+    // ticks -- "-90" and "90" -- hard against both sides, and r:15 was not
+    // enough for the right-hand one: it was clipped by ~8px at every viewport
+    // width, desktop included.
+    margin: { t: 20, r: 40, l: 48, b: 30 },
     polar: {
         sector: [0, 180],
         bgcolor: 'transparent',
