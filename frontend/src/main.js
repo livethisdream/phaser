@@ -1891,23 +1891,26 @@ if (simToggle) {
 }
 
 const backendInput = document.getElementById('backend-url');
-const backendHint = document.getElementById('backend-url-hint');
 if (backendInput) {
     const simActive = resolveTransportMode() === 'sim';
     const override = getBackendUrlOverride();
     backendInput.value = override;
     backendInput.placeholder = autoBackendWsUrl();
 
+    // A tooltip rather than standing text: it explains a field most sessions
+    // never touch, so it should be there when reached for and invisible
+    // otherwise.
     function describeBackend() {
-        if (!backendHint) return;
         if (simActive) {
-            backendHint.textContent =
+            backendInput.title =
                 'Used when Simulator Mode is off. Set it to reach a Phaser that '
                 + 'is not serving this page — a Tailscale hostname, say.';
         } else if (override) {
-            backendHint.textContent = `Connecting to ${override}`;
+            backendInput.title = `Connecting to ${override}`;
         } else {
-            backendHint.textContent = `Auto: ${autoBackendWsUrl()} (same origin as this page)`;
+            backendInput.title =
+                `Auto: ${autoBackendWsUrl()} — the origin serving this page. `
+                + 'Set a ws:// or wss:// URL to reach a different Phaser.';
         }
     }
     describeBackend();
