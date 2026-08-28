@@ -124,8 +124,15 @@ jobs:
           await page.goto('http://127.0.0.1:8123/', { waitUntil: 'networkidle' });
           await page.waitForTimeout(1500);
 
-          const banner = await page.isVisible('#sim-banner');
-          if (!banner) throw new Error('simulation banner did not appear — is VITE_TRANSPORT=sim set?');
+          // The SIMULATION pill in the status bar. This used to check a
+          // banner element; that was removed when the indicator moved to the
+          // status bar, so assert on the pill's text rather than just its
+          // presence -- an empty or differently-worded badge would otherwise
+          // pass and let a hardware-mode build publish to Pages.
+          const badge = (await page.textContent('#transport-badge').catch(() => null) || '').trim();
+          if (badge !== 'SIMULATION') {
+            throw new Error(`expected the SIMULATION pill, got ${JSON.stringify(badge)} — is VITE_TRANSPORT=sim set?`);
+          }
 
           await page.click('#btn-sweep');
           await page.waitForTimeout(5000);
