@@ -99,3 +99,10 @@ tools/phase0_spike.py
 
 # Short-lived GitHub token handed to the container; deleted after use.
 .gh-token
+
+# The GitHub Pages build (deploy-pages.yml). Kept out of the repo on purpose:
+# frontend/dist/ is committed because deploy.py ships it to the Pi and must
+# keep defaulting to the real backend, while this one is built with
+# VITE_TRANSPORT=sim. Committing both invites shipping the sim default to
+# hardware.
+frontend/dist-pages/

@@ -420,7 +420,15 @@ class PhaserHeadless:
         return w.ravel()
 
     def do_sweep(self):
-        """Perform one beam sweep and return data including monopulse delta/error"""
+        """Perform one beam sweep and return data including monopulse delta/error
+
+        PORTED TO JAVASCRIPT, along with the helpers above it
+        (_apply_gain_cal, _apply_phase_cal, ConvertPhaseToSteerAngle,
+        _mvdr_weights): frontend/src/sim/engine.js runs this pipeline in the
+        browser for --sim-without-a-Pi and the GitHub Pages demo. This is the
+        source of truth. tests/test_sim_parity.py compares the two and fails on
+        drift, so a change here needs the same change there.
+        """
         max_signal = -1000
         data_fft = None
         gain = []          # Sum beam (chan1 + chan2)
@@ -510,8 +518,29 @@ class PhaserHeadless:
                 s_mag_delta = max(np.abs(delta_chan[max_index]), 1e-15)
                 s_dbfs_delta = 20 * np.log10(s_mag_delta / (2**11))
 
-                # Phase difference between sum and delta
-                beam_phase = np.angle(sum_chan[max_index]) - np.angle(delta_chan[max_index])
+                # Phase difference between sum and delta.
+                #
+                # Taken as the angle of sum * conj(delta), NOT as
+                # angle(sum) - angle(delta). The subtraction spans (-2pi, 2pi)
+                # while the quantity is only meaningful mod 2pi, so the same
+                # physical angle came out as +pi/2 or -3pi/2 depending on which
+                # side of the +/-pi branch cut the two angles landed. The next
+                # line takes sign() of this, and those two read oppositely, so
+                # the monopulse error curve inverted at random.
+                #
+                # It was not a rare edge case: sign(A-B) disagrees with the
+                # physical phase whenever |A-B| > pi, which is 1 in 4 for
+                # uniformly distributed phases -- and they are uniform here,
+                # because max_index is an argmax over a flat-envelope CW tone,
+                # so which sample wins (and the absolute carrier phase there)
+                # is set by noise.
+                #
+                # The product form also removes the dependence on that sample
+                # choice: sum and delta share the carrier, so it cancels in the
+                # product and only the sub-array geometry survives. Exactly so
+                # with no noise; with noise the value still jitters by ~0.03 rad
+                # sample to sample, but continuously, with no 2pi steps.
+                beam_phase = np.angle(sum_chan[max_index] * np.conj(delta_chan[max_index]))
 
                 total_sum += s_dbfs_sum
                 total_delta += s_dbfs_delta

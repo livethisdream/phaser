@@ -86,9 +86,47 @@ filename, and Inter/Outfit woff2 subsets live in `public/fonts/`
 (`tools/fetch_fonts.py` refetches them). No CDN, no Google Fonts. CI fails the
 build if an external `<script src>`, `<link href>`, or CSS `url()` reappears.
 
-Local `npm run dev` won't connect to the backend (no WebSocket on
-localhost:8765). Deploy to the Pi to test, or run `python phaser_headless.py
---sim`.
+Local `npm run dev` has no backend (no WebSocket on localhost:8765), but
+`http://localhost:5173/?sim=1` runs the browser simulator, so hot-reload is
+usable for frontend work. Otherwise deploy to the Pi, or run
+`python phaser_headless.py --sim`.
+
+## Two simulators
+
+`phaser_sim.py` (Python, `--sim`) and `frontend/src/sim/` (JavaScript, in the
+browser) run the same physics. The JS port is what makes the GitHub Pages demo
+possible -- Pages is static-only, so there is no Python and no WebSocket there.
+
+**Python is the source of truth.** Before changing simulator physics:
+
+1. Change it in Python.
+2. `python tools/gen_sim_constants.py` if a constant moved. Never hand-edit
+   `frontend/src/sim/constants.generated.js`.
+3. Mirror the change in `frontend/src/sim/`.
+4. `pytest tests/test_sim_parity.py` -- it fails until you do.
+
+Parity is only as strong as the case matrix in `tests/test_sim_parity.py`.
+**Adding a physics knob means adding a case there**, or it goes untested on the
+JS side.
+
+Two traps the port already accounts for, both load-bearing:
+
+- `do_sweep()` and `ConvertPhaseToSteerAngle()` use a truncated `2 * 3.14159`,
+  not real pi (legacy compatibility), while `phaser_sim`'s wave synthesis uses
+  real `np.pi`. Both are in the generated constants as `STEER_PI` and `SIM_PI`.
+  Do not "fix" either.
+- `array.js` uses `pyRound()`, not `Math.round`: Python rounds ties to even and
+  JS rounds them up.
+
+## GitHub Pages demo
+
+`.github/workflows/deploy-pages.yml` builds `frontend/` with
+`VITE_TRANSPORT=sim` and publishes to <https://livethisdream.github.io/phaser/>.
+
+That build goes to `frontend/dist-pages/` and is **gitignored**. The committed
+`frontend/dist/` is the one `deploy.py` ships to the Pi and must keep
+defaulting to the real backend -- keeping them separate is what stops the sim
+default reaching hardware.
 
 ## Codebase Knowledge Graph
 

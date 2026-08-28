@@ -13,7 +13,6 @@
     "vite": "8.2.2"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.11.0",
     "plotly.js-dist-min": "2.30.0"
   }
 }

@@ -1,5 +1,4 @@
-import './ipc-bridge-mock.js';
-import { createTransport } from './transport.js';
+import { createTransport, resolveTransportMode } from './transport.js';
 
 // Application State Structure
 const state = {
@@ -145,16 +144,8 @@ function parseDesktopResponse(response) {
     return response;
 }
 
-function isTauriHost() {
-    return !!window.__TAURI_INTERNALS__;
-}
-
-function isElectronHost() {
-    return !!window.__ELECTRON__;
-}
-
 function isDesktopHost() {
-    return window.__PHASER_DESKTOP === true || !!window.pywebview?.api || isTauriHost() || isElectronHost();
+    return window.__PHASER_DESKTOP === true || !!window.pywebview?.api;
 }
 
 function setDesktopChromeEnabled(enabled) {
@@ -190,47 +181,6 @@ function setDesktopControlsDisabled(disabled) {
 }
 
 async function invokeWindowControl(action) {
-    // Electron path
-    if (isElectronHost()) {
-        const { minimizeWindow, maximizeWindow, closeWindow, isMaximized } = await import('./transport-electron.js');
-        switch (action) {
-            case 'minimize':
-                await minimizeWindow();
-                break;
-            case 'toggle_maximize':
-                desktopChromeState.maximized = await maximizeWindow();
-                syncMaximizeButton();
-                break;
-            case 'close':
-                await closeWindow();
-                break;
-            default:
-                throw new Error(`Unknown window action: ${action}`);
-        }
-        return { status: 'ok' };
-    }
-
-    // Tauri path
-    if (isTauriHost()) {
-        const { minimizeWindow, maximizeWindow, closeWindow, isMaximized } = await import('./transport-tauri.js');
-        switch (action) {
-            case 'minimize':
-                await minimizeWindow();
-                break;
-            case 'toggle_maximize':
-                await maximizeWindow();
-                desktopChromeState.maximized = await isMaximized();
-                syncMaximizeButton();
-                break;
-            case 'close':
-                await closeWindow();
-                break;
-            default:
-                throw new Error(`Unknown window action: ${action}`);
-        }
-        return { status: 'ok' };
-    }
-
     // PyWebView path
     const api = window.pywebview?.api;
     if (!api || typeof api.window_control !== 'function') {
@@ -299,74 +249,54 @@ function wireDesktopChrome() {
     {
         const dragEl = document.getElementById('desktop-titlebar-drag');
 
-        // Electron: use CSS -webkit-app-region: drag (handled in style.css)
-        if (isElectronHost()) {
-            // Electron handles drag natively via CSS, no JS needed
-            // Just need to add the drag class
-            dragEl?.classList.add('electron-drag');
-        }
-        // Tauri: use native OS drag (smooth, no jitter)
-        else if (isTauriHost()) {
-            dragEl?.addEventListener('mousedown', async (e) => {
-                if (e.button !== 0) return;
-                e.preventDefault();
-                try {
-                    const { startDrag } = await import('./transport-tauri.js');
-                    await startDrag();
-                } catch (err) {
-                    console.error('Drag failed:', err);
-                }
-            });
-        } else {
-            // PyWebView: custom JS drag (rAF-throttled)
-            let dragging = false;
-            let lastX = 0, lastY = 0;
-            let accumDx = 0, accumDy = 0;
-            let rafPending = false;
+        // PyWebView: custom JS drag (rAF-throttled)
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        let accumDx = 0, accumDy = 0;
+        let rafPending = false;
 
-            function flushMove() {
-                rafPending = false;
-                if (!dragging || (accumDx === 0 && accumDy === 0)) return;
-                const dx = Math.round(accumDx);
-                const dy = Math.round(accumDy);
-                accumDx = 0;
-                accumDy = 0;
-                const api = window.pywebview?.api;
-                if (api?.move_window) {
-                    api.move_window(dx, dy).catch(() => {});
-                }
+        function flushMove() {
+            rafPending = false;
+            if (!dragging || (accumDx === 0 && accumDy === 0)) return;
+            const dx = Math.round(accumDx);
+            const dy = Math.round(accumDy);
+            accumDx = 0;
+            accumDy = 0;
+            const api = window.pywebview?.api;
+            if (api?.move_window) {
+                api.move_window(dx, dy).catch(() => {});
             }
-
-            dragEl?.addEventListener('mousedown', (e) => {
-                if (e.button !== 0) return;
-                dragging = true;
-                lastX = e.screenX;
-                lastY = e.screenY;
-                accumDx = 0;
-                accumDy = 0;
-                e.preventDefault();
-            });
-
-            document.addEventListener('mousemove', (e) => {
-                if (!dragging) return;
-                accumDx += e.screenX - lastX;
-                accumDy += e.screenY - lastY;
-                lastX = e.screenX;
-                lastY = e.screenY;
-                if (!rafPending) {
-                    rafPending = true;
-                    requestAnimationFrame(flushMove);
-                }
-            });
-
-            document.addEventListener('mouseup', (e) => {
-                if (e.button !== 0) return;
-                dragging = false;
-                rafPending = false;
-                accumDx = 0;
-                accumDy = 0;
-            });
         }
+
+        dragEl?.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            dragging = true;
+            lastX = e.screenX;
+            lastY = e.screenY;
+            accumDx = 0;
+            accumDy = 0;
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            accumDx += e.screenX - lastX;
+            accumDy += e.screenY - lastY;
+            lastX = e.screenX;
+            lastY = e.screenY;
+            if (!rafPending) {
+                rafPending = true;
+                requestAnimationFrame(flushMove);
+            }
+        });
+
+        document.addEventListener('mouseup', (e) => {
+            if (e.button !== 0) return;
+            dragging = false;
+            rafPending = false;
+            accumDx = 0;
+            accumDy = 0;
+        });
     }
 
     syncMaximizeButton();
@@ -1571,38 +1501,25 @@ transport.connect();
 
 /* --- Transport Self-Check & Badge --- */
 (function initTransportBadge() {
-    const mode = (window.__PHASER_TRANSPORT === 'ipc' || window.pywebview?.api?.invoke) ? 'ipc' : 'web';
-    const bridgePresent = !!(
-        (window.__PHASER_IPC_BRIDGE && typeof window.__PHASER_IPC_BRIDGE.invoke === 'function') ||
-        window.pywebview?.api?.invoke
-    );
-    const isMockBridge = bridgePresent && (window.__PHASER_IPC_MOCK === true || new URLSearchParams(window.location.search).get('mockIpc') === '1');
+    // Ask the transport layer which mode it picked rather than re-deriving it
+    // here. The old copy of this logic tested for an IPC bridge that no longer
+    // exists, so it could only ever report "web".
+    const mode = resolveTransportMode();
+    addRuntimeLog('info', 'TRANSPORT', mode === 'sim'
+        ? 'mode=sim  (in-browser simulator, no hardware)'
+        : 'mode=web  (WebSocket + REST)');
 
-    // Log a one-liner to the runtime console
-    if (mode === 'ipc') {
-        const bridgeLabel = isMockBridge ? 'mock-bridge' : (bridgePresent ? 'bridge-ok' : 'NO-BRIDGE');
-        addRuntimeLog('info', 'TRANSPORT', `mode=ipc  bridge=${bridgeLabel}`);
-    } else {
-        addRuntimeLog('info', 'TRANSPORT', `mode=web  (WebSocket + REST)`);
-    }
-
-    // Show badge only for non-default transports or mock mode
+    // The badge is for non-default transports; plain web mode leaves it hidden.
     const badgeEl = document.getElementById('transport-badge');
     if (!badgeEl) return;
-    if (mode === 'ipc') {
-        badgeEl.textContent = isMockBridge ? 'IPC · mock' : 'IPC';
+    if (mode === 'sim') {
+        badgeEl.textContent = 'SIMULATION';
         badgeEl.style.display = 'inline-flex';
-        badgeEl.title = bridgePresent
-            ? (isMockBridge ? 'IPC transport — mock bridge (dev mode)' : 'IPC transport — bridge connected')
-            : 'IPC transport — bridge NOT found';
-        if (!bridgePresent) {
-            badgeEl.style.setProperty('--transport-badge-bg', 'rgba(239,68,68,0.15)');
-            badgeEl.style.setProperty('--transport-badge-color', '#ef4444');
-            badgeEl.style.setProperty('--transport-badge-border', 'rgba(239,68,68,0.4)');
-            addRuntimeLog('warn', 'TRANSPORT', 'IPC mode selected but no bridge found — set window.__PHASER_IPC_BRIDGE');
-        }
+        badgeEl.title = 'Simulated data — no Phaser hardware is connected';
+        badgeEl.style.setProperty('--transport-badge-bg', 'rgba(245,158,11,0.15)');
+        badgeEl.style.setProperty('--transport-badge-color', '#f59e0b');
+        badgeEl.style.setProperty('--transport-badge-border', 'rgba(245,158,11,0.45)');
     }
-    // In plain web mode, badge stays hidden (display:none from HTML)
 })();
 
 function formatCalibrationStatus(data) {
@@ -1944,64 +1861,47 @@ document.getElementById('btn-cal-action')?.addEventListener('click', (e) => {
 });
 startCalibrationPolling();
 
-// Simulation mode toggle (Electron only)
-let simModeActive = false;
+/* --- Simulation mode toggle -------------------------------------------------
+ *
+ * Flips between the live backend and the in-browser simulator by toggling
+ * ?sim=1 and reloading. A reload rather than swapping the transport in place:
+ * it reuses the whole startup path (readiness probe, state load, control
+ * population) instead of duplicating it, the URL stays shareable and
+ * bookmarkable, and there is no half-torn-down WebSocket to reason about.
+ */
 const simBtn = document.getElementById('btn-sim-mode');
-if (simBtn && window.electronAPI?.startSim) {
-    // Reveal: HTML hides it by default so the button never flashes in browser mode.
+if (simBtn) {
+    const simActive = resolveTransportMode() === 'sim';
     simBtn.hidden = false;
-    // Listen for sim status changes
-    window.electronAPI.onSimStatus?.((status) => {
-        simModeActive = status.running;
-        updateSimButton();
-    });
 
-    // Check initial status
-    window.electronAPI.getSimStatus?.().then((status) => {
-        simModeActive = status?.running || false;
-        updateSimButton();
-    });
-
-    simBtn.addEventListener('click', async () => {
-        if (simModeActive) {
-            // Stop sim
-            simBtn.disabled = true;
-            simBtn.textContent = 'Stopping...';
-            addRuntimeLog('info', 'SIM', 'Stopping simulator...');
-            await window.electronAPI.stopSim();
-        } else {
-            // Start sim with default data file
-            simBtn.disabled = true;
-            simBtn.textContent = 'Starting...';
-            addRuntimeLog('info', 'SIM', 'Starting simulator...');
-            const resp = await window.electronAPI.startSim(null);
-            if (resp.status !== 'ok') {
-                addRuntimeLog('error', 'SIM', resp.message || 'Failed to start simulator');
-                alert('Failed to start simulator:\n' + (resp.message || 'Unknown error'));
-            }
-        }
-        updateSimButton();
-    });
-
-    function updateSimButton() {
-        simBtn.disabled = false;
-        if (simModeActive) {
-            simBtn.textContent = 'Stop Sim';
-            simBtn.style.background = '#f59e0b';
-            simBtn.style.borderColor = '#f59e0b';
-            simBtn.style.color = '#000';
-        } else {
-            simBtn.textContent = 'Sim';
-            simBtn.style.background = '';
-            simBtn.style.borderColor = '';
-            simBtn.style.color = '';
-        }
+    if (simActive) {
+        simBtn.textContent = 'Exit Sim';
+        simBtn.title = 'Leave simulation and reconnect to Phaser hardware';
+        simBtn.classList.add('btn-sim-active');
+    } else {
+        simBtn.textContent = 'Sim';
+        simBtn.title = 'Run the built-in simulator — no Phaser hardware required';
     }
-} else if (simBtn) {
-    // Hide button if not in Electron
-    simBtn.style.display = 'none';
+
+    simBtn.addEventListener('click', () => {
+        const url = new URL(window.location.href);
+        if (simActive) {
+            // Explicit sim=0 rather than deleting the parameter, so this still
+            // leaves simulation on a build that defaults to it (GitHub Pages).
+            url.searchParams.set('sim', '0');
+        } else {
+            url.searchParams.set('sim', '1');
+        }
+        window.location.href = url.toString();
+    });
 }
 
+/* Banner: simulated traces must never be mistakable for hardware measurements.
+ * This is a teaching tool, and a student screenshotting a sim sweep as a lab
+ * result is a real failure mode. */
+if (resolveTransportMode() === 'sim') {
+    document.getElementById('sim-banner')?.removeAttribute('hidden');
+}
 
 const settingsPanel = document.getElementById('settings-panel');
 const dashboard = document.querySelector('.dashboard');

@@ -6,6 +6,15 @@ stub synthesizes element-level IQ from a boresight HB100 tone, applies the
 element phases + taper the ADAR stub has captured, sums into two digital
 sub-arrays (chan0 = elements 1-4, chan1 = elements 5-8), and returns the
 same [chan0, chan1] shape SDR_getData produces on real hardware.
+
+PORTED TO JAVASCRIPT. frontend/src/sim/ runs this same physics in the browser
+so the dashboard works with no Pi attached (and so the GitHub Pages demo works
+at all). This file is the source of truth; the port follows it.
+
+Changing the physics here means:
+  1. python tools/gen_sim_constants.py   -- if a constant moved
+  2. mirror the change in frontend/src/sim/
+  3. pytest tests/test_sim_parity.py     -- which will fail until you do
 """
 
 import numpy as np
@@ -122,6 +131,19 @@ class SimSDR:
     # A different-IF interferer is more realistic but shows much weaker
     # nulling because the sources are then temporally uncorrelated.
     INTERFERER_IF_HZ = 1.0e6  # same as TARGET_IF_HZ (see comment above)
+
+    # Output scaling. Chosen so a full-taper on-boresight beam peaks around
+    # -10 dBFS in the sum channel, matching typical HB100 signal levels on real
+    # hardware (leaves headroom before the 2^11 fixed-point full-scale).
+    AMP_SCALE = 60.0
+
+    # Additive complex noise, per sub-array, independent. Sigma keeps
+    # per-element SNR ~28 dB, so the beam pattern shows a clean main lobe with
+    # a realistic sidelobe-vs-noise ratio. Set to 0 to get a noiseless array --
+    # tests/test_sim_parity.py does exactly that, because NumPy's PCG64 stream
+    # cannot be reproduced in JS and only the deterministic physics can be
+    # compared.
+    NOISE_SIGMA = 4.0
 
     def __init__(self, array, signal_freq, element_spacing, sample_rate=3e6,
                  buffer_size=1024 * 16):
@@ -242,17 +264,13 @@ class SimSDR:
                 wavelength=wavelength,
             )
 
-        # Scale so a full-taper on-boresight beam peaks around -10 dBFS in
-        # the sum channel, matching typical HB100 signal levels on real
-        # hardware (leaves headroom before the 2^11 fixed-point full-scale).
-        amp = 60.0
+        amp = self.AMP_SCALE
         chan0 = chan_sub[0] * amp
         chan1 = chan_sub[1] * amp
 
-        # Additive complex noise (per sub-array, independent). Sigma chosen
-        # to keep per-element SNR ~28 dB, so the beam pattern shows a clean
-        # main lobe with realistic sidelobe-vs-noise ratio.
-        noise_sigma = 4.0
+        noise_sigma = self.NOISE_SIGMA
+        if noise_sigma <= 0:
+            return chan0, chan1
         chan0 = chan0 + (self._rng.normal(0, noise_sigma, N)
                          + 1j * self._rng.normal(0, noise_sigma, N)).astype(np.complex64)
         chan1 = chan1 + (self._rng.normal(0, noise_sigma, N)

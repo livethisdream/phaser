@@ -10,10 +10,17 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CRd15QRZ.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BCJcMsFv.css">
+  <script type="module" crossorigin src="./assets/index-CDDuJoFt.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-848OSIsK.css">
 </head>
 <body>
+  <!-- Shown only when the in-browser simulator is driving the UI. Simulated
+       traces must not be mistakable for hardware measurements. -->
+  <div id="sim-banner" class="sim-banner" role="status" hidden>
+    <span class="sim-banner__dot"></span>
+    <strong>Simulation</strong>
+    <span class="sim-banner__text">No Phaser hardware connected — these traces are synthesized in your browser.</span>
+  </div>
   <div class="app-container">
 
     <div class="desktop-titlebar" id="desktop-titlebar" hidden aria-hidden="true">
@@ -423,6 +430,7 @@
           <div class="header-with-tabs">
               <div class="header-left">
                 <span class="app-wordmark">ADI <strong>Phaser</strong></span>
+                <span id="transport-badge" class="transport-badge" style="display:none;"></span>
                 <div class="tab-list">
                     <button class="tab-btn active" data-target="tab-rect">Rectangular</button>
                     <button class="tab-btn" data-target="tab-polar">Polar</button>
@@ -433,6 +441,7 @@
               </div>
               <div class="header-actions">
                 <button class="btn btn-outline btn-small" id="btn-sim-mode" title="Toggle simulation mode" hidden>Sim</button>
+
                 <button class="btn btn-outline btn-small btn-freeze" id="btn-memory" title="Click to freeze current trace (max 3). Hold to clear all.">
                   <span class="btn-freeze-fill"></span>
                   <span class="btn-freeze-label">Freeze</span>

@@ -109,17 +109,6 @@ h1, h2, h3 {
 }
 
 /* Electron uses native CSS drag region */
-.desktop-titlebar__drag.electron-drag {
-  -webkit-app-region: drag;
-}
-
-.desktop-titlebar__drag.electron-drag * {
-  -webkit-app-region: no-drag;
-  cursor: grab;
-  /* pywebview easy_drag handles this via .pywebview-drag-region class */
-  -webkit-app-region: no-drag;
-  user-select: none;
-}
 
 .desktop-titlebar__drag:active {
   cursor: grabbing;
@@ -259,7 +248,6 @@ h1, h2, h3 {
   line-height: 1;
   flex-shrink: 0;
 }
-
 
 .transport-badge {
   display: inline-flex;
@@ -1384,4 +1372,72 @@ input[type=number]::-webkit-outer-spin-button {
 
 .cal-output:empty {
   display: none;
+}
+
+/* --- Simulation mode ------------------------------------------------------
+ *
+ * The banner is deliberately loud. This app is used to take lab measurements,
+ * and a synthesized sweep must never be mistaken for one off the hardware.
+ */
+.sim-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  background: rgba(245, 158, 11, 0.14);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.4);
+  color: #f59e0b;
+  font-size: 0.82rem;
+  letter-spacing: 0.01em;
+}
+
+.sim-banner[hidden] { display: none; }
+
+.sim-banner strong {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.76rem;
+}
+
+.sim-banner__text {
+  color: var(--text-secondary, #9ca3af);
+}
+
+.sim-banner__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex: none;
+  animation: sim-banner-pulse 2s ease-in-out infinite;
+}
+
+@keyframes sim-banner-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sim-banner__dot { animation: none; }
+}
+
+/* Transport badge — set by initTransportBadge(), hidden in plain web mode. */
+.transport-badge {
+  align-items: center;
+  padding: 2px 8px;
+  margin-left: 10px;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  background: var(--transport-badge-bg, rgba(148, 163, 184, 0.15));
+  color: var(--transport-badge-color, #94a3b8);
+  border: 1px solid var(--transport-badge-border, rgba(148, 163, 184, 0.35));
+}
+
+/* Sim button while simulation is active. */
+.btn-sim-active {
+  background: #f59e0b !important;
+  border-color: #f59e0b !important;
+  color: #000 !important;
 }

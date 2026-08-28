@@ -240,7 +240,8 @@ Servers on the Pi:
 
 - **HTTP :8080** — serves `frontend/dist` (main beamforming UI)
 - **WebSocket :8765** — browser command channel + live sweep frames
-- **ZMQ PUB :5555 / REP :5556** — for legacy desktop/Electron clients
+- **ZMQ PUB :5555 / REP :5556** — sweep frames + command channel for local
+  scripts; unused by the browser UI
 - **HTTP :8081** — CW Doppler radar app (separate `frontend-radar/dist`)
 
 ## Deploying to the Pi
@@ -279,6 +280,36 @@ without it. It installs the systemd unit if absent, then restarts
 
 ## Simulation mode (no Phaser required)
 
+There are two simulators, running the same physics. Which one you want
+depends on whether you have Python to hand.
+
+| | Runs in | Needs | Use it for |
+|---|---|---|---|
+| `--sim` | Python, on your machine | a checkout + Python | backend work, calibration flows |
+| Sim button | your browser | nothing | demos, frontend work, a dead Pi mid-lab |
+
+### Browser simulator (no install at all)
+
+Click **Sim** in the header, or add `?sim=1` to the URL. The dashboard
+switches to a simulator that runs entirely in the page — no backend, no
+WebSocket, no Python. A prominent **SIMULATION** banner stays up the whole
+time, so a synthesized sweep is never mistakable for a hardware measurement.
+
+This is what makes the hosted demo possible:
+
+**<https://livethisdream.github.io/phaser/>**
+
+That page is the real dashboard, built with `VITE_TRANSPORT=sim`, published by
+`.github/workflows/deploy-pages.yml`. Same controls, same plots, same physics —
+just synthesized IQ instead of an SDR. It is also useful on the Pi itself: if
+the hardware is missing or broken mid-lab, `?sim=1` gets you a working UI
+without touching the backend.
+
+The port lives in `frontend/src/sim/`. Python is the source of truth for the
+physics; see **Keeping the two simulators in sync** below before changing it.
+
+### Backend simulator (`--sim`)
+
 Run the backend locally against physics-based hardware stubs:
 
 ```powershell
@@ -299,8 +330,34 @@ HB100 target at boresight, so the resulting beam patterns are
 physically consistent (correct beamwidth, sidelobe roll-off, grating
 lobes on sparse tapers, MVDR nulls on the interferer).
 
-CW Doppler radar is **not** simulated; it returns "not available in
---sim mode".
+CW Doppler radar is **not** simulated, in either simulator; it returns
+"not available".
+
+### Keeping the two simulators in sync
+
+`frontend/src/sim/` is a JavaScript port of `phaser_sim.py` and
+`PhaserHeadless.do_sweep()`. Two implementations of the same physics drift, so
+three things stop that:
+
+1. **Constants are generated, not transcribed.** `tools/gen_sim_constants.py`
+   writes `frontend/src/sim/constants.generated.js` from `phaser_sim.py`,
+   `config.py`, and a real `PhaserHeadless` instance, so the JS defaults are
+   the Python defaults by construction. Never edit that file by hand.
+2. **`tests/test_sim_parity.py`** runs both implementations over every knob the
+   sweep branches on and compares them sample for sample.
+3. **CI runs it** (`.github/workflows/tests.yml`), and also fails if the
+   generated constants are stale or if the parity tests skip.
+
+So, after changing the simulator physics in Python:
+
+```bash
+python tools/gen_sim_constants.py     # if a constant moved
+# mirror the change in frontend/src/sim/
+pytest tests/test_sim_parity.py       # fails until you do
+```
+
+Parity is only as strong as the case matrix in that test. **A new physics knob
+needs a new case**, or it is simply untested on the JS side.
 
 ### Instructor mode
 
@@ -318,6 +375,10 @@ The panel is also hidden if the backend isn't in sim mode, so a
 student loading the *real* Pi app with `?instructor=1` still doesn't
 see it.
 
+This works in the browser simulator too, including on the hosted demo —
+`?sim=1&instructor=1`, or just `?instructor=1` on the Pages site, which is
+already in simulation.
+
 ## Frontend development
 
 Only needed if you're changing the UI. Everyone else can ignore this
@@ -329,9 +390,17 @@ npm install         # one-time
 npm run build       # writes to frontend/dist (prebuild hook vendors Plotly)
 ```
 
-`npm run dev` (Vite hot-reload) is **not** wired to the backend — it
-can't reach `ws://localhost:8765` because Vite's dev server doesn't
-proxy WebSockets. Use `npm run build` + reload the browser, or run
+`npm run dev` (Vite hot-reload) can't reach `ws://localhost:8765` — Vite's dev
+server doesn't proxy WebSockets — so it has no backend. Open it with `?sim=1`
+and the browser simulator drives the UI instead, which makes hot-reload
+genuinely useful for frontend work:
+
+```text
+http://localhost:5173/?sim=1
+http://localhost:5173/?sim=1&instructor=1     # with the interferer panel
+```
+
+For the backend-connected path, use `npm run build` + reload, or run
 `python phaser_headless.py --sim` and use its HTTP server.
 
 You can commit `dist/` yourself or let CI rebuild it on push; CI is
