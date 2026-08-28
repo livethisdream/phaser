@@ -1,5 +1,40 @@
 // WebSocket transport for browser mode
 
+const BACKEND_URL_KEY = 'phaser.backendUrl';
+
+/**
+ * An explicitly configured backend, if there is one.
+ *
+ * `?backend=wss://host/ws` wins (shareable, and a way out of a bad saved
+ * value); otherwise whatever the Configuration pane last saved.
+ *
+ * This exists because the derivation below is same-origin only, which is
+ * right when the Pi serves the page and wrong when it does not. The hosted
+ * demo on GitHub Pages is the case in point: without an override it resolves
+ * to wss://<user>.github.io/ws, which is GitHub's server, not a Phaser.
+ */
+export function getBackendUrlOverride() {
+    const fromQuery = new URLSearchParams(window.location.search).get('backend');
+    if (fromQuery) return fromQuery.trim();
+    try {
+        return (localStorage.getItem(BACKEND_URL_KEY) || '').trim();
+    } catch {
+        // Private mode / blocked storage. Not worth failing over.
+        return '';
+    }
+}
+
+export function setBackendUrlOverride(url) {
+    try {
+        const trimmed = (url || '').trim();
+        if (trimmed) localStorage.setItem(BACKEND_URL_KEY, trimmed);
+        else localStorage.removeItem(BACKEND_URL_KEY);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // Where the backend's WebSocket lives, given how this page was served.
 //
 // Plain http on the LAN: the backend serves the frontend on 8080 and the
@@ -11,12 +46,16 @@
 // Funnel only publishes 443/8443/10000). So go same-origin over wss:// and
 // let the proxy route /ws to 8765. The backend's handler ignores the request
 // path, so it does not care whether the proxy strips the prefix.
-function backendWsUrl() {
+export function autoBackendWsUrl() {
     if (window.location.protocol === 'https:') {
         return `wss://${window.location.host}/ws`;
     }
     const host = window.location.hostname || 'localhost';
     return `ws://${host}:8765`;
+}
+
+function backendWsUrl() {
+    return getBackendUrlOverride() || autoBackendWsUrl();
 }
 
 export function createWebTransport(callbacks = {}) {
@@ -31,7 +70,7 @@ export function createWebTransport(callbacks = {}) {
         ws = new WebSocket(backendWsUrl());
 
         ws.onopen = () => {
-            callbacks.onLog?.('info', 'WS', 'Connected');
+            callbacks.onLog?.('info', 'WS', `Connected to ${ws.url}`);
             callbacks.onOpen?.();
         };
 

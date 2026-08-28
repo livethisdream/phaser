@@ -1,4 +1,5 @@
 import { createTransport, resolveTransportMode } from './transport.js';
+import { autoBackendWsUrl, getBackendUrlOverride, setBackendUrlOverride } from './transport-web.js';
 
 // Application State Structure
 const state = {
@@ -1861,46 +1862,84 @@ document.getElementById('btn-cal-action')?.addEventListener('click', (e) => {
 });
 startCalibrationPolling();
 
-/* --- Simulation mode toggle -------------------------------------------------
+/* --- Connection: simulator toggle + backend URL ------------------------------
  *
- * Flips between the live backend and the in-browser simulator by toggling
- * ?sim=1 and reloading. A reload rather than swapping the transport in place:
- * it reuses the whole startup path (readiness probe, state load, control
- * population) instead of duplicating it, the URL stays shareable and
- * bookmarkable, and there is no half-torn-down WebSocket to reason about.
+ * Both live in the Configuration pane rather than the header. Each reloads the
+ * page, because the transport is chosen once at startup: reusing the whole
+ * init path (readiness probe, state load, control population) is far less
+ * fragile than tearing a live transport out from under a running sweep, and it
+ * keeps the mode in the URL so it stays shareable.
  */
-const simBtn = document.getElementById('btn-sim-mode');
-if (simBtn) {
-    const simActive = resolveTransportMode() === 'sim';
-    simBtn.hidden = false;
-
-    if (simActive) {
-        simBtn.textContent = 'Exit Sim';
-        simBtn.title = 'Leave simulation and reconnect to Phaser hardware';
-        simBtn.classList.add('btn-sim-active');
-    } else {
-        simBtn.textContent = 'Sim';
-        simBtn.title = 'Run the built-in simulator — no Phaser hardware required';
+function reloadWith(params) {
+    const url = new URL(window.location.href);
+    for (const [k, v] of Object.entries(params)) {
+        if (v === null) url.searchParams.delete(k);
+        else url.searchParams.set(k, v);
     }
+    window.location.href = url.toString();
+}
 
-    simBtn.addEventListener('click', () => {
-        const url = new URL(window.location.href);
-        if (simActive) {
-            // Explicit sim=0 rather than deleting the parameter, so this still
-            // leaves simulation on a build that defaults to it (GitHub Pages).
-            url.searchParams.set('sim', '0');
-        } else {
-            url.searchParams.set('sim', '1');
-        }
-        window.location.href = url.toString();
+const simToggle = document.getElementById('opt-sim-mode');
+if (simToggle) {
+    const simActive = resolveTransportMode() === 'sim';
+    simToggle.checked = simActive;
+    simToggle.addEventListener('change', (e) => {
+        // Explicit 0 rather than deleting the parameter: a build that defaults
+        // to sim (GitHub Pages) needs to be told to leave it.
+        reloadWith({ sim: e.target.checked ? '1' : '0' });
     });
 }
 
-/* Banner: simulated traces must never be mistakable for hardware measurements.
- * This is a teaching tool, and a student screenshotting a sim sweep as a lab
- * result is a real failure mode. */
-if (resolveTransportMode() === 'sim') {
-    document.getElementById('sim-banner')?.removeAttribute('hidden');
+const backendInput = document.getElementById('backend-url');
+const backendHint = document.getElementById('backend-url-hint');
+if (backendInput) {
+    const simActive = resolveTransportMode() === 'sim';
+    const override = getBackendUrlOverride();
+    backendInput.value = override;
+    backendInput.placeholder = autoBackendWsUrl();
+
+    function describeBackend() {
+        if (!backendHint) return;
+        if (simActive) {
+            backendHint.textContent =
+                'Used when Simulator Mode is off. Set it to reach a Phaser that '
+                + 'is not serving this page — a Tailscale hostname, say.';
+        } else if (override) {
+            backendHint.textContent = `Connecting to ${override}`;
+        } else {
+            backendHint.textContent = `Auto: ${autoBackendWsUrl()} (same origin as this page)`;
+        }
+    }
+    describeBackend();
+
+    function applyBackendUrl() {
+        const next = backendInput.value.trim();
+        if (next === override) return;
+        if (next && !/^wss?:\/\//i.test(next)) {
+            addRuntimeLog('error', 'WS', 'Backend URL must start with ws:// or wss://');
+            backendInput.focus();
+            return;
+        }
+        // An https page cannot open an insecure socket; say so here rather than
+        // letting the browser fail it silently as mixed content.
+        if (next.startsWith('ws://') && window.location.protocol === 'https:') {
+            addRuntimeLog('error', 'WS',
+                'This page is served over https, so it can only use a wss:// backend.');
+            backendInput.focus();
+            return;
+        }
+        if (!setBackendUrlOverride(next)) {
+            addRuntimeLog('warn', 'WS', 'Could not save the backend URL (storage blocked).');
+            return;
+        }
+        // Leaving simulator mode is implied by pointing at a backend.
+        reloadWith({ sim: '0', backend: null });
+    }
+
+    backendInput.addEventListener('change', applyBackendUrl);
+    backendInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); applyBackendUrl(); }
+    });
 }
 
 const settingsPanel = document.getElementById('settings-panel');

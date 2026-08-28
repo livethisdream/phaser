@@ -13,13 +13,6 @@
   <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
-  <!-- Shown only when the in-browser simulator is driving the UI. Simulated
-       traces must not be mistakable for hardware measurements. -->
-  <div id="sim-banner" class="sim-banner" role="status" hidden>
-    <span class="sim-banner__dot"></span>
-    <strong>Simulation</strong>
-    <span class="sim-banner__text">No Phaser hardware connected — these traces are synthesized in your browser.</span>
-  </div>
   <div class="app-container">
 
     <div class="desktop-titlebar" id="desktop-titlebar" hidden aria-hidden="true">
@@ -166,6 +159,26 @@
                             <option value="Transmit on OUT1">OUT1</option>
                             <option value="Transmit on OUT2">OUT2</option>
                         </select>
+                    </div>
+
+                    <hr class="divider" />
+
+                    <div class="control-group" style="margin-bottom:0.25rem">
+                      <label style="margin-bottom:0; color: var(--text-main);">Connection</label>
+                    </div>
+
+                    <label class="toggle-container mt-2" title="Run the built-in simulator instead of talking to Phaser hardware">
+                      <span>Simulator Mode</span>
+                      <input type="checkbox" id="opt-sim-mode">
+                      <span class="checkmark"></span>
+                    </label>
+
+                    <div class="control-group mt-2" id="backend-url-group">
+                      <label for="backend-url">Backend URL</label>
+                      <input type="text" id="backend-url" class="modern-input"
+                             spellcheck="false" autocomplete="off"
+                             placeholder="auto (same origin)">
+                      <p class="field-hint" id="backend-url-hint"></p>
                     </div>
 
                 </div>
@@ -429,7 +442,6 @@
           <div class="header-with-tabs">
               <div class="header-left">
                 <span class="app-wordmark">ADI <strong>Phaser</strong></span>
-                <span id="transport-badge" class="transport-badge" style="display:none;"></span>
                 <div class="tab-list">
                     <button class="tab-btn active" data-target="tab-rect">Rectangular</button>
                     <button class="tab-btn" data-target="tab-polar">Polar</button>
@@ -439,7 +451,6 @@
                 </div>
               </div>
               <div class="header-actions">
-                <button class="btn btn-outline btn-small" id="btn-sim-mode" title="Toggle simulation mode" hidden>Sim</button>
 
                 <button class="btn btn-outline btn-small btn-freeze" id="btn-memory" title="Click to freeze current trace (max 3). Hold to clear all.">
                   <span class="btn-freeze-fill"></span>
@@ -491,6 +502,7 @@
                 <span class="stat-value" id="beam-meas-freq">--</span>
             </div>
             <div class="stats-spacer"></div>
+            <span id="transport-badge" class="transport-badge" style="display:none;"></span>
             <div class="status-indicator">
               <div class="dot disconnected" id="connection-dot"></div>
               <span id="connection-text">Disconnected</span>
