@@ -24,9 +24,9 @@ curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.s
 
 Then open `http://phaser.local:8080`.
 
-That is the whole thing -- install *and* update. `install.sh` is idempotent,
-so re-running it is how you pick up a new version. It needs nothing on your
-machine but `ssh`, which every OS ships.
+That is the whole thing -- install, provision *and* update. The only thing
+needed on your own machine is `ssh`; on Windows that is
+Settings > Apps > Optional features > OpenSSH Client.
 
 **No Phaser attached?** Run sim mode locally instead:
 
@@ -34,30 +34,69 @@ machine but `ssh`, which every OS ships.
 python phaser_headless.py --sim   # then open http://localhost:8080
 ```
 
-### About the installer
+## Installing and updating
 
-Nothing is needed locally beyond `ssh` -- no Python, no clone, no toolchain.
+`install.sh` is the only deployment path, and it runs **on the Pi**. There is
+no separate provisioning step and no laptop-side deploy tool: the script does
+dependencies, files, systemd unit and service start in one idempotent pass, on
+a Pi straight out of the box or on one that has been running for a year.
 
-Expect **one sudo prompt**, for the systemd unit. You are at an interactive
-shell, so it just asks.
+It installs only the Python packages that are actually missing, copies the
+payload into `/home/analog/pyadi-iio/examples/phaser/`, renders and installs
+the systemd unit, then restarts the service and checks it stayed up and the UI
+answers 200. It prints both the `.local` name and the IP at the end; if
+`phaser.local` does not resolve -- common on Windows without mDNS, or behind
+corporate DNS -- use the IP.
 
-It is idempotent -- run it again to update. It updates a drifted systemd unit,
-replaces the frontend atomically rather than merging over stale hashed assets,
-never overwrites an existing `config.py`, and installs only the Python packages
-that are actually missing. It finishes by checking the service stayed up and
-the UI answers 200, printing both the `.local` name and the IP.
+Expect **one sudo prompt**, for the systemd unit, and none at all on a re-run
+where the unit is already current.
 
-If `phaser.local` does not resolve -- common on Windows without mDNS, or behind
-corporate DNS -- use the Pi's IP address instead.
+Re-running is how you update, and the idempotency is specific: it compares the
+unit's *content* rather than merely checking one exists, so a Pi provisioned by
+an older version picks up template changes instead of keeping a stale unit
+forever; it replaces the frontend wholesale rather than merging over stale
+hashed assets; and it never overwrites an existing `config.py`.
 
-`install.sh` runs **on the Pi** deliberately. The Pi is the one machine whose
-environment we control; every deployment bug this project has had came from the
-client side instead (cmd.exe globbing, PATHEXT, no ControlMaster on Windows
-OpenSSH, `ssh -t` versus sudo, a Microsoft Store alias masquerading as
-`python`). None of that is about installing Phaser. The header comment in
-`install.sh` has the full account.
+### What lands on the Pi
 
-### Installing without internet on the Pi
+- The backend entrypoints and their helper modules (`BACKEND_FILES` in
+  `install.sh` is the exact list)
+- The `LTE*.ftr` AD9361 filter configs, which
+  `phaser_find_hb100_headless.py` loads by bare filename at runtime
+- `frontend/dist/` and, when present, `frontend-radar/dist/` -- replaced
+  wholesale rather than merged, since Vite emits content-hashed filenames and
+  copying over the top would accumulate every old build's assets forever
+- `config.py`, **only** if the Pi has none
+
+`install.sh` refuses to run if the source has no `frontend/dist/index.html`
+at all, rather than installing a backend with no UI in front of it.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `PHASER_REF=<branch-or-tag>` | Install something other than `main` -- how you try a branch before merging it |
+| `PHASER_SRC=<dir>` | Install from a local directory instead of downloading |
+| `PHASER_WHEELS=<dir>` | Install Python deps from pre-downloaded wheels, with `pip --no-index` |
+| `GH_TOKEN` | Authenticate, if the repo is ever made private again |
+
+### Installing a branch you have not pushed
+
+`install.sh` normally fetches a tarball from GitHub, so a branch has to be
+pushed before the Pi can see it. To install a working tree instead, copy it
+over and point `PHASER_SRC` at it:
+
+```bash
+scp -r . analog@phaser.local:/tmp/phaser-src
+ssh analog@phaser.local 'PHASER_SRC=/tmp/phaser-src bash /tmp/phaser-src/install.sh'
+```
+
+Note that `frontend/dist/` is only rebuilt by CI on `main` and `radar-dev`
+(see [No-build deployment](#no-build-deployment)), so a feature branch carries
+whatever `dist/` was last committed to it. If you changed the UI on a branch,
+build it before copying.
+
+### Installing with no internet on the Pi
 
 Download on a machine that has internet, carry it over, install from the local
 copy. On your laptop:
@@ -82,7 +121,7 @@ different flags.
 
 That covers everything except the Python packages, which `pip` normally
 fetches from the network. For a Pi that has **never** been online, carry those
-too. On your laptop, alongside the tarball:
+too -- about 1.2 MB. On your laptop, alongside the tarball:
 
 ```bash
 pip download --only-binary=:all: \
@@ -93,70 +132,32 @@ pip download --only-binary=:all: \
 scp -r wheels analog@phaser.local:/tmp/
 ```
 
-Then add `PHASER_WHEELS` to the install:
-
 ```bash
 PHASER_SRC=/tmp/phaser-src PHASER_WHEELS=/tmp/wheels bash /tmp/phaser-src/install.sh
 ```
 
-About 1.2 MB in total. The `--platform`/`--python-version`/`--implementation`
-flags matter: they fetch `cp39` `linux_armv7l` wheels for the Pi rather than
-wheels for your laptop, and piwheels is the index that actually has ARM builds
-of `pyzmq`. With `PHASER_WHEELS` set, pip runs `--no-index`, so a missing wheel
-is a clear error instead of a silent reach for a network that isn't there.
+The `--platform`/`--python-version`/`--implementation` flags matter: they fetch
+`cp39` `linux_armv7l` wheels for the Pi rather than wheels for your laptop, and
+piwheels is the index that actually has ARM builds of `pyzmq`. With
+`PHASER_WHEELS` set, pip runs `--no-index`, so a missing wheel is a clear error
+instead of a silent reach for a network that isn't there.
 
-### Other options
+### Why it runs on the Pi
 
-`PHASER_REF=<branch-or-tag>` installs something other than `main`.
-`GH_TOKEN` authenticates if the repo is ever made private again.
-
-### Installing your own working tree
-
-`install.sh` normally fetches a tarball from GitHub, so a branch has to be
-pushed before the Pi can see it. To install a tree you have not pushed, copy it
-to the Pi and point `PHASER_SRC` at it:
-
-```bash
-scp -r . analog@phaser.local:/tmp/phaser-src
-ssh analog@phaser.local 'PHASER_SRC=/tmp/phaser-src bash /tmp/phaser-src/install.sh'
-```
-
-### Prerequisites
-
-An ssh client. On Windows that is
-Settings > Apps > Optional features > OpenSSH Client.
-
-**On Windows, do not rely on `python` already being on PATH.** Windows ships a
-Microsoft Store *App Execution Alias* at
-`...\AppData\Local\Microsoft\WindowsApps\python.exe`, which `where.exe python`
-happily finds and which is not an interpreter -- `python --version` fails on it.
-Install a real one from python.org (tick "Add python.exe to PATH"), or, if you
-have `uv`, `uv python install`.
-
-### First-time Pi provisioning
-
-There is no separate provisioning step. `install.sh` does the whole job on a
-Pi straight out of the box: it installs any missing Python dependencies,
-places the files, renders and enables the systemd unit from
-`scripts/phaser-headless.service.template`, starts the service and checks the
-UI answers on :8080.
-
-It compares the unit's *content* rather than merely checking one exists, so a
-Pi provisioned by an older version picks up template changes instead of
-keeping a stale unit forever. `config.py` is never overwritten -- a Pi's copy
-may hold site-specific URIs and calibration.
-
-Expect **one** sudo prompt, for the systemd unit -- and none at all on a
-re-run where the unit is already current. You are sitting at an interactive
-shell on the Pi, so sudo simply asks the way it always does.
+Deliberately: the Pi is the one machine whose environment we control, and every
+deployment bug this project has had came from the client side instead. The
+header comment in `install.sh` has the full account, and CLAUDE.md records that
+a laptop-side deploy tool is not to be reintroduced.
 
 ## No-build deployment
 
 `frontend/dist/` and `frontend-radar/dist/` are **committed to the
 repo**, built by GitHub Actions
-([`.github/workflows/build-frontends.yml`](.github/workflows/build-frontends.yml))
-on every push that touches frontend sources. CI owns `dist/`; you
-normally never build it by hand.
+([`.github/workflows/build-frontends.yml`](.github/workflows/build-frontends.yml)),
+which runs on pushes to `main` and `radar-dev` that touch frontend sources and
+commits the result back. On those branches CI owns `dist/` and you normally
+never build it by hand; on any other branch, `dist/` is whatever you last
+committed.
 
 Two consequences worth knowing:
 
@@ -172,19 +173,14 @@ creeps back in.
 
 Vendoring lives in two places:
 
-- `tools/vendor_plotly.mjs` — copies `plotly.js-dist-min` out of
-  `node_modules` into `public/vendor/plotly.min.js` at a **stable**
-  filename (not a hashed Vite asset, so git stores one blob instead of
-  a fresh 3.5 MB one per rebuild). Wired as the `prebuild` npm hook, so
-  `npm run build` picks it up automatically. Plotly is pinned to exactly
-  `2.30.0` — the UI is tuned against that version.
-- `tools/fetch_fonts.py` — refetches the woff2 files into
+- `tools/vendor_plotly.mjs` — the `prebuild` npm hook. Copies
+  `plotly.js-dist-min` into `public/vendor/plotly.min.js` at a **stable**
+  filename, not a hashed Vite asset, so git stores one blob instead of a
+  fresh 3.5 MB one per rebuild. Plotly is pinned to exactly `2.30.0`; the
+  UI is tuned against that version.
+- `tools/fetch_fonts.py` — refetches the woff2 subsets into
   `frontend/public/fonts/` and mirrors them to `frontend-radar/`. Only
-  needed if you change fonts; the files are committed (~180 KB, latin +
-  latin-ext subsets only).
-
-`install.sh` refuses to run if the source has no `frontend/dist/index.html`
-at all, rather than installing a backend with no UI in front of it.
+  needed if you change fonts; the files are committed (~180 KB).
 
 ## Architecture
 
@@ -211,29 +207,8 @@ Servers on the Pi:
   scripts; unused by the browser UI
 - **HTTP :8081** — CW Doppler radar app (separate `frontend-radar/dist`)
 
-## Updating a Pi
-
-Re-run the installer. It is idempotent, so this is both the install path and
-the update path:
-
-```bash
-ssh analog@phaser.local
-curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
-```
-
-`PHASER_REF=<branch-or-tag>` installs something other than `main`, which is
-how you try a branch before merging it.
-
-It installs:
-
-- The backend entrypoints and their helper modules (`BACKEND_FILES` in
-  `install.sh` is the exact list)
-- The `LTE*.ftr` AD9361 filter configs, which
-  `phaser_find_hb100_headless.py` loads by bare filename at runtime
-- `frontend/dist/` and, when present, `frontend-radar/dist/` -- replaced
-  wholesale rather than merged, since Vite emits content-hashed filenames and
-  copying over the top would accumulate every old build's assets forever
-- `config.py`, **only** if the Pi has none
+All four ports are overridable (`--http-port`, `--ws-port`, `--pub-port`,
+`--rep-port`, `--radar-http-port`).
 
 ## Simulation mode (no Phaser required)
 
@@ -243,7 +218,7 @@ depends on whether you have Python to hand.
 | | Runs in | Needs | Use it for |
 |---|---|---|---|
 | `--sim` | Python, on your machine | a checkout + Python | backend work, calibration flows |
-| Sim button | your browser | nothing | demos, frontend work, a dead Pi mid-lab |
+| Simulator Mode | your browser | nothing | demos, frontend work, a dead Pi mid-lab |
 
 ### Browser simulator (no install at all)
 
@@ -270,8 +245,8 @@ physics; see **Keeping the two simulators in sync** below before changing it.
 
 By default the frontend talks to whatever origin served it — right when the Pi
 serves the page, and wrong when it does not. The **Backend URL** field beside
-the Simulator Mode toggle overrides that (`?backend=wss://host/ws` also works,
-and wins over the saved value).
+the Simulator Mode toggle overrides that, saving to `localStorage`
+(`?backend=wss://host/ws` also works, and wins over the saved value).
 
 That is what lets the hosted demo drive real hardware: expose the Pi over
 Tailscale, put the resulting `wss://` URL in that field, and the page connects
@@ -300,11 +275,14 @@ python phaser_headless.py --sim
 ```
 
 Then open `http://localhost:8080`. The whole UI works: beam sweeps,
-per-element phase, taper presets, Beam Steering, Manual and MVDR
-digital beamforming. The sim synthesizes element-level IQ from an
-HB100 target at boresight, so the resulting beam patterns are
-physically consistent (correct beamwidth, sidelobe roll-off, grating
-lobes on sparse tapers, MVDR nulls on the interferer).
+per-element phase, taper presets, Beam Steering, Manual and MVDR digital
+beamforming. The sim synthesizes element-level IQ from an HB100 target at
+boresight, so the beam patterns are physically consistent — correct beamwidth,
+sidelobe roll-off, grating lobes on sparse tapers, MVDR nulls on the
+interferer.
+
+`phaser_sim.py` is a development-only module and is not in `BACKEND_FILES`, so
+`--sim` is a local thing; on the Pi, use the browser simulator instead.
 
 CW Doppler radar is **not** simulated, in either simulator; it returns
 "not available".
@@ -343,22 +321,19 @@ Append `?instructor=1` to the URL:
 http://localhost:8080/?instructor=1
 ```
 
-This reveals a **Simulator Interferer** panel in the sidebar (a
-configurable jammer for MVDR nulling demos). Students loading the app
-without this flag see no trace of the interferer controls.
+This reveals a **Simulator Interferer** panel in the sidebar (a configurable
+jammer for MVDR nulling demos). Students loading the app without the flag see
+no trace of it, and it stays hidden unless the transport is actually a
+simulator — so `?instructor=1` against the *real* Pi app shows nothing either.
 
-The panel is also hidden if the backend isn't in sim mode, so a
-student loading the *real* Pi app with `?instructor=1` still doesn't
-see it.
-
-This works in the browser simulator too, including on the hosted demo —
+It works in the browser simulator too, including on the hosted demo:
 `?sim=1&instructor=1`, or just `?instructor=1` on the Pages site, which is
 already in simulation.
 
 ## Frontend development
 
 Only needed if you're changing the UI. Everyone else can ignore this
-section — CI builds `dist/` on push.
+section.
 
 ```bash
 cd frontend
@@ -379,45 +354,55 @@ http://localhost:5173/?sim=1&instructor=1     # with the interferer panel
 For the backend-connected path, use `npm run build` + reload, or run
 `python phaser_headless.py --sim` and use its HTTP server.
 
-You can commit `dist/` yourself or let CI rebuild it on push; CI is
-authoritative and will overwrite with its own build either way.
+On `main` and `radar-dev`, CI rebuilds `dist/` on push and commits it back, so
+you can leave it to CI. On any other branch it does not, so commit `dist/`
+yourself if you intend to install that branch to a Pi.
 
 Backend edits: no build step. Restart `phaser_headless.py` locally, or
 re-run `install.sh` on the Pi.
 
 ## Calibration files
 
-The Pi keeps calibration state in these files at the same directory as
-`phaser_headless.py`:
+The Pi keeps calibration state beside `phaser_headless.py`, in a single
+JSON store:
 
-- `hb100_cal.txt` — HB100 signal frequency (single float, Hz)
-- `phase_cal_val.pkl` — per-element phase corrections (8 floats, deg)
-- `gain_cal_val.pkl` — per-element gain corrections (8 floats)
-- `channel_cal_val.pkl` — inter-channel phase corrections (2 floats)
+- `calibration.json` — HB100 frequency, per-element phase and gain
+  corrections, and inter-channel phase corrections. Written atomically,
+  and merged rather than replaced, so re-running one calibration does not
+  discard the others.
+
+Four **legacy** stores are still read, so a Pi calibrated before the JSON
+store keeps working: `hb100_cal.txt`, `phase_cal_val.pkl`,
+`gain_cal_val.pkl`, `channel_cal_val.pkl`. Each is superseded the next time
+that particular calibration is re-run. Nothing writes them any more.
 
 Loaders in `phaser_functions.py` / `ADAR_pyadi_functions.py` /
-`SDR_functions.py` fall back to sensible defaults if a file is
-missing. The GUI's **Calibrate** and **Find HB100** sidebar buttons
-regenerate these; you don't normally touch them by hand.
+`SDR_functions.py` go JSON first, then legacy, then sensible defaults, so a
+missing or corrupt store never stops the backend from starting. The UI's
+**Calibrate** and **Find HB100** sidebar buttons regenerate all of this;
+you don't normally touch it by hand.
 
-Sim mode uses the same loaders and reads whatever cal files are
-present locally, so tweaks made on the Pi during development can be
-scp'd back and reproduced in sim.
+Sim mode uses the same loaders and reads whatever cal state is present
+locally, so tweaks made on the Pi during development can be scp'd back and
+reproduced in sim.
 
 ## Codebase map
 
 Top-level Python:
 
 - `phaser_headless.py` — main backend entrypoint (browser-hosted)
-- `phaser_sim.py` — physics stubs for `--sim` mode
+- `phaser_sim.py` — physics stubs for `--sim` mode (development only, not
+  deployed)
 - `phaser_functions.py`, `SDR_functions.py`, `ADAR_pyadi_functions.py`
-  — pyadi-iio wrappers + cal loaders (imported by `phaser_headless`)
+  — pyadi-iio wrappers + the calibration store (imported by `phaser_headless`)
 - `phaser_cw_radar.py` — CW Doppler radar helpers (mode dispatcher +
   frame processing)
 - `phaser_cal_headless.py`, `phaser_find_hb100_headless.py`
   — calibration scripts spawned as subprocesses by the backend
-- `phaser_service.py` — legacy desktop-app service layer (older
-  PyWebView path; still used by the release bundle)
+- `phaser_service.py` — dead weight from the PyWebView desktop-app era.
+  Nothing imports it and `install.sh` does not deploy it; it is kept only
+  because parts of `phaser_headless.py` still cite it as the reference for
+  hardware quirks
 - `config.py` — hardware URIs and default frequencies
 - `install.sh` — the installer; runs on the Pi, does deps, files, unit and
   service in one idempotent pass
@@ -429,7 +414,9 @@ Frontend (`frontend/`):
 - `src/main.js` — all UI logic (Plotly plots, sidebar controls,
   state management, lab presets)
 - `src/style.css` — theme, layout
-- `src/transport.js` — WebSocket transport facade
+- `src/transport.js` — picks the transport; `transport-web.js` (WebSocket)
+  and `transport-sim.js` (in-browser simulator) implement it
+- `src/sim/` — the JavaScript physics port
 - `index.html` — sidebar structure + accordion sections
 - `public/fonts/`, `public/vendor/` — vendored webfonts and Plotly,
   copied verbatim into `dist/` by Vite
@@ -439,8 +426,11 @@ Tooling:
 
 - `tools/vendor_plotly.mjs` — `prebuild` hook, vendors Plotly
 - `tools/fetch_fonts.py` — refetch the webfont subsets
+- `tools/gen_sim_constants.py` — regenerates the JS simulator constants
 - `.github/workflows/build-frontends.yml` — builds both frontends,
   verifies they're self-contained, commits `dist/` back
+- `.github/workflows/tests.yml` — pytest, plus the sim-parity guards
+- `.github/workflows/deploy-pages.yml` — builds the sim-only Pages demo
 
 `scripts/`:
 
@@ -457,20 +447,13 @@ import the root modules).
 `archive/` — superseded design and troubleshooting notes; see
 [`archive/README.md`](archive/README.md). Nothing there is current.
 
+`frontend-radar/` — separate frontend for the CW Doppler radar app,
+served on port 8081.
+
 ## Reference
 
 - `docs/2025_Phaser_labs_Python.pdf` — canonical workshop labs
   document, tracked in the repo (`.gitignore` excludes `docs/*.pdf` but
   allowlists this one). Lab presets in the sidebar are aligned to this
   document's initial-state instructions.
-- `graphify-out/graph.json` — knowledge graph of the codebase for the
-  `/graphify` slash command.
 - `CLAUDE.md` — project instructions for Claude Code sessions.
-
-## Sub-directories
-
-- `release/PhaserBundle/` — self-contained laptop-hosted variant
-  (older desktop-app architecture, PyWebView). Has its own README and
-  install scripts.
-- `frontend-radar/` — separate frontend for the CW Doppler radar app
-  (served on port 8081).
