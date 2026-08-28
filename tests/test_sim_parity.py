@@ -25,24 +25,25 @@ show, and clamped by do_sweep()'s own 1e-15 guard. Comparing those compares
 rounding noise. Above the floor the two agree to ~1e-4 dB, which is eight
 orders tighter than any drift worth catching.
 
---- Why the monopulse phase is compared modulo 2*pi -----------------------
+--- The monopulse phase is now compared directly ---------------------------
 
-do_sweep() computes `np.angle(sum) - np.angle(delta)`, a difference of two
-values each in (-pi, pi], so the result lives in (-2pi, 2pi). When the two
-angles straddle the branch cut the difference lands on +pi/2 or -3pi/2 for the
-same physical angle, and which one you get depends on the sign of a
-near-zero imaginary part -- i.e. on precision.
+This comparison used to have to wrap into (-pi, pi] first. do_sweep() computed
+`np.angle(sum) - np.angle(delta)`, which spans (-2pi, 2pi), so the same
+physical angle came out as +pi/2 here and -3pi/2 there depending on which side
+of the branch cut the two angles landed -- and that was decided by float32 vs
+float64 rounding, i.e. by nothing physical.
 
-That is a latent bug in do_sweep() rather than in either port: the error
-function uses sign(beam_phase) to decide which way the monopulse tracker
-should steer, so the steering sense can invert on a rounding difference. It is
-left alone here because fixing it changes hardware behaviour, which is outside
-this test's remit -- but it is why the comparison wraps the phase into
-(-pi, pi] first. Once the wrap is applied the two agree to ~1e-15.
+That was a real defect in do_sweep(), found by this test: a difference of
+exactly 2*pi between two implementations means both computed the same angle and
+then labelled it differently. It is fixed now (beam_phase is the angle of
+sum * conj(delta)), so PhaseDiff and ErrorFunc are compared raw, with no
+wrapping. They agree to ~5e-14 and ~1e-15 respectively.
+
+Keeping the comparison unwrapped is deliberate: it is what would catch a
+regression of that fix.
 """
 
 import json
-import math
 import shutil
 import subprocess
 import sys
@@ -60,6 +61,9 @@ NODE = shutil.which("node")
 
 # Sweep points below this are numerical noise in both languages (see docstring).
 MEANINGFUL_DBFS = -100.0
+
+# Monopulse phase tolerance, radians. See the note at its use site.
+PHASE_TOL = 1e-3
 
 # Cases are (name, set_state patch, set_sweep_params kwargs). Between them they
 # exercise every knob the sweep branches on. A new physics knob belongs here --
@@ -162,12 +166,6 @@ def _js_sweep(patch, sweep_params, phase_error=None, tmp_path=None):
     return json.loads(proc.stdout)
 
 
-def _wrap_pi(values):
-    """Fold into (-pi, pi]. See the module docstring on the branch cut."""
-    arr = np.asarray(values, dtype=float)
-    return -(np.remainder(-arr + math.pi, 2 * math.pi) - math.pi)
-
-
 # --- tests -----------------------------------------------------------------
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="node is not installed")
@@ -218,21 +216,55 @@ def test_sweep_matches_python(name, patch, sweep_params, tmp_path, _importable):
             f"{name}: delta beam diverged"
         )
 
+    # Raw, unwrapped: a reintroduced branch cut shows up as a 2*pi difference.
+    py_phase = np.asarray(py["PhaseDiff"])
+    js_phase = np.asarray(js["PhaseDiff"])
+    pkeep = keep & (py_delta > MEANINGFUL_DBFS)
+    if pkeep.any():
+        # PHASE_TOL sits three orders below a 2*pi branch jump (~6.28) and two
+        # above the complex64-vs-float64 noise floor, which reaches ~1e-5 in a
+        # tapered array's weak sidelobes. Tight enough to catch a regression of
+        # the branch-cut fix, loose enough not to fail on precision.
+        assert np.max(np.abs(py_phase[pkeep] - js_phase[pkeep])) < PHASE_TOL, (
+            f"{name}: monopulse phase diverged"
+        )
+        assert np.max(np.abs(np.asarray(py["ErrorFunc"])[pkeep]
+                             - np.asarray(js["ErrorFunc"])[pkeep])) < 1e-3, (
+            f"{name}: monopulse error function diverged"
+        )
+
+    assert np.all(np.abs(js_phase) <= np.pi + 1e-9), (
+        f"{name}: JS beam_phase left (-pi, pi]; it must be the angle of "
+        "sum * conj(delta), not a difference of two angles"
+    )
+
     assert abs(py["peak_signal"] - js["peak_signal"]) < 1e-3, f"{name}: peak signal diverged"
     assert int(np.argmax(py_gain)) == int(np.argmax(js_gain)), (
         f"{name}: the beam peaks at a different angle"
     )
 
 
-def test_monopulse_phase_matches_modulo_branch_cut(tmp_path, _importable):
+def test_monopulse_phase_matches_without_wrapping(tmp_path, _importable):
+    """No modulo. See the note in the module docstring.
+
+    Before the branch-cut fix this comparison could only be made after folding
+    both sides into (-pi, pi]; raw, they differed by exactly 2*pi at 43 of 151
+    points purely because Python synthesizes in complex64 and the JS in
+    float64.
+    """
     py = _python_sweep({}, {})
     js = _js_sweep({}, {}, tmp_path=tmp_path)
 
     ok = (np.asarray(py["ArrayGain"]) > MEANINGFUL_DBFS) & (
         np.asarray(py["ArrayDelta"]) > MEANINGFUL_DBFS
     )
-    diff = _wrap_pi(np.asarray(py["PhaseDiff"])[ok] - np.asarray(js["PhaseDiff"])[ok])
-    assert np.max(np.abs(diff)) < 1e-6, "monopulse phase diverged beyond a 2*pi wrap"
+    diff = np.asarray(py["PhaseDiff"])[ok] - np.asarray(js["PhaseDiff"])[ok]
+    assert np.max(np.abs(diff)) < PHASE_TOL, "monopulse phase diverged"
+
+    for impl, phase in (("Python", py["PhaseDiff"]), ("JS", js["PhaseDiff"])):
+        assert np.all(np.abs(np.asarray(phase)) <= np.pi + 1e-9), (
+            f"{impl} beam_phase left (-pi, pi]"
+        )
 
 
 def test_fft_tone_matches(tmp_path, _importable):

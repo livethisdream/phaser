@@ -297,9 +297,15 @@ export function createEngine(options = {}) {
                     Math.hypot(deltaRe[maxIndex], deltaIm[maxIndex]), 1e-15);
                 const sDbfsDelta = 20 * Math.log10(sMagDelta / FULL_SCALE);
 
-                const beamPhase =
-                    Math.atan2(sumIm[maxIndex], sumRe[maxIndex]) -
-                    Math.atan2(deltaIm[maxIndex], deltaRe[maxIndex]);
+                // angle(sum * conj(delta)) -- see the long note in
+                // phaser_headless.py's do_sweep(). Subtracting the two angles
+                // instead spans (-2pi, 2pi) and makes sign() depend on which
+                // side of the branch cut they land, which is decided by noise.
+                const bpRe = sumRe[maxIndex] * deltaRe[maxIndex]
+                           + sumIm[maxIndex] * deltaIm[maxIndex];
+                const bpIm = sumIm[maxIndex] * deltaRe[maxIndex]
+                           - sumRe[maxIndex] * deltaIm[maxIndex];
+                const beamPhase = Math.atan2(bpIm, bpRe);
 
                 totalSum += sDbfsSum;
                 totalDelta += sDbfsDelta;
