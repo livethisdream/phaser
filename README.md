@@ -290,10 +290,11 @@ depends on whether you have Python to hand.
 
 ### Browser simulator (no install at all)
 
-Click **Sim** in the header, or add `?sim=1` to the URL. The dashboard
-switches to a simulator that runs entirely in the page — no backend, no
-WebSocket, no Python. A prominent **SIMULATION** banner stays up the whole
-time, so a synthesized sweep is never mistakable for a hardware measurement.
+Turn on **Simulator Mode** in the Configuration pane, or add `?sim=1` to the
+URL. The dashboard switches to a simulator that runs entirely in the page — no
+backend, no WebSocket, no Python. An orange **SIMULATION** pill sits next to
+the connection indicator the whole time, so a synthesized sweep is never
+mistakable for a hardware measurement.
 
 This is what makes the hosted demo possible:
 
@@ -307,6 +308,24 @@ without touching the backend.
 
 The port lives in `frontend/src/sim/`. Python is the source of truth for the
 physics; see **Keeping the two simulators in sync** below before changing it.
+
+#### Pointing the page at a different Phaser
+
+By default the frontend talks to whatever origin served it — right when the Pi
+serves the page, and wrong when it does not. The **Backend URL** field beside
+the Simulator Mode toggle overrides that (`?backend=wss://host/ws` also works,
+and wins over the saved value).
+
+That is what lets the hosted demo drive real hardware: expose the Pi over
+Tailscale, put the resulting `wss://` URL in that field, and the page connects
+across origins. The backend accepts it — `websockets.serve` is called without
+`origins=`, so it does no Origin checking — and a Tailscale hostname carries a
+real TLS certificate on 443, so an `https://` page can open the socket without
+tripping mixed-content rules. Route `/ws` on that host to port 8765.
+
+> **Note:** `tailscale funnel` publishes to the public internet, and the
+> WebSocket server has no authentication. Anyone with the URL can command the
+> array. Prefer `tailscale serve`, which stays inside your tailnet.
 
 ### Backend simulator (`--sim`)
 
