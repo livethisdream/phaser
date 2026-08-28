@@ -1385,3 +1385,87 @@ input[type=number]::-webkit-outer-spin-button {
 .chart-stats .transport-badge {
   margin-right: 0.75rem;
 }
+
+/* --- Narrow viewports -------------------------------------------------------
+ *
+ * The desktop layout is a fixed-viewport two-column grid whose settings column
+ * clamps to a 290px minimum. On a 375px phone that leaves the plot 19px wide
+ * and full height -- a vertical sliver. Below 900px, stop competing for width:
+ * stack the two panels and let the page scroll like a normal document.
+ *
+ * 900px rather than a phone width because an iPad mini in portrait (744px) has
+ * the same problem, just less severely -- the plot there is 388px against 943,
+ * still portrait-squeezed for what is a landscape chart.
+ */
+@media (max-width: 900px) {
+  /* The desktop shell pins itself to the viewport and hides overflow. On a
+     phone the content is taller than the screen by design, so it has to
+     scroll. dvh over vh: vh on mobile measures the viewport with browser
+     chrome hidden, which leaves a chunk of the page unreachable. */
+  body {
+    overflow: auto;
+    overflow-x: hidden;
+  }
+
+  .app-container {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 0.5rem;
+  }
+
+  .dashboard,
+  .dashboard.settings-collapsed {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  /* Plot first: it is what you opened the page to look at. Settings are a
+     scroll away rather than a screen of controls before any data. */
+  .graph-panel    { order: 1; }
+  .controls-panel { order: 2; }
+
+  /* .plots-stack sizes itself from a flex parent that no longer has a fixed
+     height, so height:0 + flex-grow collapses it. Give it a real one.
+     
+     Capped against viewport WIDTH as well as height. A pure dvh height scales
+     with the screen while the plot's width does not, so a tall phone gets a
+     progressively more portrait chart -- 0.66 aspect on a Pixel 7 at 60dvh,
+     for a plot whose x-axis spans 180 degrees. Taking the smaller of the two
+     holds it near square on every phone instead. */
+  .plots-stack {
+    /* A definite height, and flex:none so it is not stretched past it: the
+       grid row is taller than the plot needs (the dashboard fills the
+       viewport), and flex:1 1 auto would grow the stack to fill that,
+       overriding the cap. */
+    flex: none;
+    height: 52vh;                /* fallback: no dvh/min() support */
+    height: min(52dvh, 95vw);
+    min-height: 260px;           /* stays readable on a very short viewport */
+  }
+
+  /* Both panels are natural-height now; the accordion's own scroll would trap
+     the page scroll inside it. Its flex-basis has to go with the overflow:
+     `flex: 1 1 0` resolves to a 46px box around 949px of content, and once
+     the overflow is visible that content spills straight over the theme
+     toggle pinned below it by margin-top:auto. */
+  .controls-panel { overflow: visible; }
+  .accordion {
+    flex: none;
+    height: auto;
+    overflow-y: visible;
+  }
+
+  /* nowrap put the tabs and the Start button on a collision course: at 393px
+     .header-actions overlapped #btn-sweep and swallowed its clicks. */
+  .header-with-tabs { flex-wrap: wrap; }
+  .header-left      { flex-wrap: wrap; overflow-x: visible; }
+  .header-actions   { flex-wrap: wrap; }
+}
+
+/* The icon-only settings rail is a desktop affordance for reclaiming width.
+   In a single column there is no width to reclaim, so it would only ever
+   hide the controls behind an extra tap. */
+@media (max-width: 900px) {
+  .sidebar-icons { display: none !important; }
+}
