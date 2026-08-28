@@ -16,7 +16,7 @@ Reference materials:
 Root holds only what has to be there: the backend entrypoints and the helper
 modules they import (these are scp'd flat into the Pi's working directory and
 resolve each other by bare import, so they cannot move), the `LTE*.ftr` filter
-configs that pyadi-iio loads by bare filename, `deploy.py`, and the usual
+configs that pyadi-iio loads by bare filename, `install.sh`, and the usual
 project metadata.
 
 - `scripts/` — setup/provisioning and the legacy installer packager
@@ -50,35 +50,34 @@ Frontend is vanilla JS + Plotly.js (not Solid.js), bundled with Vite.
 
 ## Deployment
 
+**`install.sh` is the only deployment path.** It runs ON the Pi, not on a
+laptop:
+
+```
+ssh analog@phaser.local
+curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
+```
+
+It fetches the repo tarball from GitHub (`PHASER_REF` selects a branch or tag,
+default `main`), installs missing Python deps, copies `BACKEND_FILES` and the
+committed `frontend/dist/` into
+`/home/analog/pyadi-iio/examples/phaser/`, renders and enables the unit from
+`scripts/phaser-headless.service.template`, restarts the service and checks
+the UI answers 200. Idempotent — re-running it is how you update.
+
+`PHASER_SRC=/path/to/repo` installs from a local copy instead of downloading,
+which is how you test an unpushed branch. `PHASER_WHEELS` adds offline pip.
+
+There is deliberately no laptop-side deploy tool. `deploy.py` and
+`scripts/setup*.sh` used to be one, and every deployment bug this project had
+came from the client side — cmd.exe globbing, PATHEXT, no ControlMaster on
+Windows OpenSSH, `ssh -t` versus sudo, a Microsoft Store alias masquerading as
+`python`. Moving the logic onto the Pi means the client needs nothing but ssh.
+Do not reintroduce one.
+
 `frontend/dist/` and `frontend-radar/dist/` are **committed** (built by
-`.github/workflows/build-frontends.yml`), so `deploy.py` does NOT build by
-default — a clone with only Python + ssh can deploy. Building is opt-in.
-
-```
-python deploy.py                  # Deploy committed build to phaser.local
-python deploy.py 192.168.1.100    # Deploy to specific host
-python deploy.py --radar          # Also deploy the CW radar app
-python deploy.py --sim-only       # Prepare for --sim, don't deploy
-python deploy.py --build          # Rebuild from source first (needs Node)
-python deploy.py --build-only     # Rebuild, don't deploy
-```
-
-Steps: (optional build) -> scp backend .py files -> scp `frontend/dist/*` to
-the Pi -> check provisioning -> restart `phaser-headless` systemd service. If
-the committed build is missing entirely, deploy.py builds it when npm is
-available and errors with guidance when it isn't.
-
-The provisioning check is what makes a fresh Pi work: deploy.py verifies the
-runtime imports and installs + enables the unit from
-`scripts/phaser-headless.service.template` when the Pi has none. That template
-is the only definition of the unit — `setup-pi.sh` used to carry a second,
-drift-prone heredoc copy and no longer does. deploy.py now exits non-zero when
-the restart fails, instead of printing "Deployment complete!" over a service
-that never started. It warns (advisory only) when sources look newer than
-the committed build.
-
-The CW radar frontend (`frontend-radar/`, served on :8081) is **opt-in** via
-`--radar`. `--no-radar` is still accepted as a no-op.
+`.github/workflows/build-frontends.yml`), so install.sh never needs Node.
+It refuses to run if `frontend/dist/index.html` is absent from the source.
 
 The built UI is fully offline-capable: Plotly (pinned 2.30.0) is vendored by
 the `prebuild` hook `tools/vendor_plotly.mjs` into `public/vendor/` at a stable
@@ -88,7 +87,7 @@ build if an external `<script src>`, `<link href>`, or CSS `url()` reappears.
 
 Local `npm run dev` has no backend (no WebSocket on localhost:8765), but
 `http://localhost:5173/?sim=1` runs the browser simulator, so hot-reload is
-usable for frontend work. Otherwise deploy to the Pi, or run
+usable for frontend work. Otherwise install to the Pi, or run
 `python phaser_headless.py --sim`.
 
 ## Two simulators
@@ -124,7 +123,7 @@ Two traps the port already accounts for, both load-bearing:
 `VITE_TRANSPORT=sim` and publishes to <https://livethisdream.github.io/phaser/>.
 
 That build goes to `frontend/dist-pages/` and is **gitignored**. The committed
-`frontend/dist/` is the one `deploy.py` ships to the Pi and must keep
+`frontend/dist/` is the one `install.sh` ships to the Pi and must keep
 defaulting to the real backend -- keeping them separate is what stops the sim
 default reaching hardware.
 

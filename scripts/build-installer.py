@@ -3,7 +3,7 @@
 Build a self-contained installer package for Phaser Pi.
 
 LEGACY. The supported path is scripts/setup.sh (first-time provisioning)
-followed by deploy.py. This exists for handing someone a single tarball with
+followed by install.sh. This exists for handing someone a single tarball with
 no repo and no network. It is not exercised by CI.
 
 Creates: phaser-installer.tar.gz in the repo root.

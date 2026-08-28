@@ -40,7 +40,7 @@ hb100_cal.txt
 logs/
 
 # NOTE: LTE*.ftr are NOT ignored. They are AD9361 filter configs that
-# phaser_find_hb100_headless.py loads at runtime, and deploy.py ships them.
+# phaser_find_hb100_headless.py loads at runtime, and install.sh ships them.
 
 # Simulation data
 sim_data.json
@@ -101,7 +101,7 @@ tools/phase0_spike.py
 .gh-token
 
 # The GitHub Pages build (deploy-pages.yml). Kept out of the repo on purpose:
-# frontend/dist/ is committed because deploy.py ships it to the Pi and must
+# frontend/dist/ is committed because install.sh ships it to the Pi and must
 # keep defaulting to the real backend, while this one is built with
 # VITE_TRANSPORT=sim. Committing both invites shipping the sim default to
 # hardware.

@@ -15,12 +15,6 @@ def repo_root():
 
 
 @pytest.fixture
-def target():
-    from phaser_deploy.remote import Target
-    return Target("analog", "phaser.local")
-
-
-@pytest.fixture
 def recorder(monkeypatch):
     """Record every subprocess.run argv without executing anything.
 

@@ -56,7 +56,7 @@ jobs:
       - uses: actions/configure-pages@v5
 
       # This build is NOT the committed frontend/dist -- that one is what
-      # deploy.py ships to the Pi, and it must keep defaulting to the real
+      # install.sh ships to the Pi, and it must keep defaulting to the real
       # backend. Building into a separate directory keeps the sim default from
       # ever reaching hardware.
       - name: Build the dashboard in simulator mode

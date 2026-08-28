@@ -1,7 +1,7 @@
 # Build the frontends and commit dist/ back to the branch.
 #
 # The built output is committed so that a fresh clone can run
-# `python deploy.py` with no Node installed — see README "No-build
+# install.sh with no Node installed — see README "No-build
 # deployment". CI owns dist/; you normally never build it by hand.
 name: Build frontends
 
