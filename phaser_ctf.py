@@ -126,18 +126,39 @@ class CtfMode:
         self.show_progress = bool(show_progress)
         self.allow_sim = _env_bool("PHASER_CTF_ALLOW_SIM", allow_sim)
 
-        self.reset()
+        self._clear()
+        # Deliberately NOT armed on construction -- see reset().
+        self._armed = False
 
     # ---------------------------------------------------------------- state
 
-    def reset(self):
-        """Clear the trail. The panel's Start button calls this."""
+    def _clear(self):
         self._trail = []
         self._pending_sector = None
         self._pending_since = None
         self._current_sector = None
         self._current_angle = None
         self._matched = False
+
+    def reset(self):
+        """Clear the trail and ARM the machine. The panel's Start button calls this.
+
+        Arming is what separates "the operator put the beam here" from "this is
+        where the beam happened to be". Without it the machine scores the
+        position the frontend pushes when it first connects, and any sector
+        sitting under the beam at that moment is a free element -- which at a
+        busy table means whatever the previous player left the array pointing
+        at. Boresight is the common case, but it is not the only one.
+
+        Note this does NOT require the operator to steer somewhere new. The
+        dwell clock restarts here, so pressing Start while already inside the
+        first sector and holding it counts as entering that sector. Demanding a
+        transition would mean a sequence beginning with the resting sector could
+        only be started by steering away and coming back, which is worse than
+        the bug it fixes.
+        """
+        self._clear()
+        self._armed = True
 
     def sector_for_angle(self, angle_deg):
         """Which sector an angle falls in, or None if it's between sectors."""
@@ -171,6 +192,8 @@ class CtfMode:
 
     def _advance(self, now):
         """Promote a dwelt-in sector onto the trail, then test the sequence."""
+        if not self._armed:
+            return
         if self._matched or self._pending_sector is None or self._pending_since is None:
             return
         if now - self._pending_since < self.dwell_s:
@@ -207,6 +230,7 @@ class CtfMode:
             "status": "ok",
             "data": {
                 "configured": self.flag != PLACEHOLDER_FLAG,
+                "armed": self._armed,
                 "sectors": [
                     {"sector": i + 1, "centre_deg": c, "tolerance_deg": self.tolerance_deg}
                     for i, c in enumerate(self.sector_centres_deg)

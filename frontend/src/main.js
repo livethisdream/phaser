@@ -971,7 +971,13 @@ function renderCtfStatus(data) {
 
     const progressEl = document.getElementById('ctf-progress');
     if (progressEl) {
-        if (data.matched) {
+        if (data.armed === false) {
+            // Nothing scores until the session is started. Without this line the
+            // panel looks broken: the beam moves, the sector readout updates, and
+            // progress sits at zero with no explanation.
+            progressEl.textContent = 'Press Start to begin'
+                + '  ·  where the beam is parked right now does not count';
+        } else if (data.matched) {
             progressEl.textContent = `Sequence complete (${data.sequence_length} of ${data.sequence_length}).`;
         } else if (Number.isFinite(data.progress)) {
             progressEl.textContent = `Progress: ${data.progress} of ${data.sequence_length}`
