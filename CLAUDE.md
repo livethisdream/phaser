@@ -124,8 +124,21 @@ Two traps the port already accounts for, both load-bearing:
 
 That build goes to `frontend/dist-pages/` and is **gitignored**. The committed
 `frontend/dist/` is the one `install.sh` ships to the Pi and must keep
-defaulting to the real backend -- keeping them separate is what stops the sim
-default reaching hardware.
+defaulting to the real backend.
+
+Same tree, same branch, one env var apart -- do not split them onto branches.
+`transport.js` imports the simulator unconditionally, so it ships inside the Pi
+build too (that is what makes `?sim=1` work on the Pi), and
+`tests/test_sim_parity.py` needs both implementations in one tree.
+
+Three guards keep the sim default off hardware, because the failure is silent:
+separate output directories; `vite.config.js` throwing if a `VITE_TRANSPORT=sim`
+build targets `dist/` (Vite's default outDir, so this is one forgotten flag
+away); and a `<meta name="phaser-transport">` marker stamped into `index.html`
+and checked by both workflows and by `install.sh`. Vite constant-folds
+`VITE_TRANSPORT`, so without that marker the two builds are byte-identical HTML
+and differ only inside minified JS. If you touch the transport plumbing, keep
+all three working.
 
 ## Codebase Knowledge Graph
 

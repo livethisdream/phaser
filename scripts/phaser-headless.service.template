@@ -1,13 +1,15 @@
 # systemd unit for the Phaser headless backend -- TEMPLATE, not a live unit.
 #
 # This is the only definition of the unit. install.sh reads it, substitutes the
-# at-sign placeholders below from its own DEFAULT_USER / REMOTE_DIR /
-# REMOTE_PYTHON constants, and installs the result on the Pi whenever
-# /etc/systemd/system/phaser-headless.service is absent. Rendering from
-# install.sh's constants is the point: the unit's WorkingDirectory cannot drift
-# away from the directory install.sh actually copies files into.
+# at-sign placeholders below from its own SERVICE_USER / INSTALL_DIR /
+# PYTHON_BIN constants, and installs the result on the Pi whenever the rendered
+# text differs from /etc/systemd/system/phaser-headless.service -- so a Pi
+# provisioned by an older version picks up template changes rather than keeping
+# a stale unit. Rendering from install.sh's constants is the point: the unit's
+# WorkingDirectory cannot drift away from the directory install.sh actually
+# copies files into.
 #
-# setup-pi.sh deliberately does NOT write this file. It used to carry its own
+# Nothing else writes this file. The removed setup-pi.sh once carried its own
 # heredoc copy of the unit, a second definition free to drift from this one.
 
 [Unit]

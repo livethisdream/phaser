@@ -11,10 +11,14 @@
 # switched on, this workflow's deploy step fails with a 404.
 name: Deploy Pages demo
 
+# The smoke test below is the only end-to-end test the frontend has, so it runs
+# on pull requests as well -- it used to run on push to main, which meant a
+# simulator broken by a merge was discovered from the published demo. PRs build
+# and test; only main publishes.
 on:
   push:
     branches: [main]
-    paths:
+    paths: &frontend_paths
       - 'frontend/src/**'
       - 'frontend/public/**'
       - 'frontend/index.html'
@@ -23,6 +27,8 @@ on:
       - 'frontend/vite.config.js'
       - 'tools/vendor_plotly.mjs'
       - '.github/workflows/deploy-pages.yml'
+  pull_request:
+    paths: *frontend_paths
   workflow_dispatch:
 
 permissions:
@@ -30,11 +36,12 @@ permissions:
   pages: write
   id-token: write
 
-# Never let two deploys race, but let an in-flight one finish rather than
-# cancelling it -- a half-published site is worse than a slightly stale one.
+# Grouped per ref so PR checks do not queue behind a deploy. A superseded PR run
+# is worth cancelling; a deploy in flight is not -- a half-published site is
+# worse than a slightly stale one.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -54,6 +61,7 @@ jobs:
         run: npm install -g npm@11
 
       - uses: actions/configure-pages@v5
+        if: github.event_name != 'pull_request'
 
       # This build is NOT the committed frontend/dist -- that one is what
       # install.sh ships to the Pi, and it must keep defaulting to the real
@@ -86,6 +94,20 @@ jobs:
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "Build is fully self-contained."
 
+      # The inverse of build-frontends.yml's check on frontend/dist/. Pages has
+      # no backend, so a hardware-mode build published here would sit forever
+      # trying to open a WebSocket to github.io.
+      - name: Verify the build targets the simulator, not a backend
+        run: |
+          mode="$(sed -n 's/.*<meta name="phaser-transport" content="\([a-z]*\)".*/\1/p' \
+                  frontend/dist-pages/index.html | head -n1)"
+          if [ "$mode" != "sim" ]; then
+            echo "::error::dist-pages/ is marked '$mode', expected 'sim'."
+            echo "Pages is static; a backend build has nothing to connect to."
+            exit 1
+          fi
+          echo "OK: the Pages build runs the in-browser simulator."
+
       # The whole point of the deploy: prove the page actually simulates before
       # publishing it. A build that compiles but throws on load would otherwise
       # ship silently.
@@ -97,7 +119,21 @@ jobs:
           # only does the latter.
           npm install --no-save playwright@1
           npx playwright install --with-deps chromium
-          node --input-type=module -e "
+
+          # Write the script to a file rather than passing it to `node -e "..."`.
+          # Inside double quotes the shell still interprets the JS: backticks
+          # read as command substitution and ${...} as parameter expansion, so a
+          # template literal gets eaten before node ever sees it. That silently
+          # reduced the badge check below to `throw new Error()` -- it still
+          # failed the build, but with an empty message instead of the one
+          # naming the cause. The quoted 'EOF' stops the shell touching any of
+          # it.
+          #
+          # The file goes here in frontend/, not /tmp: node resolves a bare
+          # `import ... from 'playwright'` relative to the importing file, not
+          # the working directory, so a script in /tmp cannot see the
+          # node_modules installed above.
+          cat > pages-smoke.mjs <<'EOF'
           import { chromium } from 'playwright';
           import http from 'node:http';
           import { readFile } from 'node:fs/promises';
@@ -145,22 +181,26 @@ jobs:
             return { n: t.y.length, peakX: t.x[pk], peakY: t.y[pk] };
           });
           if (!plot) throw new Error('no sweep data reached the plot');
-          if (plot.n < 100) throw new Error('sweep produced only ' + plot.n + ' points');
+          if (plot.n < 100) throw new Error(`sweep produced only ${plot.n} points`);
           // Target sits at boresight, so the main lobe belongs at 0 deg.
-          if (Math.abs(plot.peakX) > 3) throw new Error('beam peaked at ' + plot.peakX + ' deg, expected ~0');
-          if (errors.length) throw new Error('page errors: ' + errors.join('; '));
+          if (Math.abs(plot.peakX) > 3) throw new Error(`beam peaked at ${plot.peakX} deg, expected ~0`);
+          if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
 
-          console.log('OK: ' + plot.n + ' points, peak ' + plot.peakY.toFixed(2) + ' dBFS at ' + plot.peakX + ' deg');
+          console.log(`OK: ${plot.n} points, peak ${plot.peakY.toFixed(2)} dBFS at ${plot.peakX} deg`);
           await browser.close();
           server.close();
-          "
+          EOF
+          node pages-smoke.mjs
+          rm -f pages-smoke.mjs
 
       - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
         with:
           path: frontend/dist-pages
 
   deploy:
     needs: build
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
