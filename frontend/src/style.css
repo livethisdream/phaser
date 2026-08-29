@@ -1468,6 +1468,55 @@ input[type=number]::-webkit-outer-spin-button {
    hide the controls behind an extra tap. */
 @media (max-width: 900px) {
   .sidebar-icons { display: none !important; }
+
+  /* ...but the rail also carried #btn-toggle-settings-icon, the only control
+     that reopens a collapsed panel. The other one, #btn-toggle-settings, sits
+     inside #sidebar-content, which .collapsed hides. Hiding the rail therefore
+     removed both at once: collapsing on a phone left an empty box and no way
+     back short of a reload.
+
+     Keep the header row -- the "Settings" title and its toggle -- in the
+     collapsed state, so it reads as a closed section you can tap open. The
+     accordion, divider and action row stay hidden, which is what makes
+     collapsing worth anything here: it takes ~1070px of controls off a
+     1714px page. */
+  .controls-panel.collapsed #sidebar-content { display: flex; }
+  .controls-panel.collapsed .panel-title { display: block; }
+  .controls-panel.collapsed { padding: 0.9rem; }
+  /* The desktop collapsed state centres its header over a 74px rail. Here the
+     header is full width, so keep the expanded layout -- title left, toggle
+     right -- and the bar looks the same open or shut. */
+  .controls-panel.collapsed .panel-header-row { justify-content: space-between; }
+
+  /* With the plot first, the panel starts about three-quarters of a screen
+     down, so the toggle is always below the fold. Sticking the header to the
+     top of the viewport keeps it reachable at any scroll position.
+
+     Sticky resolves against the nearest scrolling ancestor, and any `overflow`
+     other than visible on an ancestor makes one. .controls-panel and .accordion
+     are already opened up above; #sidebar-content is the remaining clip, and
+     its height:100% resolves against a now-auto-height parent, so both go. */
+  #sidebar-content {
+    overflow: visible;
+    height: auto;
+  }
+
+  .panel-header-row {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    /* --bg-surface is translucent by design, which is fine for a panel sitting
+       on the page and wrong for a bar the content scrolls under: sliders and
+       button labels showed straight through it. Compositing that same surface
+       over the opaque page colour keeps the panel's exact tone while stopping
+       anything bleeding through. */
+    background-color: var(--bg-dark);
+    background-image: linear-gradient(var(--bg-surface), var(--bg-surface));
+    margin: -0.9rem -0.9rem 0;      /* bleed over the panel's own padding */
+    padding: 0.9rem 0.9rem 0.5rem;
+    border-bottom: 1px solid var(--glass-border);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
 }
 
 /* A [0, 180] sector is a semicircle: twice as wide as it is tall. In the
