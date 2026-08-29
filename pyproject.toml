@@ -37,6 +37,8 @@ dev = [
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+# Backend modules live at the repo root, so tests can import them directly.
+pythonpath = ["."]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
@@ -54,17 +56,23 @@ filterwarnings = [
 ]
 
 [tool.setuptools]
-# Explicitly include only the root-level Python modules, exclude subdirectories
+# No packages: the repo is root-level modules only. Naming an empty list keeps
+# setuptools' auto-discovery from guessing at directories like tests/ or docs/.
+packages = []
+
+# Root-level Python modules only; other subdirectories are not packages.
+# The previous list named six modules that no longer exist (phaser_app,
+# phaser_cal, phaser_find_hb100, phaser_gui, phaser_ipc_worker,
+# phaser_server) -- leftovers from the pre-headless GUI architecture.
 py-modules = [
     "ADAR_pyadi_functions",
     "config",
-    "phaser_app",
-    "phaser_cal",
-    "phaser_find_hb100",
+    "phaser_cal_headless",
+    "phaser_cw_radar",
+    "phaser_find_hb100_headless",
     "phaser_functions",
-    "phaser_gui",
-    "phaser_ipc_worker",
-    "phaser_server",
+    "phaser_headless",
     "phaser_service",
+    "phaser_sim",
     "SDR_functions",
 ]

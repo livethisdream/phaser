@@ -1,0 +1,67 @@
+# Run the Python test suite.
+#
+# This repo had 11 test files and nothing executing any of them, so a failing
+# test only surfaced for whoever happened to run pytest locally. That matters
+# more than usual now: tests/test_sim_parity.py is what stops the JavaScript
+# simulator in frontend/src/sim/ drifting away from phaser_sim.py, and a drift
+# guard nobody runs is not a guard.
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # test_sim_parity.py drives frontend/src/sim/engine.js through node and
+      # compares it against do_sweep(). Without node those tests skip, which
+      # would silently defeat the point of running them here.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # pyadi-iio is deliberately absent: it binds libiio at import and the
+          # tests stub it. Everything here is what phaser_headless needs to be
+          # importable plus the test runner itself.
+          pip install numpy pyzmq msgpack pytest pytest-asyncio pytest-mock
+
+      - name: Check the generated sim constants are current
+        run: |
+          python tools/gen_sim_constants.py
+          if ! git diff --exit-code -- frontend/src/sim/constants.generated.js; then
+            echo "::error::frontend/src/sim/constants.generated.js is stale."
+            echo "A simulator constant changed in Python without regenerating the JS."
+            echo "Run: python tools/gen_sim_constants.py"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      # Fail loudly if the parity suite silently skipped itself -- a skipped
+      # drift guard looks exactly like a passing one in the summary.
+      - name: Confirm the sim parity tests actually ran
+        run: |
+          python -m pytest tests/test_sim_parity.py -q --collect-only > /dev/null
+          python -m pytest tests/test_sim_parity.py -q -rs 2>&1 | tee /tmp/parity.log
+          if grep -qE '^[0-9]+ skipped|SKIPPED' /tmp/parity.log; then
+            echo "::error::sim parity tests skipped; they must run in CI."
+            exit 1
+          fi

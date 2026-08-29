@@ -109,17 +109,6 @@ h1, h2, h3 {
 }
 
 /* Electron uses native CSS drag region */
-.desktop-titlebar__drag.electron-drag {
-  -webkit-app-region: drag;
-}
-
-.desktop-titlebar__drag.electron-drag * {
-  -webkit-app-region: no-drag;
-  cursor: grab;
-  /* pywebview easy_drag handles this via .pywebview-drag-region class */
-  -webkit-app-region: no-drag;
-  user-select: none;
-}
 
 .desktop-titlebar__drag:active {
   cursor: grabbing;
@@ -259,7 +248,6 @@ h1, h2, h3 {
   line-height: 1;
   flex-shrink: 0;
 }
-
 
 .transport-badge {
   display: inline-flex;
@@ -1384,4 +1372,167 @@ input[type=number]::-webkit-outer-spin-button {
 
 .cal-output:empty {
   display: none;
+}
+
+/* --- Simulation mode ------------------------------------------------------
+ *
+ * The SIMULATION pill reuses the existing .transport-badge (defined above);
+ * initTransportBadge() recolours it via the --transport-badge-* custom
+ * properties. It sits in the bottom status bar next to the connection
+ * indicator, which is where someone already looks to see what the app is
+ * talking to.
+ */
+.chart-stats .transport-badge {
+  margin-right: 0.75rem;
+}
+
+/* --- Narrow viewports -------------------------------------------------------
+ *
+ * The desktop layout is a fixed-viewport two-column grid whose settings column
+ * clamps to a 290px minimum. On a 375px phone that leaves the plot 19px wide
+ * and full height -- a vertical sliver. Below 900px, stop competing for width:
+ * stack the two panels and let the page scroll like a normal document.
+ *
+ * 900px rather than a phone width because an iPad mini in portrait (744px) has
+ * the same problem, just less severely -- the plot there is 388px against 943,
+ * still portrait-squeezed for what is a landscape chart.
+ */
+@media (max-width: 900px) {
+  /* The desktop shell pins itself to the viewport and hides overflow. On a
+     phone the content is taller than the screen by design, so it has to
+     scroll. dvh over vh: vh on mobile measures the viewport with browser
+     chrome hidden, which leaves a chunk of the page unreachable. */
+  body {
+    overflow: auto;
+    overflow-x: hidden;
+  }
+
+  .app-container {
+    height: auto;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 0.5rem;
+  }
+
+  .dashboard,
+  .dashboard.settings-collapsed {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  /* Plot first: it is what you opened the page to look at. Settings are a
+     scroll away rather than a screen of controls before any data. */
+  .graph-panel    { order: 1; }
+  .controls-panel { order: 2; }
+
+  /* .plots-stack sizes itself from a flex parent that no longer has a fixed
+     height, so height:0 + flex-grow collapses it. Give it a real one.
+     
+     Capped against viewport WIDTH as well as height. A pure dvh height scales
+     with the screen while the plot's width does not, so a tall phone gets a
+     progressively more portrait chart -- 0.66 aspect on a Pixel 7 at 60dvh,
+     for a plot whose x-axis spans 180 degrees. Taking the smaller of the two
+     holds it near square on every phone instead. */
+  .plots-stack {
+    /* A definite height, and flex:none so it is not stretched past it: the
+       grid row is taller than the plot needs (the dashboard fills the
+       viewport), and flex:1 1 auto would grow the stack to fill that,
+       overriding the cap. */
+    flex: none;
+    height: 52vh;                /* fallback: no dvh/min() support */
+    height: min(52dvh, 95vw);
+    min-height: 260px;           /* stays readable on a very short viewport */
+  }
+
+  /* Both panels are natural-height now; the accordion's own scroll would trap
+     the page scroll inside it. Its flex-basis has to go with the overflow:
+     `flex: 1 1 0` resolves to a 46px box around 949px of content, and once
+     the overflow is visible that content spills straight over the theme
+     toggle pinned below it by margin-top:auto. */
+  .controls-panel { overflow: visible; }
+  .accordion {
+    flex: none;
+    height: auto;
+    overflow-y: visible;
+  }
+
+  /* nowrap put the tabs and the Start button on a collision course: at 393px
+     .header-actions overlapped #btn-sweep and swallowed its clicks. */
+  .header-with-tabs { flex-wrap: wrap; }
+  .header-left      { flex-wrap: wrap; overflow-x: visible; }
+  .header-actions   { flex-wrap: wrap; }
+}
+
+/* The icon-only settings rail is a desktop affordance for reclaiming width.
+   In a single column there is no width to reclaim, so it would only ever
+   hide the controls behind an extra tap. */
+@media (max-width: 900px) {
+  .sidebar-icons { display: none !important; }
+
+  /* ...but the rail also carried #btn-toggle-settings-icon, the only control
+     that reopens a collapsed panel. The other one, #btn-toggle-settings, sits
+     inside #sidebar-content, which .collapsed hides. Hiding the rail therefore
+     removed both at once: collapsing on a phone left an empty box and no way
+     back short of a reload.
+
+     Keep the header row -- the "Settings" title and its toggle -- in the
+     collapsed state, so it reads as a closed section you can tap open. The
+     accordion, divider and action row stay hidden, which is what makes
+     collapsing worth anything here: it takes ~1070px of controls off a
+     1714px page. */
+  .controls-panel.collapsed #sidebar-content { display: flex; }
+  .controls-panel.collapsed .panel-title { display: block; }
+  .controls-panel.collapsed { padding: 0.9rem; }
+  /* The desktop collapsed state centres its header over a 74px rail. Here the
+     header is full width, so keep the expanded layout -- title left, toggle
+     right -- and the bar looks the same open or shut. */
+  .controls-panel.collapsed .panel-header-row { justify-content: space-between; }
+
+  /* With the plot first, the panel starts about three-quarters of a screen
+     down, so the toggle is always below the fold. Sticking the header to the
+     top of the viewport keeps it reachable at any scroll position.
+
+     Sticky resolves against the nearest scrolling ancestor, and any `overflow`
+     other than visible on an ancestor makes one. .controls-panel and .accordion
+     are already opened up above; #sidebar-content is the remaining clip, and
+     its height:100% resolves against a now-auto-height parent, so both go. */
+  #sidebar-content {
+    overflow: visible;
+    height: auto;
+  }
+
+  .panel-header-row {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    /* --bg-surface is translucent by design, which is fine for a panel sitting
+       on the page and wrong for a bar the content scrolls under: sliders and
+       button labels showed straight through it. Compositing that same surface
+       over the opaque page colour keeps the panel's exact tone while stopping
+       anything bleeding through. */
+    background-color: var(--bg-dark);
+    background-image: linear-gradient(var(--bg-surface), var(--bg-surface));
+    margin: -0.9rem -0.9rem 0;      /* bleed over the panel's own padding */
+    padding: 0.9rem 0.9rem 0.5rem;
+    border-bottom: 1px solid var(--glass-border);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+}
+
+/* A [0, 180] sector is a semicircle: twice as wide as it is tall. In the
+   near-square box the breakpoint above gives it, Plotly sizes it on width and
+   leaves the rest of the height empty -- 0.43 fill on a phone.
+   
+   Phones only, not the whole 900px range. Shrinking the stack for one tab
+   means the page reflows when you switch to it, and that trade only pays
+   where space is genuinely scarce: a phone goes 0.43 -> 0.65 fill for a 129px
+   shift, while an iPad was already at 0.57 and would shift 204px for it.
+   
+   :has() is ignored by browsers that lack it, which just leaves the tab at
+   the shared height -- the behaviour before this rule. */
+@media (max-width: 600px) {
+  .plots-stack:has(#tab-polar.active) {
+    height: min(34dvh, 62vw);
+    min-height: 190px;
+  }
 }

@@ -2,7 +2,12 @@
 """
 Build a self-contained installer package for Phaser Pi.
 
-Creates: phaser-installer.tar.gz
+LEGACY. The supported path is install.sh, run on the Pi -- it does provisioning
+and update in one idempotent pass, and needs nothing on the client but ssh.
+This exists only for handing someone a single tarball with no repo and no
+network. It is not exercised by CI.
+
+Creates: phaser-installer.tar.gz in the repo root.
 Copy to any Phaser Pi and run:
     tar xzf phaser-installer.tar.gz
     cd phaser-installer
@@ -23,8 +28,29 @@ def run(cmd, cwd=None):
         print(f"  ERROR: Command failed")
         sys.exit(1)
 
+# This script lives in scripts/; everything it packages is relative to the
+# repo root, one level up.
+REPO_ROOT = Path(__file__).parent.parent.resolve()
+
+# phaser_headless.py imports these at module top. Shipping the entrypoint
+# alone produced a tarball that only ran on a Pi that already happened to
+# have them from pyadi-iio's own examples directory.
+BACKEND_FILES = [
+    "phaser_headless.py",
+    "phaser_cal_headless.py",
+    "phaser_find_hb100_headless.py",
+    "phaser_cw_radar.py",
+    "ADAR_pyadi_functions.py",
+    "SDR_functions.py",
+    "phaser_functions.py",
+    "LTE5_MHz.ftr",
+    "LTE10_MHz.ftr",
+    "LTE20_MHz.ftr",
+]
+
+
 def main():
-    script_dir = Path(__file__).parent.resolve()
+    script_dir = REPO_ROOT
     frontend_dir = script_dir / "frontend"
     dist_dir = frontend_dir / "dist"
 
@@ -50,8 +76,13 @@ def main():
         shutil.rmtree(staging_dir)
     staging_dir.mkdir()
 
-    # Copy backend
-    shutil.copy(script_dir / "phaser_headless.py", staging_dir / "phaser_headless.py")
+    # Copy backend (entrypoint + every module it imports, as one set)
+    for name in BACKEND_FILES:
+        src = script_dir / name
+        if src.exists():
+            shutil.copy(src, staging_dir / name)
+        else:
+            print(f"  WARN: {name} not found, omitting from the package")
 
     # Copy frontend
     www_dir = staging_dir / "www"

@@ -1,0 +1,133 @@
+# Build the frontends and commit dist/ back to the branch.
+#
+# The built output is committed so that a fresh clone can run
+# install.sh with no Node installed — see README "No-build
+# deployment". CI owns dist/; you normally never build it by hand.
+name: Build frontends
+
+on:
+  push:
+    # Every branch, not just main. install.sh's PHASER_REF=<branch> is how a
+    # branch gets tried on real hardware before merging, and it ships whatever
+    # dist/ that branch carries -- so a branch CI does not build installs a
+    # stale UI over a new backend, with nothing to say so. The cost is a
+    # "CI: rebuild frontends" commit landing on feature branches; pull before
+    # you push again.
+    paths:
+      - 'frontend/src/**'
+      - 'frontend/public/**'
+      - 'frontend/index.html'
+      - 'frontend/package.json'
+      - 'frontend/package-lock.json'
+      - 'frontend/vite.config.js'
+      - 'frontend-radar/src/**'
+      - 'frontend-radar/public/**'
+      - 'frontend-radar/index.html'
+      - 'frontend-radar/package.json'
+      - 'frontend-radar/package-lock.json'
+      - 'frontend-radar/vite.config.js'
+      - 'tools/vendor_plotly.mjs'
+      - '.github/workflows/build-frontends.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A second push while a build is in flight makes the first one's dist/
+# obsolete, so cancel it rather than racing to push.
+concurrency:
+  group: build-frontends-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # Must stay on the Node major whose bundled npm generated the
+          # committed lockfiles. Node 20 ships npm 10, which builds a
+          # different @emnapi optional-dep tree for rolldown's wasm
+          # binding and rejects an npm 11 lockfile as out of sync.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            frontend-radar/package-lock.json
+
+      # Belt and braces: pin the npm major explicitly so a future Node 24.x
+      # that bundles npm 12 cannot silently reintroduce the lockfile
+      # mismatch above. Bump this together with the lockfiles.
+      - name: Pin npm
+        run: npm install -g npm@11
+
+      # `npm run build` runs the prebuild hook, which copies Plotly out of
+      # node_modules into public/vendor/ so the bundle has no CDN deps.
+      - name: Build beamforming frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build radar frontend
+        working-directory: frontend-radar
+        run: |
+          npm ci
+          npm run build
+
+      # Guard the whole point of this workflow: the deployed page must not
+      # reach out to the internet. Fails loudly if a CDN ref creeps back in.
+      # Checks how the page actually LOADS things: <script src>, <link href>
+      # and CSS url(). A bare URL string inside a vendored library is fine
+      # (Plotly embeds a cdn.plot.ly link for its Chart Studio button), so
+      # matching raw text anywhere under dist/ would false-positive.
+      - name: Verify builds are self-contained
+        run: |
+          fail=0
+          for html in frontend/dist/index.html frontend-radar/dist/index.html; do
+            if grep -nE '(src|href)="https?://' "$html"; then
+              echo "::error file=$html::Page loads an external resource; it must be vendored."
+              fail=1
+            fi
+          done
+          while IFS= read -r css; do
+            if grep -nE 'url\(\s*["'"'"']?https?://' "$css"; then
+              echo "::error file=$css::Stylesheet fetches an external resource."
+              fail=1
+            fi
+          done < <(find frontend/dist frontend-radar/dist -name '*.css')
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Both builds are fully self-contained."
+
+      # The other half of the guard in frontend/vite.config.js. That refuses to
+      # write a sim build into dist/; this refuses to commit one, covering a
+      # dist/ built before the marker existed or edited by hand. install.sh
+      # checks the same marker again at install time, because a bad dist/ that
+      # reaches a Pi is the failure that actually costs a lab.
+      - name: Verify the committed frontend targets hardware, not the simulator
+        run: |
+          mode="$(sed -n 's/.*<meta name="phaser-transport" content="\([a-z]*\)".*/\1/p' \
+                  frontend/dist/index.html | head -n1)"
+          if [ "$mode" != "web" ]; then
+            echo "::error::frontend/dist/ is marked '$mode', expected 'web'."
+            echo "install.sh ships this to real hardware; a sim build would fake every measurement."
+            exit 1
+          fi
+          echo "OK: frontend/dist/ targets the backend."
+
+      - name: Commit built output
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add frontend/dist frontend-radar/dist
+          if git diff --cached --quiet; then
+            echo "dist/ unchanged; nothing to commit."
+            exit 0
+          fi
+          # [skip ci] plus the fact that GITHUB_TOKEN pushes do not trigger
+          # workflows: two independent guards against a rebuild loop.
+          git commit -m "CI: rebuild frontends [skip ci]"
+          git pull --rebase --autostash origin ${{ github.ref_name }}
+          git push origin HEAD:${{ github.ref_name }}

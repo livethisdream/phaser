@@ -6,6 +6,15 @@ stub synthesizes element-level IQ from a boresight HB100 tone, applies the
 element phases + taper the ADAR stub has captured, sums into two digital
 sub-arrays (chan0 = elements 1-4, chan1 = elements 5-8), and returns the
 same [chan0, chan1] shape SDR_getData produces on real hardware.
+
+PORTED TO JAVASCRIPT. frontend/src/sim/ runs this same physics in the browser
+so the dashboard works with no Pi attached (and so the GitHub Pages demo works
+at all). This file is the source of truth; the port follows it.
+
+Changing the physics here means:
+  1. python tools/gen_sim_constants.py   -- if a constant moved
+  2. mirror the change in frontend/src/sim/
+  3. pytest tests/test_sim_parity.py     -- which will fail until you do
 """
 
 import numpy as np
@@ -19,18 +28,46 @@ class _StubGPIOs:
 
 
 class _StubElement:
-    """One element slot on the ADAR array. Records rx_gain / rx_phase writes."""
+    """One element slot on the ADAR array.
+
+    Models the two-stage write the real part has: `rx_gain` / `rx_phase` land
+    in SPI shadow registers, and only a latch (RX_LOAD / `rx_load_spi`) moves
+    them into the beam state the RF path actually uses. `latched_gain` and
+    `latched_phase` are that beam state, and they are what SimSDR reads.
+
+    Modelling this is the point, not pedantry: a caller that writes phases and
+    forgets to latch gets a beam that never moves, on the real array and here
+    alike -- which is the flat-line-instead-of-a-beam-pattern failure.
+    """
 
     def __init__(self):
+        # SPI shadow registers (what the driver writes).
         self.rx_gain = 100
         self.rx_phase = 0.0
+        self.rx_attenuator = False
+        # Live beam state (what the RF path uses). Starts matching the
+        # shadow, so a correctly-latching caller behaves exactly as before.
+        self.latched_gain = 100
+        self.latched_phase = 0.0
+
+    def latch(self):
+        self.latched_gain = 0 if self.rx_attenuator else self.rx_gain
+        self.latched_phase = self.rx_phase
+
+
+class _StubChannel:
+    """One of the four Rx channels on an ADAR1000 chip."""
+
+    def __init__(self):
+        self.rx_enable = False
 
 
 class _StubDevice:
-    """One ADAR1000 chip. reset() / mode = 'rx' are no-ops."""
+    """One ADAR1000 chip. reset() is a no-op; register writes are recorded."""
 
     def __init__(self):
         self.mode = "rx"
+        self.channels = [_StubChannel() for _ in range(4)]
 
     def reset(self):
         pass
@@ -42,14 +79,27 @@ class _StubADARArray:
     Exposes:
       - elements: dict {1..8 -> _StubElement}, written by ADAR_set_Taper/Phase
       - devices:  dict {name -> _StubDevice}, iterated by ADAR_init/ADAR_set_mode
+      - latch_rx_settings(), which commits the element writes to beam state
 
-    The SDR stub reads back .elements[k].rx_gain / .rx_phase to build the
-    per-element weighting used to synthesize IQ.
+    The SDR stub reads back the *latched* gain/phase to build the per-element
+    weighting used to synthesize IQ.
     """
 
     def __init__(self):
         self.elements = {i + 1: _StubElement() for i in range(8)}
         self.devices = {"BEAM0": _StubDevice(), "BEAM1": _StubDevice()}
+        self.latch_count = 0
+        # Intrinsic per-element phase error, degrees -- the thing the phase
+        # calibration exists to cancel. Zero by default, so a plain sim run is
+        # a perfectly matched array; a test sets it to give pcal something
+        # real to correct.
+        self.element_phase_error = [0.0] * 8
+
+    def latch_rx_settings(self):
+        """Commit every element's shadow registers to its beam state."""
+        for element in self.elements.values():
+            element.latch()
+        self.latch_count += 1
 
 
 class SimSDR:
@@ -81,6 +131,19 @@ class SimSDR:
     # A different-IF interferer is more realistic but shows much weaker
     # nulling because the sources are then temporally uncorrelated.
     INTERFERER_IF_HZ = 1.0e6  # same as TARGET_IF_HZ (see comment above)
+
+    # Output scaling. Chosen so a full-taper on-boresight beam peaks around
+    # -10 dBFS in the sum channel, matching typical HB100 signal levels on real
+    # hardware (leaves headroom before the 2^11 fixed-point full-scale).
+    AMP_SCALE = 60.0
+
+    # Additive complex noise, per sub-array, independent. Sigma keeps
+    # per-element SNR ~28 dB, so the beam pattern shows a clean main lobe with
+    # a realistic sidelobe-vs-noise ratio. Set to 0 to get a noiseless array --
+    # tests/test_sim_parity.py does exactly that, because NumPy's PCG64 stream
+    # cannot be reproduced in JS and only the deterministic physics can be
+    # compared.
+    NOISE_SIGMA = 4.0
 
     def __init__(self, array, signal_freq, element_spacing, sample_rate=3e6,
                  buffer_size=1024 * 16):
@@ -143,9 +206,16 @@ class SimSDR:
         theta_rad = np.radians(arrival_angle_deg)
         for k in range(8):
             el = self._array.elements[k + 1]
-            gain = max(0.0, min(127.0, float(el.rx_gain))) / 127.0
-            rx_phase_rad = np.radians(float(el.rx_phase))
-            phi_incident = 2 * np.pi * (k * self._d / wavelength) * np.sin(theta_rad)
+            # Latched beam state, not the shadow registers -- an unlatched
+            # write must not steer the simulated array either.
+            gain = max(0.0, min(127.0, float(el.latched_gain))) / 127.0
+            rx_phase_rad = np.radians(float(el.latched_phase))
+            # Intrinsic element phase error, which the commanded rx_phase has
+            # to absorb via the phase calibration.
+            err_rad = np.radians(float(self._array.element_phase_error[k]))
+            phi_incident = (
+                2 * np.pi * (k * self._d / wavelength) * np.sin(theta_rad) + err_rad
+            )
             elem_signal = amplitude * gain * wave * np.exp(
                 1j * (phi_incident - rx_phase_rad)
             )
@@ -194,17 +264,13 @@ class SimSDR:
                 wavelength=wavelength,
             )
 
-        # Scale so a full-taper on-boresight beam peaks around -10 dBFS in
-        # the sum channel, matching typical HB100 signal levels on real
-        # hardware (leaves headroom before the 2^11 fixed-point full-scale).
-        amp = 60.0
+        amp = self.AMP_SCALE
         chan0 = chan_sub[0] * amp
         chan1 = chan_sub[1] * amp
 
-        # Additive complex noise (per sub-array, independent). Sigma chosen
-        # to keep per-element SNR ~28 dB, so the beam pattern shows a clean
-        # main lobe with realistic sidelobe-vs-noise ratio.
-        noise_sigma = 4.0
+        noise_sigma = self.NOISE_SIGMA
+        if noise_sigma <= 0:
+            return chan0, chan1
         chan0 = chan0 + (self._rng.normal(0, noise_sigma, N)
                          + 1j * self._rng.normal(0, noise_sigma, N)).astype(np.complex64)
         chan1 = chan1 + (self._rng.normal(0, noise_sigma, N)

@@ -1,0 +1,31 @@
+# systemd unit for the Phaser headless backend -- TEMPLATE, not a live unit.
+#
+# This is the only definition of the unit. install.sh reads it, substitutes the
+# at-sign placeholders below from its own SERVICE_USER / INSTALL_DIR /
+# PYTHON_BIN constants, and installs the result on the Pi whenever the rendered
+# text differs from /etc/systemd/system/phaser-headless.service -- so a Pi
+# provisioned by an older version picks up template changes rather than keeping
+# a stale unit. Rendering from install.sh's constants is the point: the unit's
+# WorkingDirectory cannot drift away from the directory install.sh actually
+# copies files into.
+#
+# Nothing else writes this file. The removed setup-pi.sh once carried its own
+# heredoc copy of the unit, a second definition free to drift from this one.
+
+[Unit]
+Description=Phaser Headless Backend (browser-hosted beamforming + CW radar)
+After=network.target
+
+[Service]
+Type=simple
+User=@USER@
+WorkingDirectory=@INSTALL_DIR@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON@ -u @INSTALL_DIR@/phaser_headless.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

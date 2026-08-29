@@ -5,16 +5,31 @@ build/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv-linux/
-.venv-win/
+# Virtual environments. The project is WSL-native now, so the venv is
+# in-tree (.venv/). The two names below are the out-of-tree symlinks the
+# OneDrive-hosted copy used; kept so that checkout stays clean there.
+.venv/
+.venv-linux
+.venv-win
+
+# Stray root lockfile: there is no root package.json. Anchored with a
+# leading slash so frontend/ and frontend-radar/ lockfiles stay tracked
+# (CI needs them for npm ci).
+/package-lock.json
 
 # IDE
 .idea/
 
-# Build artifacts (staging dir only, keep the tarball)
+# Build artifacts. phaser-installer.tar.gz is build-installer.py output;
+# it was tracked by mistake and is stale (see archive/ notes).
 phaser-installer/
+phaser-installer.tar.gz
 release/
+
+# Stale duplicate of the systemd unit. scripts/setup-pi.sh writes the real
+# one inline via heredoc, and this copy had already drifted from it
+# (missing PYTHONUNBUFFERED, hardcoded /usr/bin/python3, old Description).
+phaser-headless.service
 
 # Calibration data (device-specific)
 *.pkl
@@ -30,8 +45,8 @@ ctf_sequence.txt
 # Logs
 logs/
 
-# LTE test files
-*.ftr
+# NOTE: LTE*.ftr are NOT ignored. They are AD9361 filter configs that
+# phaser_find_hb100_headless.py loads at runtime, and install.sh ships them.
 
 # Simulation data
 sim_data.json
@@ -39,12 +54,15 @@ sim_data.json
 # Electron/Tauri (not using these)
 electron/
 src-tauri/
-package-lock.json
+
+# NOTE: scripts/ and tests/ used to be listed here as legacy. They are not
+# legacy any more -- c7a2f29 moved the setup scripts and the test suite into
+# them and tracked the contents. The stale ignore rules survived and silently
+# swallowed every NEW file added to either directory (already-tracked files
+# ignore .gitignore, so nothing looked wrong). Do not re-add them.
 
 # Legacy files (kept locally, not in repo)
 radar/
-scripts/
-tests/
 diagnose_hardware.py
 phaser_app.py
 phaser_cal.py
@@ -54,14 +72,9 @@ phaser_ipc_worker.py
 phaser_server.py
 requirements.txt
 frontend/phaser_desktop.html
-frontend/public/
 frontend/src/assets/
 frontend/src/counter.js
 frontend/src/ipc-bridge-native.js
-frontend/src/transport-ipc.js
-frontend/src/transport-web.js
-frontend/src/transport-electron.js
-frontend/src/transport-tauri.js
 frontend/src/vendor/
 
 # Dev utilities
@@ -72,7 +85,6 @@ phaser_zmq_server.py
 test_minimal.py
 start*.bat
 start*.py
-.python-version
 AGENTS.md
 
 # Generated knowledge graph
@@ -84,18 +96,22 @@ graphify-out/
 # Reference material (kept locally, not in repo — too large for git,
 # and it's binary reference material, not source)
 docs/*.pdf
+!docs/2025_Phaser_labs_Python.pdf
 
-# Documentation artifacts (generated)
-COMPLETE_SOLUTION.md
-DELIVERY_SUMMARY.md
-DIAGNOSTIC_IMPROVEMENTS.md
-DOCUMENTATION_INDEX.md
-ELECTRON_MIGRATION_PLAN.md
-FIND_HB100_FIX.md
-HARDWARE_URI_DIAGNOSIS.md
-NETWORK_FIX_SUMMARY.md
-NETWORK_SETUP_GUIDE.md
-QUICK_REFERENCE.md
-SOLUTION_COMPLETE.md
-START_HERE.md
-VISUAL_SUMMARY.md
+# Superseded design/status notes now live in archive/ and are tracked.
+
+# One-off Windows spike; kept locally, not part of the repo.
+tools/phase0_spike.py
+
+# Short-lived GitHub token handed to the container; deleted after use.
+.gh-token
+
+# The GitHub Pages build (deploy-pages.yml). Kept out of the repo on purpose:
+# frontend/dist/ is committed because install.sh ships it to the Pi and must
+# keep defaulting to the real backend, while this one is built with
+# VITE_TRANSPORT=sim. Committing both invites shipping the sim default to
+# hardware.
+frontend/dist-pages/
+
+# Scratch file written by the Pages smoke test in CI.
+frontend/pages-smoke.mjs

@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prebuild": "node ../tools/vendor_plotly.mjs",
     "build": "vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
-    "vite": "^8.0.9"
+    "vite": "8.2.2"
+  },
+  "dependencies": {
+    "plotly.js-dist-min": "2.30.0"
   }
 }

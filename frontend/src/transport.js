@@ -1,53 +1,39 @@
 /**
  * transport.js — transport facade
  *
- * Public interface stays stable for main.js while transport implementation
- * can switch between web (REST+WebSocket), desktop IPC (PyWebView), Tauri, or Electron.
+ * Two transports exist:
+ *   web — REST + WebSocket against phaser_headless.py on the Pi.
+ *   sim — the browser-local simulator in ./sim/, no backend at all.
+ *
+ * There used to be electron/tauri/ipc entries here as well. Nothing in this
+ * repo ever set the globals that selected them (`window.__ELECTRON__`,
+ * `window.__TAURI_INTERNALS__`), so they could not be reached; they were
+ * removed along with their transport modules rather than left to look load-
+ * bearing. The PyWebView desktop chrome in main.js is untouched -- it keys off
+ * `window.pywebview`, which is a different thing.
  */
 
 import { createWebTransport } from './transport-web.js';
-import { createIpcTransport } from './transport-ipc.js';
-import { createTauriTransport } from './transport-tauri.js';
-import { createElectronTransport } from './transport-electron.js';
+import { createSimTransport } from './transport-sim.js';
 
-function resolveTransportMode() {
-    // Electron detection — __ELECTRON__ is set by preload.js
-    if (window.__ELECTRON__) return 'electron';
-    // Tauri detection — __TAURI_INTERNALS__ is set by Tauri runtime
-    if (window.__TAURI_INTERNALS__) return 'tauri';
-    // Runtime override for desktop hosts.
-    if (window.__PHASER_TRANSPORT === 'ipc') return 'ipc';
-    // Desktop launcher loads frontend via file://; this must use IPC.
-    if (window.location?.protocol === 'file:') return 'ipc';
-    // Auto-detect PyWebView desktop host.
-    if (window.pywebview?.api?.invoke) return 'ipc';
-    // Build-time override (for future desktop builds).
-    if (import.meta.env?.VITE_TRANSPORT === 'ipc') return 'ipc';
+export function resolveTransportMode() {
+    // An explicit request wins over everything, so ?sim=1 works on the Pi too --
+    // useful when the hardware is absent or broken mid-lab.
+    const params = new URLSearchParams(window.location?.search || '');
+    if (params.get('sim') === '1') return 'sim';
+    if (params.get('sim') === '0') return 'web';
+    if (window.__PHASER_SIM === true) return 'sim';
+    // Build-time default. The GitHub Pages build sets this: a static site has
+    // no backend to talk to, so sim is the only thing that can work there.
+    if (import.meta.env?.VITE_TRANSPORT === 'sim') return 'sim';
     return 'web';
 }
 
 export function createTransport(callbacks = {}) {
-    const mode = resolveTransportMode();
-    if (mode === 'electron') {
-        callbacks.onLog?.('info', 'Electron', 'Using Electron transport mode');
-        return createElectronTransport(callbacks);
-    }
-    if (mode === 'tauri') {
-        callbacks.onLog?.('info', 'Tauri', 'Using Tauri transport mode');
-        return createTauriTransport(callbacks);
-    }
-    if (mode === 'ipc') {
-        callbacks.onLog?.('info', 'IPC', 'Using IPC transport mode');
-        return createIpcTransport(callbacks);
+    if (resolveTransportMode() === 'sim') {
+        callbacks.onLog?.('info', 'SIM', 'Using in-browser simulator (no hardware)');
+        return createSimTransport(callbacks);
     }
     callbacks.onLog?.('info', 'WS', 'Using web transport mode');
     return createWebTransport(callbacks);
-}
-
-export function isTauri() {
-    return !!window.__TAURI_INTERNALS__;
-}
-
-export function isElectron() {
-    return !!window.__ELECTRON__;
 }

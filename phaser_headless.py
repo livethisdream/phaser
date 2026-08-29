@@ -24,7 +24,7 @@ import json
 import asyncio
 import numpy as np
 from pathlib import Path
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 
 try:
@@ -95,6 +95,13 @@ class PhaserHeadless:
         self.cal_process = None
         self.cal_task = None
         self.cal_log = []
+        # The outcome of the last finished run. get_calibration_status used to
+        # report a finished run exactly once and then forget it, so a client
+        # that was reconnecting during that single 2s poll never learned the
+        # run had failed -- the modal simply sat there. Retained until the next
+        # run starts, so the answer is the same however often you ask.
+        self.cal_last_result = None
+        self.cal_started_at = None
 
         # Initialize hardware
         self._init_hardware()
@@ -243,17 +250,42 @@ class PhaserHeadless:
                 ADAR_init(device)
                 ADAR_set_mode(device, "rx")
 
-        # Default taper (all elements equal)
+        # Channel calibration trims the two SDR Rx channels against each
+        # other. It was loaded, printed and then never used -- so the sum and
+        # delta beams were built from two channels with an uncorrected gain
+        # mismatch. Legacy applies it inside SDR_functions (ccal[0]/ccal[1] on
+        # the two rx_hardwaregain attributes); phaser_service applies it here,
+        # at the caller, and this now matches.
+        SDR_setRx(
+            self.sdr,
+            self.Rx_gain + self.channel_cal[0],
+            self.Rx_gain + self.channel_cal[1],
+        )
+
+        # Default taper (all elements equal). Through _apply_gain_cal, or the
+        # array runs on uncalibrated element gains until someone happens to
+        # touch a taper slider.
         self.gainList = [100, 100, 100, 100, 100, 100, 100, 100]
-        ADAR_set_Taper(self.array, self.gainList)
+        ADAR_set_Taper(self.array, self._apply_gain_cal(self.gainList))
 
         # Per-element user phase offsets (degrees). Added to each element's
         # steering phase inside ADAR_set_Phase. Zeros by default; the
         # frontend Phase Control sliders write here via set_state.
         self.phaseList = [0.0] * 8
 
-        # Sweep settings
+        # Sweep settings. phase_step and steer_res are DIFFERENT quantities
+        # and used to be the same attribute, which is why the Phase Shift
+        # Bits slider silently coarsened the sweep itself:
+        #   phase_step -- the ADAR1000 phase-shifter LSB, 360/2**bits. Only
+        #                 ever a quantization step handed to ADAR_set_Phase.
+        #   steer_res  -- how finely the sweep steps across the scan, in
+        #                 degrees of steering angle.
+        # ignore_res mirrors the legacy "ignore steering resolution" switch:
+        # when set, the sweep walks phase one LSB at a time instead of
+        # walking angle in steer_res steps.
         self.phase_step = 2.8125  # 7 bits = 360/128
+        self.steer_res = 2.8125   # degrees of steering angle per sweep point
+        self.ignore_res = True
         self.steer_min = -90
         self.steer_max = 90
 
@@ -295,16 +327,51 @@ class PhaserHeadless:
         print("Hardware Initialization Complete.")
 
     def _apply_gain_cal(self, taper_values):
-        """Apply gain calibration to taper values"""
+        """Apply gain calibration to taper values.
+
+        Taper values arrive on the frontend's 0-100 scale; the ADAR1000
+        rx_gain register is 0-127. Legacy scales between the two --
+        `int(gainList[i] * 127 / 100 * gcal[i])` -- and this did not, so a
+        taper commanded to 100 only ever reached 79% of full scale.
+        """
         calibrated = []
         for idx, value in enumerate((list(taper_values) + [100] * 8)[:8]):
             gain_mult = self.gain_cal[idx] if idx < len(self.gain_cal) else 1.0
-            calibrated.append(int(max(0, min(127, round(value * gain_mult)))))
+            scaled = value * 127.0 / 100.0 * gain_mult
+            calibrated.append(int(max(0, min(127, round(scaled)))))
         return calibrated
 
-    def ConvertPhaseToSteerAngle(self, PhDelta):
-        """Convert phase delta to steering angle"""
-        value1 = (self.c * np.radians(np.abs(PhDelta))) / (2 * 3.14159 * self.SignalFreq * self.d)
+    def _apply_phase_cal(self, phase_values):
+        """Fold the per-element phase calibration into the user's offsets.
+
+        self.phase_cal was loaded at init, printed, and then never applied to
+        anything -- the single reason a swept array here would not form a
+        clean main lobe. pcal is what makes the eight elements add coherently;
+        without it each element sits at its own uncorrected phase error and
+        the pattern smears out into something with no recognisable beam.
+
+        Legacy adds pcal[i] inside ADAR_set_Phase itself. This repo moved cal
+        application out to the caller (phaser_service does the same thing with
+        its own _apply_phase_cal), so it belongs here -- adding it in the
+        helper as well would double-apply it for that caller.
+        """
+        base = (list(phase_values) + [0.0] * 8)[:8]
+        return [
+            float(base[idx] + (self.phase_cal[idx] if idx < len(self.phase_cal) else 0.0))
+            for idx in range(8)
+        ]
+
+    def ConvertPhaseToSteerAngle(self, PhDelta, freq=None):
+        """Convert phase delta to steering angle.
+
+        `freq` is the frequency the phases were computed at. It defaults to
+        SignalFreq, but a beam-squint sweep computes phases at
+        (SignalFreq - BW) and has to invert them at the same frequency,
+        otherwise the angle axis disagrees with the phases actually loaded.
+        """
+        if freq is None:
+            freq = self.SignalFreq
+        value1 = (self.c * np.radians(np.abs(PhDelta))) / (2 * 3.14159 * freq * self.d)
         clamped = max(min(1, value1), -1)
         theta = np.degrees(np.arcsin(clamped))
         return theta if PhDelta >= 0 else -theta
@@ -361,7 +428,15 @@ class PhaserHeadless:
         return w.ravel()
 
     def do_sweep(self):
-        """Perform one beam sweep and return data including monopulse delta/error"""
+        """Perform one beam sweep and return data including monopulse delta/error
+
+        PORTED TO JAVASCRIPT, along with the helpers above it
+        (_apply_gain_cal, _apply_phase_cal, ConvertPhaseToSteerAngle,
+        _mvdr_weights): frontend/src/sim/engine.js runs this pipeline in the
+        browser for --sim-without-a-Pi and the GitHub Pages demo. This is the
+        source of truth. tests/test_sim_parity.py compares the two and fails on
+        drift, so a change here needs the same change there.
+        """
         max_signal = -1000
         data_fft = None
         gain = []          # Sum beam (chan1 + chan2)
@@ -370,19 +445,34 @@ class PhaserHeadless:
         error_func = []    # Monopulse error function
         angles = []
 
-        # Convert steering angle range to phase values (like phaser_gui.py)
-        steer_res = self.phase_step  # Use phase_step as steering resolution
-        SteerValues = np.arange(self.steer_min, self.steer_max + steer_res, steer_res)
-
-        # Beam squint: calculate phases for (SignalFreq - BW) but measure at SignalFreq
+        # Beam squint: calculate phases for (SignalFreq - BW) but measure at
+        # SignalFreq.
         calc_freq = self.SignalFreq - self.BW * 1e6
-        PhaseValues = np.degrees(
-            2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
-        )
 
-        # User-set per-element phase offsets from the Phase Control sliders.
-        # ADAR_set_Phase adds these to i*PhDelta (the steering ramp) per element.
-        phaseList = list(self.phaseList)
+        if self.ignore_res:
+            # Legacy "ignore steering resolution": step the phase delta one
+            # ADAR LSB at a time and let the angle axis fall out of it.
+            phase_limit = (
+                int(225 / self.phase_step) * self.phase_step + self.phase_step
+            )
+            PhaseValues = np.arange(-phase_limit, phase_limit, self.phase_step)
+            SteerValues = np.array(
+                [self.ConvertPhaseToSteerAngle(ph, calc_freq) for ph in PhaseValues]
+            )
+        else:
+            # Step the steering angle, and derive the phase each angle needs.
+            steer_res = max(self.steer_res, 0.1)
+            SteerValues = np.arange(
+                self.steer_min, self.steer_max + steer_res, steer_res
+            )
+            PhaseValues = np.degrees(
+                2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
+            )
+
+        # Per-element phase offsets: the user's Phase Control sliders PLUS the
+        # phase calibration. ADAR_set_Phase adds these to the i*PhDelta
+        # steering ramp per element.
+        phaseList = self._apply_phase_cal(self.phaseList)
 
         for i, PhDelta in enumerate(PhaseValues):
             ADAR_set_Phase(self.array, PhDelta, self.phase_step, phaseList)
@@ -436,8 +526,29 @@ class PhaserHeadless:
                 s_mag_delta = max(np.abs(delta_chan[max_index]), 1e-15)
                 s_dbfs_delta = 20 * np.log10(s_mag_delta / (2**11))
 
-                # Phase difference between sum and delta
-                beam_phase = np.angle(sum_chan[max_index]) - np.angle(delta_chan[max_index])
+                # Phase difference between sum and delta.
+                #
+                # Taken as the angle of sum * conj(delta), NOT as
+                # angle(sum) - angle(delta). The subtraction spans (-2pi, 2pi)
+                # while the quantity is only meaningful mod 2pi, so the same
+                # physical angle came out as +pi/2 or -3pi/2 depending on which
+                # side of the +/-pi branch cut the two angles landed. The next
+                # line takes sign() of this, and those two read oppositely, so
+                # the monopulse error curve inverted at random.
+                #
+                # It was not a rare edge case: sign(A-B) disagrees with the
+                # physical phase whenever |A-B| > pi, which is 1 in 4 for
+                # uniformly distributed phases -- and they are uniform here,
+                # because max_index is an argmax over a flat-envelope CW tone,
+                # so which sample wins (and the absolute carrier phase there)
+                # is set by noise.
+                #
+                # The product form also removes the dependence on that sample
+                # choice: sum and delta share the carrier, so it cancels in the
+                # product and only the sub-array geometry survives. Exactly so
+                # with no noise; with noise the value still jitters by ~0.03 rad
+                # sample to sample, but continuously, with no 2pi steps.
+                beam_phase = np.angle(sum_chan[max_index] * np.conj(delta_chan[max_index]))
 
                 total_sum += s_dbfs_sum
                 total_delta += s_dbfs_delta
@@ -615,6 +726,8 @@ class PhaserHeadless:
                 "gainList": self.gainList,
                 "phaseList": self.phaseList,
                 "phase_step": self.phase_step,
+                "steer_res": self.steer_res,
+                "ignore_res": self.ignore_res,
                 "steer_min": self.steer_min,
                 "steer_max": self.steer_max,
                 "Averages": self.Averages,
@@ -639,7 +752,13 @@ class PhaserHeadless:
     def set_rx_gain(self, gain):
         """Set Rx gain and apply to hardware"""
         self.Rx_gain = int(gain)
-        SDR_setRx(self.sdr, self.Rx_gain, self.Rx_gain)
+        # Keep the per-channel trim -- setting both channels to the same raw
+        # gain here silently threw away the channel calibration.
+        SDR_setRx(
+            self.sdr,
+            self.Rx_gain + self.channel_cal[0],
+            self.Rx_gain + self.channel_cal[1],
+        )
         print(f"Rx gain set to {self.Rx_gain} dB")
         return {"status": "ok"}
 
@@ -700,7 +819,14 @@ class PhaserHeadless:
         try:
             for line in iter(self.cal_process.stdout.readline, ''):
                 if line:
-                    self.cal_log.append(line.rstrip('\n'))
+                    text = line.rstrip('\n')
+                    self.cal_log.append(text)
+                    # Also to the journal. Without this the subprocess's output
+                    # -- including any traceback -- existed only in cal_log,
+                    # which a browser has to be connected at the right moment to
+                    # see. An ImportError that killed the HB100 search in 50ms
+                    # was invisible on the Pi for exactly this reason.
+                    print(f"[CAL:{self.cal_task}] {text}", flush=True)
                 if self.cal_process.poll() is not None:
                     break
             # Read any remaining output
@@ -709,6 +835,7 @@ class PhaserHeadless:
                 for line in remaining.strip().split('\n'):
                     if line:
                         self.cal_log.append(line)
+                        print(f"[CAL:{self.cal_task}] {line}", flush=True)
         except Exception as e:
             self.cal_log.append(f"[Read error: {e}]")
 
@@ -731,7 +858,12 @@ class PhaserHeadless:
 
         print(f"Starting calibration: {task_name}")
         self.cal_task = task_name
+        # Reported in the status payload. The UI keys its post-run state reload
+        # on it; without it the key was constant across runs, so the reload
+        # happened once ever and later runs left stale values on screen.
+        self.cal_started_at = time.time()
         self.cal_log = []
+        self.cal_last_result = None
 
         # Need to stop any active mode during calibration. _set_mode handles
         # CW teardown (restoring SDR state) before the calibration subprocess
@@ -764,6 +896,10 @@ class PhaserHeadless:
     def get_calibration_status(self):
         """Get calibration process status"""
         if self.cal_process is None:
+            # Replay the last outcome rather than reporting a bare idle, so a
+            # client that reconnects after a run finished still sees how it went.
+            if self.cal_last_result is not None:
+                return dict(self.cal_last_result)
             return {"status": "ok", "running": False, "task": None}
 
         if self.cal_process.poll() is None:
@@ -772,6 +908,7 @@ class PhaserHeadless:
                 "status": "ok",
                 "running": True,
                 "task": self.cal_task,
+                "started_at": getattr(self, "cal_started_at", None),
                 "last_lines": self.cal_log[-20:],
             }
         else:
@@ -784,6 +921,7 @@ class PhaserHeadless:
                 "status": "ok",
                 "running": False,
                 "task": self.cal_task,
+                "started_at": getattr(self, "cal_started_at", None),
                 "returncode": returncode,
                 "success": returncode == 0,
                 "last_lines": self.cal_log,
@@ -792,14 +930,24 @@ class PhaserHeadless:
             # Reload calibration if successful
             if returncode == 0:
                 self._reload_calibration(self.cal_task)
+            else:
+                print(f"[CAL:{self.cal_task}] FAILED, exit {returncode}", flush=True)
 
+            self.cal_last_result = dict(result)
             self.cal_process = None
             self.cal_task = None
             return result
 
     def cancel_calibration(self):
         """Cancel running calibration process"""
-        if self.cal_process is None or self.cal_process.poll() is not None:
+        if self.cal_process is not None and self.cal_process.poll() is not None:
+            # It exited on its own before the cancel arrived -- which is what a
+            # crash looks like from here. Harvest the outcome so the caller
+            # learns why, instead of being told nothing was running.
+            return self.get_calibration_status()
+        if self.cal_process is None:
+            if self.cal_last_result is not None:
+                return dict(self.cal_last_result)
             return {"status": "error", "message": "No calibration running"}
 
         try:
@@ -947,17 +1095,22 @@ class PhaserHeadless:
                     angle_deg=self.sim_interferer_angle_deg,
                     power_db=self.sim_interferer_power_db,
                 )
-            # Handle phase_step: ignore_res=true uses bits, ignore_res=false uses steer_res
-            ignore_res = state.get("ignore_res", True)
-            if ignore_res:
-                if "bits" in state:
-                    bits = int(state["bits"])
-                    self.phase_step = 360.0 / (2 ** bits)
-                    print(f"Phase step set to {self.phase_step}° ({bits} bits)")
-            else:
-                if "steer_res" in state:
-                    self.phase_step = float(state["steer_res"])
-                    print(f"Steering resolution set to {self.phase_step}°")
+            # Phase LSB and steering resolution are independent knobs, so
+            # take both whenever the frontend sends them. ignore_res only
+            # decides which one drives the sweep -- it must not make the
+            # Bits slider overwrite the steering resolution, which is what
+            # used to collapse the pattern to a handful of points whenever
+            # a lab dropped the phase shifter to 3 or 4 bits.
+            if "bits" in state:
+                bits = max(int(state["bits"]), 1)
+                self.phase_step = 360.0 / (2 ** bits)
+                print(f"Phase shift LSB set to {self.phase_step}° ({bits} bits)")
+            if "steer_res" in state:
+                self.steer_res = max(float(state["steer_res"]), 0.1)
+                print(f"Steering resolution set to {self.steer_res}°")
+            if "ignore_res" in state:
+                self.ignore_res = bool(state["ignore_res"])
+                print(f"Ignore steering resolution: {self.ignore_res}")
             return {"status": "ok"}
 
         elif cmd == "ctf_status":
@@ -1181,7 +1334,23 @@ class PhaserHeadless:
                 self.send_header('Access-Control-Allow-Headers', 'Content-Type')
                 super().end_headers()
 
-        server = HTTPServer(("0.0.0.0", self.http_port), Handler)
+        # ThreadingHTTPServer, not HTTPServer. The synchronous server handles
+        # one connection to completion in this thread, so a client that opens
+        # a TCP connection and does not send a request blocks it forever --
+        # HTTPServer sets no socket timeout, so that read never returns and
+        # the whole server is dead from that point on. Mobile Safari and
+        # Chrome both open speculative connections they may never use, which
+        # is exactly that case: ssh to the Pi keeps working, the page never
+        # loads, and nothing appears in any log.
+        #
+        # Handler.timeout closes a connection that goes idle mid-request, so a
+        # stalled client costs one thread for 30s rather than leaking it. The
+        # server timeout makes the accept loop notice self.running going false
+        # instead of blocking in accept() until the next connection.
+        Handler.timeout = 30
+        server = ThreadingHTTPServer(("0.0.0.0", self.http_port), Handler)
+        server.daemon_threads = True
+        server.timeout = 1.0
         print(f"HTTP server on port {self.http_port}")
 
         while self.running:
@@ -1230,7 +1399,10 @@ class PhaserHeadless:
                 super().end_headers()
 
         try:
-            server = HTTPServer(("0.0.0.0", self.radar_http_port), RadarHandler)
+            RadarHandler.timeout = 30
+            server = ThreadingHTTPServer(("0.0.0.0", self.radar_http_port), RadarHandler)
+            server.daemon_threads = True
+            server.timeout = 1.0
         except OSError as e:
             print(f"[RADAR-HTTP] Failed to bind port {self.radar_http_port}: {e}")
             return

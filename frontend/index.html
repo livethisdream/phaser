@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="icon" type="image/png" href="./favicon.png" />
   <title>ADI Phaser Dashboard</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
-  <script src="https://cdn.plot.ly/plotly-2.30.0.min.js"></script>
+  <!-- Self-hosted: the app must work on an isolated network with no
+       internet. Fonts come from tools/fetch_fonts.py, Plotly from
+       tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
+  <link rel="stylesheet" href="./fonts/fonts.css" />
+  <script src="./vendor/plotly.min.js"></script>
   <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
@@ -158,6 +159,26 @@
                             <option value="Transmit on OUT1">OUT1</option>
                             <option value="Transmit on OUT2">OUT2</option>
                         </select>
+                    </div>
+
+                    <hr class="divider" />
+
+                    <div class="control-group" style="margin-bottom:0.25rem">
+                      <label style="margin-bottom:0; color: var(--text-main);">Connection</label>
+                    </div>
+
+                    <label class="toggle-container mt-2" title="Run the built-in simulator instead of talking to Phaser hardware">
+                      <span>Simulator Mode</span>
+                      <input type="checkbox" id="opt-sim-mode">
+                      <span class="checkmark"></span>
+                    </label>
+
+                    <div class="control-group mt-2" id="backend-url-group">
+                      <label for="backend-url">Backend URL</label>
+                      <input type="text" id="backend-url" class="modern-input"
+                             spellcheck="false" autocomplete="off"
+                             placeholder="auto (same origin)"
+                             title="Where to reach the Phaser backend. Leave empty to use the origin serving this page.">
                     </div>
 
                 </div>
@@ -444,7 +465,7 @@
                 </div>
               </div>
               <div class="header-actions">
-                <button class="btn btn-outline btn-small" id="btn-sim-mode" title="Toggle simulation mode" hidden>Sim</button>
+
                 <button class="btn btn-outline btn-small btn-freeze" id="btn-memory" title="Click to freeze current trace (max 3). Hold to clear all.">
                   <span class="btn-freeze-fill"></span>
                   <span class="btn-freeze-label">Freeze</span>
@@ -495,6 +516,7 @@
                 <span class="stat-value" id="beam-meas-freq">--</span>
             </div>
             <div class="stats-spacer"></div>
+            <span id="transport-badge" class="transport-badge" style="display:none;"></span>
             <div class="status-indicator">
               <div class="dot disconnected" id="connection-dot"></div>
               <span id="connection-text">Disconnected</span>
