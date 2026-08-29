@@ -15,8 +15,11 @@ state machine behaves under the cases that are easy to get wrong:
 
 import math
 import sys
+from pathlib import Path
 
-sys.path.insert(0, ".")  # importable from project root
+# Also runnable directly (python tests/test_phaser_ctf.py); pytest gets the
+# root from pythonpath = ["."] in pyproject.toml.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from phaser_ctf import CtfMode, fit_ramp, PLACEHOLDER_FLAG
 
 C = 299792458.0
