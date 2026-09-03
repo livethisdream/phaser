@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-D8vUCR5-.js"></script>
+  <script type="module" crossorigin src="./assets/index-BuFiQ7Vi.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-HUlWwWrf.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -428,14 +428,21 @@
             <div class="accordion-item" id="accordion-ctf" hidden>
                 <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="7"></span> CTF Mode <span>▼</span></button>
                 <div class="accordion-body">
+                    <!-- Sector table, the helper-line toggle, Start, and a single
+                         status line. The live beam/sector readout and the progress
+                         counter that used to sit here are gone on purpose: the
+                         sector bands drawn on the beam pattern show the same thing
+                         where the player is already looking. What survives as text
+                         is only what the plot cannot say -- that the session is not
+                         started yet, and the flag. -->
                     <div id="ctf-sectors" class="mt-2" style="font-size:0.8rem; color:var(--text-muted);"></div>
-                    <div id="ctf-current" class="mt-2" style="font-size:0.9rem;">Beam: —</div>
-                    <div id="ctf-progress" class="mt-2" style="font-size:0.9rem;">Progress: —</div>
+                    <label class="mt-2" style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; cursor:pointer;">
+                        <input type="checkbox" id="ctf-show-sectors" checked>
+                        <span>Show sector bands on plot</span>
+                    </label>
+                    <button class="btn btn-outline btn-small mt-2" id="btn-ctf-reset">Start</button>
+                    <div id="ctf-status" class="mt-2" style="font-size:0.85rem; color:var(--text-muted); line-height:1.35;"></div>
                     <div id="ctf-flag" class="mt-2" style="font-size:0.95rem; font-weight:600; word-break:break-all;"></div>
-                    <button class="btn btn-outline btn-small mt-2" id="btn-ctf-reset">Start Over</button>
-                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0.5rem 0 0; line-height:1.35;">
-                      Steer the beam into each sector in turn and hold it there. Only visible with <code>?ctf=1</code> in the URL. The sequence check and the flag live in the backend — there is nothing to find in this page.
-                    </p>
                 </div>
             </div>
 
@@ -508,6 +515,14 @@
             <div class="stat-box">
                 <span class="stat-label">Est. Angle</span>
                 <span class="stat-value" id="stat-angle">-- °</span>
+            </div>
+            <!-- CTF progress. It sits in the stat row rather than in the CTF
+                 panel for the same reason the sector bands do: the player is
+                 already looking at the plot and its readouts, not at the
+                 sidebar. Hidden unless ?ctf=1 AND a Python backend answered. -->
+            <div class="stat-box compact" id="ctf-progress-box" style="display:none;">
+                <span class="stat-label">CTF Sequence</span>
+                <span class="stat-value" id="ctf-progress-pill">— / —</span>
             </div>
             <div class="stat-box compact" id="beam-squint-info" style="display:none;">
                 <span class="stat-label">Calc (GHz)</span>

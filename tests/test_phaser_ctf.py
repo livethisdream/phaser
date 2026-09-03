@@ -4,7 +4,7 @@ Builds phase ramps exactly the way `frontend/src/main.js` builds them, feeds
 them through the same conversion the backend uses, and checks the sector
 state machine behaves under the cases that are easy to get wrong:
 
-  - a +30 deg steer reads as the +30 deg sector, not its mirror image
+  - a positive steer reads as the positive-side sector, not its mirror
   - a sector only counts once it has been held for the dwell
   - a running sweep, which visits every sector in order, never satisfies a
     non-monotonic target sequence
@@ -20,7 +20,10 @@ from pathlib import Path
 # Also runnable directly (python tests/test_phaser_ctf.py); pytest gets the
 # root from pythonpath = ["."] in pyproject.toml.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from phaser_ctf import CtfMode, fit_ramp, PLACEHOLDER_FLAG
+from phaser_ctf import (
+    CtfMode, fit_ramp, PLACEHOLDER_FLAG,
+    DEFAULT_SECTOR_CENTRES_DEG, DEFAULT_TOLERANCE_DEG,
+)
 
 C = 299792458.0
 SIGNAL_FREQ = 10.25e9
@@ -37,6 +40,23 @@ def armed(**kwargs):
     ctf = CtfMode(**kwargs)
     ctf.reset()
     return ctf
+
+
+def angle_of(sector):
+    """Centre angle of a 1-based sector, read from the module under test.
+
+    Tests say "sector 4", not "+20 degrees". Geometry has already moved once
+    (from +/-60 centres at +/-12 tolerance to +/-40 at +/-5, to keep every
+    window inside the +/-45 where the beam still shows a clear peak), and
+    hardcoded angles would have silently retargeted a different sector rather
+    than failing.
+    """
+    return DEFAULT_SECTOR_CENTRES_DEG[sector - 1]
+
+
+def between_sectors(low, high):
+    """An angle in the dead band between two adjacent sectors."""
+    return (DEFAULT_SECTOR_CENTRES_DEG[low - 1] + DEFAULT_SECTOR_CENTRES_DEG[high - 1]) / 2
 
 
 def make_ramp(theta_deg, signal_freq=SIGNAL_FREQ, d=D):
@@ -80,12 +100,12 @@ def test_sector_is_not_mirrored():
 
     main.js negates the ramp relative to ConvertSteerAngleToPhase. Feed the
     measured step back in without undoing that and every sector mirrors about
-    boresight: +30 reads as -30, sector 4 becomes sector 2, and the whole
-    thing still looks plausible.
+boresight: a positive steer reads negative, sector 4 becomes sector 2,
+    and the whole thing still looks plausible.
     """
     ctf = armed()
-    for theta, expected in ((-60, 1), (-30, 2), (0, 3), (30, 4), (60, 5)):
-        steer(ctf, theta, now=0.0)
+    for expected in range(1, len(DEFAULT_SECTOR_CENTRES_DEG) + 1):
+        steer(ctf, angle_of(expected), now=0.0)
         got = ctf.status(now=0.0)["data"]["current_sector"]
         assert got == expected, f"steer {theta} deg -> sector {got}, expected {expected}"
     print("sector mapping: ok (not mirrored)")
@@ -93,7 +113,7 @@ def test_sector_is_not_mirrored():
 
 def test_dwell_required():
     ctf = armed(target=[4], dwell_s=2.0)
-    steer(ctf, 30, now=0.0)
+    steer(ctf, angle_of(4), now=0.0)
     assert not ctf.status(now=1.0)["data"]["matched"], "matched before the dwell elapsed"
     assert ctf.status(now=2.5)["data"]["matched"], "should match once held"
     print("dwell: ok")
@@ -105,7 +125,7 @@ def test_sweep_does_not_satisfy_sequence():
     ctf = armed(target=[3, 1, 4, 1, 2])
     now = 0.0
     for _ in range(4):  # four full sweeps, every sector properly dwelt in
-        for theta in (-60, -30, 0, 30, 60):
+        for theta in DEFAULT_SECTOR_CENTRES_DEG:
             now = hold(ctf, theta, now)
     assert not ctf.status(now=now)["data"]["matched"], "a sweep should never match"
     print("sweep immunity: ok")
@@ -115,8 +135,8 @@ def test_repeated_sector_sequence():
     """3 1 4 1 2 — sector 1 appears twice, which a visited-set cannot express."""
     ctf = armed(target=[3, 1, 4, 1, 2])
     now = 0.0
-    for theta in (0, -60, 30, -60, -30):
-        now = hold(ctf, theta, now)
+    for sector in (3, 1, 4, 1, 2):
+        now = hold(ctf, angle_of(sector), now)
 
     data = ctf.status(now=now)["data"]
     assert data["matched"], "the exact sequence should match"
@@ -127,19 +147,19 @@ def test_repeated_sector_sequence():
 def test_wrong_turn_costs_progress_but_does_not_lock_out():
     ctf = armed(target=[3, 1, 4, 1, 2])
     now = 0.0
-    for theta in (0, -60, 60):          # 3, 1, then a wrong 5
-        now = hold(ctf, theta, now)
+    for sector in (3, 1, 5):            # 3, 1, then a wrong 5
+        now = hold(ctf, angle_of(sector), now)
     assert ctf.status(now=now)["data"]["progress"] == 0, "wrong turn should cost progress"
 
-    for theta in (0, -60, 30, -60, -30):  # start over cleanly
-        now = hold(ctf, theta, now)
+    for sector in (3, 1, 4, 1, 2):      # start over cleanly
+        now = hold(ctf, angle_of(sector), now)
     assert ctf.status(now=now)["data"]["matched"], "should still be able to finish"
     print("wrong turn: ok")
 
 
 def test_flag_withheld_in_sim_when_configured():
     ctf = armed(target=[4], flag="flag{real}", allow_sim=False)
-    now = hold(ctf, 30, 0.0)
+    now = hold(ctf, angle_of(4), 0.0)
 
     sim = ctf.status(now=now, sim_mode=True)["data"]
     assert sim["matched"] and "flag" not in sim, "sim must not hand out the flag"
@@ -152,10 +172,45 @@ def test_flag_withheld_in_sim_when_configured():
 
 def test_between_sectors_is_no_sector():
     ctf = armed()
-    steer(ctf, -45, now=0.0)  # halfway between sector 1 and sector 2
+    probe = between_sectors(1, 2)
+    steer(ctf, probe, now=0.0)
     assert ctf.status(now=0.0)["data"]["current_sector"] is None
+    # The dead band has to be real, not a rounding artefact: the probe must sit
+    # outside both neighbouring windows by a clear margin.
+    gap = abs(probe - angle_of(1)) - DEFAULT_TOLERANCE_DEG
+    assert gap > 1.0, f"only {gap:.1f} deg outside sector 1 -- widen the dead band"
     print("between sectors: ok")
 
+
+
+def test_sector_geometry_stays_inside_the_usable_steer_range():
+    """The +/-45 limit is physical, and the sector count is contractual.
+
+    Past ~45 deg an 8-element array's beamwidth broadens as 1/cos(theta): the
+    mainlobe stops presenting a clear peak, so a player cannot see which sector
+    they are in. Every window edge must therefore stay inside 45.
+
+    The count cannot be traded away to buy room. "3 1 4 1 2" is plaintext in
+    another challenge's payload, so five sectors is fixed by prior commitment --
+    a future squeeze has to come out of spacing, never out of a sector.
+    """
+    centres = DEFAULT_SECTOR_CENTRES_DEG
+    tol = DEFAULT_TOLERANCE_DEG
+
+    assert len(centres) == 5, "the shipped sequence needs exactly five sectors"
+
+    for i, centre in enumerate(centres):
+        assert abs(centre) + tol <= 45.0, \
+            f"sector {i + 1} reaches {abs(centre) + tol:.1f} deg, past the usable range"
+
+    # Adjacent windows must not touch, or sector_for_angle -- which returns the
+    # FIRST match -- would silently resolve the overlap in favour of the lower
+    # sector instead of reporting "between sectors".
+    for i in range(len(centres) - 1):
+        gap = (centres[i + 1] - tol) - (centres[i] + tol)
+        assert gap > 0, f"sectors {i + 1} and {i + 2} overlap by {-gap:.1f} deg"
+
+    print("geometry: ok (5 sectors, all windows inside +/-45, no overlap)")
 
 
 def test_resting_position_does_not_score_before_start():
@@ -168,7 +223,7 @@ def test_resting_position_does_not_score_before_start():
     just wherever the last player left the array.
     """
     ctf = CtfMode(target=[3, 1, 4, 1, 2])          # NOT armed: no Start pressed
-    steer(ctf, 0, now=0.0)                          # boresight == sector 3
+    steer(ctf, angle_of(3), now=0.0)                # boresight == sector 3
     data = ctf.status(now=60.0)["data"]
     assert data["armed"] is False
     assert data["progress"] == 0, "an unstarted session scored the resting position"
@@ -185,12 +240,12 @@ def test_start_while_already_in_the_first_sector_counts():
     first sector.
     """
     ctf = CtfMode(target=[3, 1])
-    steer(ctf, 0, now=0.0)                          # sitting in sector 3 already
+    steer(ctf, angle_of(3), now=0.0)                # sitting in sector 3 already
     ctf.reset()                                     # Start, without moving
-    steer(ctf, 0, now=0.1)                          # same position, still held
+    steer(ctf, angle_of(3), now=0.1)                # same position, still held
     assert ctf.status(now=3.0)["data"]["progress"] == 1, \
         "holding the first sector through the dwell after Start should count it"
-    steer(ctf, -60, now=3.0)
+    steer(ctf, angle_of(1), now=3.0)
     assert ctf.status(now=6.0)["data"]["matched"], "sequence should complete"
     print("Start while already in the first sector: ok")
 
@@ -198,7 +253,7 @@ def test_start_while_already_in_the_first_sector_counts():
 def test_reset_clears_progress_and_stays_armed():
     """Start is also Restart: it clears the trail but leaves the session live."""
     ctf = armed(target=[3, 1, 4, 1, 2])
-    steer(ctf, 0, now=0.0)
+    steer(ctf, angle_of(3), now=0.0)
     assert ctf.status(now=3.0)["data"]["progress"] == 1
     ctf.reset()
     data = ctf.status(now=3.1)["data"]
@@ -215,6 +270,7 @@ if __name__ == "__main__":
     test_wrong_turn_costs_progress_but_does_not_lock_out()
     test_flag_withheld_in_sim_when_configured()
     test_between_sectors_is_no_sector()
+    test_sector_geometry_stays_inside_the_usable_steer_range()
     test_resting_position_does_not_score_before_start()
     test_start_while_already_in_the_first_sector_counts()
     test_reset_clears_progress_and_stays_armed()

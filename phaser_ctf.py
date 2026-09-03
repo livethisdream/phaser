@@ -49,8 +49,25 @@ RAMP_SIGN = -1.0
 # sliders, where a steering angle is not a meaningful thing to compute.
 RAMP_RESIDUAL_TOLERANCE_DEG = 6.0
 
-DEFAULT_SECTOR_CENTRES_DEG = [-60.0, -30.0, 0.0, 30.0, 60.0]
-DEFAULT_TOLERANCE_DEG = 12.0
+# Five sectors inside +/-45 deg. The count is fixed at five by a prior
+# commitment -- the sequence "3 1 4 1 2" is plaintext in another challenge's
+# payload -- so the +/-45 limit is met by tightening the spacing, never by
+# dropping a sector.
+#
+# +/-45 is a physical limit, not a preference. Past it an 8-element array's
+# beamwidth broadens as 1/cos(theta) and the mainlobe stops presenting a clear
+# peak, so a player cannot see which sector they are in. Every window edge
+# therefore stays inside 45: centre 40 with tolerance 5 reaches exactly 45 and
+# no further.
+#
+# Tolerance is generous despite looking tight. It is applied to the COMMANDED
+# angle, recovered from the phase ramp with a worst-case round-trip error of
+# 0.022 deg across the range -- there is no measurement noise to absorb, so
+# +/-5 is purely "did the operator aim within 5 degrees of the centre", which
+# a 1-degree steer control makes easy. The 10 deg dead bands between windows
+# are the real reason not to widen it: they keep "between sectors" unambiguous.
+DEFAULT_SECTOR_CENTRES_DEG = [-40.0, -20.0, 0.0, 20.0, 40.0]
+DEFAULT_TOLERANCE_DEG = 5.0
 DEFAULT_DWELL_S = 2.0
 
 # Deliberately NOT the CTF's real sequence — see the module docstring.

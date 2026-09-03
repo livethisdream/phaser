@@ -43,6 +43,12 @@ const instructorMode = new URLSearchParams(window.location.search).get('instruct
 // to go looking. Everything below only displays what the backend reports.
 const ctfMode = new URLSearchParams(window.location.search).get('ctf') === '1';
 
+// Sector geometry as last reported by the backend, and whether to draw it on
+// the beam pattern. Both live here rather than in the CTF block because
+// updateCharts() reads them on every sweep.
+state.ctfSectors = [];
+state.ctfSectorLines = true;
+
 // When switching Manual -> MVDR, we zero B0/B1 so residual manual weights
 // don't fight the adaptive algorithm. These snapshots restore them on the
 // way back.
@@ -954,36 +960,56 @@ let ctfPollTimer = null;
 function renderCtfStatus(data) {
     if (!data) return;
 
+    // Sector geometry comes from the backend, never from a constant here: the
+    // matcher in phaser_ctf.py owns it, so the bands drawn on the plot cannot
+    // drift away from the windows actually being scored.
     const sectorsEl = document.getElementById('ctf-sectors');
     if (sectorsEl && Array.isArray(data.sectors) && !sectorsEl.dataset.filled) {
         sectorsEl.textContent = 'Sectors: ' + data.sectors
             .map(s => `${s.sector} @ ${s.centre_deg}°`).join('   ');
         sectorsEl.dataset.filled = '1';
     }
-
-    const currentEl = document.getElementById('ctf-current');
-    if (currentEl) {
-        const angle = Number.isFinite(data.current_angle_deg)
-            ? `${data.current_angle_deg.toFixed(1)}°` : '—';
-        const sector = data.current_sector ? `sector ${data.current_sector}` : 'between sectors';
-        currentEl.textContent = `Beam: ${angle}  (${sector})`;
+    if (Array.isArray(data.sectors) && !state.ctfSectors.length) {
+        state.ctfSectors = data.sectors;
+        drawCtfSectorBands();
     }
 
-    const progressEl = document.getElementById('ctf-progress');
-    if (progressEl) {
+    // Progress as a pill in the stat row, beside Est. Angle. It lives there
+    // rather than in the panel because that is where the player is already
+    // looking, and because the panel is meant to stay quiet.
+    //
+    // Showing the count at all is a deliberate difficulty decision, not a
+    // convenience: it collapses the search from 5^5 orderings to roughly 25
+    // guesses, which makes the sector sequence an accelerator for
+    // thats_random solvers rather than a hard gate in front of everyone else.
+    // Removing it would re-gate this challenge behind another one.
+    const pillBox = document.getElementById('ctf-progress-box');
+    const pillEl = document.getElementById('ctf-progress-pill');
+    if (pillBox && pillEl) {
+        pillBox.style.display = 'flex';
+        const total = data.sequence_length ?? '—';
         if (data.armed === false) {
-            // Nothing scores until the session is started. Without this line the
-            // panel looks broken: the beam moves, the sector readout updates, and
-            // progress sits at zero with no explanation.
-            progressEl.textContent = 'Press Start to begin'
+            pillEl.textContent = `— / ${total}`;
+        } else {
+            const done = data.matched ? total : (data.progress ?? 0);
+            pillEl.textContent = `${done} / ${total}`;
+        }
+    }
+
+    // One status line, and it stays quiet during normal play — the bands and
+    // the pill are the display. It speaks up only for the two things neither
+    // of them can show.
+    const statusEl = document.getElementById('ctf-status');
+    if (statusEl) {
+        if (data.armed === false) {
+            // Without this the table reads as broken: the beam moves, the
+            // bands are drawn, and nothing ever scores.
+            statusEl.textContent = 'Press Start to begin'
                 + '  ·  where the beam is parked right now does not count';
         } else if (data.matched) {
-            progressEl.textContent = `Sequence complete (${data.sequence_length} of ${data.sequence_length}).`;
-        } else if (Number.isFinite(data.progress)) {
-            progressEl.textContent = `Progress: ${data.progress} of ${data.sequence_length}`
-                + `  ·  hold a sector ${data.dwell_s}s to lock it in`;
+            statusEl.textContent = 'Sequence complete.';
         } else {
-            progressEl.textContent = `Hold each sector ${data.dwell_s}s to lock it in`;
+            statusEl.textContent = `Hold each sector ${data.dwell_s}s.`;
         }
     }
 
@@ -1001,6 +1027,51 @@ function renderCtfStatus(data) {
     }
 }
 
+/* Sector bands on the beam pattern.
+
+   chart-rect's x-axis is already Steering Angle in degrees over [-90, 90], so
+   these need no coordinate mapping — but they cannot be relayout'd on their
+   own. updateCharts() rebuilds layout.shapes from scratch every frame for the
+   peak markers and applies the whole array, so anything set independently is
+   erased on the next sweep. ctfSectorShapes() is therefore called from inside
+   that rebuild, and this function only handles the case where no sweep is
+   running and updateCharts() is not being called at all. */
+function ctfSectorShapes() {
+    if (!ctfMode || !state.ctfSectorLines || !state.ctfSectors.length) return [];
+
+    const shapes = [];
+    for (const s of state.ctfSectors) {
+        const lo = s.centre_deg - s.tolerance_deg;
+        const hi = s.centre_deg + s.tolerance_deg;
+        // A filled band, not a pair of lines: the scoreable region is an
+        // interval, and drawing only its edges invites aiming AT an edge.
+        shapes.push({
+            // Named so drawCtfSectorBands can strip only its own bands if a
+            // future change adds other rects to this plot (Plotly 2.30 keeps
+            // shape.name). Filtering on type alone would take them too.
+            name: 'ctf-sector', type: 'rect', x0: lo, x1: hi, y0: 0, y1: 1, yref: 'paper',
+            fillcolor: 'rgba(99, 102, 241, 0.12)',
+            line: { color: 'rgba(99, 102, 241, 0.45)', width: 1, dash: 'dot' },
+            layer: 'below',
+        });
+    }
+    return shapes;
+}
+
+function drawCtfSectorBands() {
+    const el = document.getElementById('chart-rect');
+    if (!el || !window.Plotly) return;
+    const existing = (el.layout?.shapes || []).filter(sh => sh.name !== 'ctf-sector');
+    try {
+        Plotly.relayout('chart-rect', { shapes: existing.concat(ctfSectorShapes()) });
+    } catch (e) { /* chart not ready yet; the next sweep will draw them */ }
+}
+
+document.getElementById('ctf-show-sectors')?.addEventListener('change', (e) => {
+    state.ctfSectorLines = e.target.checked;
+    drawCtfSectorBands();
+});
+
 async function pollCtfStatus() {
     try {
         const resp = await transport.invoke('ctf_status', {});
@@ -1017,18 +1088,24 @@ async function pollCtfStatus() {
 function renderCtfNeedsBackend() {
     const sectorsEl = document.getElementById('ctf-sectors');
     if (sectorsEl) sectorsEl.textContent = '';
-    const currentEl = document.getElementById('ctf-current');
-    if (currentEl) currentEl.textContent = 'CTF mode needs the Python backend.';
-    const progressEl = document.getElementById('ctf-progress');
-    if (progressEl) {
-        progressEl.textContent = 'The sector sequence and the flag are checked'
-            + ' server-side, so they are not part of this page. Connect to a'
-            + ' phaser_headless.py backend to play.';
+    const statusEl = document.getElementById('ctf-status');
+    if (statusEl) {
+        statusEl.textContent = 'CTF mode needs the Python backend. The sector'
+            + ' sequence and the flag are checked server-side, so they are not'
+            + ' part of this page. Connect to a phaser_headless.py backend to play.';
     }
     const flagEl = document.getElementById('ctf-flag');
     if (flagEl) flagEl.textContent = '';
     const resetBtn = document.getElementById('btn-ctf-reset');
     if (resetBtn) resetBtn.disabled = true;
+    // No backend means no sector geometry to draw; the toggle would control nothing.
+    const bandsToggle = document.getElementById('ctf-show-sectors');
+    if (bandsToggle) bandsToggle.disabled = true;
+    state.ctfSectorLines = false;
+    // No backend, no progress to report -- leave the stat row alone rather
+    // than parking a dead "— / —" pill next to the live readouts.
+    const pillBox = document.getElementById('ctf-progress-box');
+    if (pillBox) pillBox.style.display = 'none';
 }
 
 function revealCtfIfEligible() {
@@ -2327,7 +2404,8 @@ function updateCharts(data) {
         peakValue = Math.max(...yData);
         peakIndex = yData.indexOf(peakValue);
         
-        const shapes = [];
+        // Sector bands first, so the peak markers draw over them.
+        const shapes = ctfSectorShapes();
 
         // Render Peak Markers (applied via Plotly.relayout below)
         if(document.getElementById('opt-peak-angle').checked) {
