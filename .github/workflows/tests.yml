@@ -52,6 +52,19 @@ jobs:
             exit 1
           fi
 
+      # ubuntu-latest ships shellcheck, but say so explicitly: the pytest
+      # shellcheck tests skip themselves when the binary is absent, and a
+      # skipped check looks exactly like a passing one.
+      - name: Lint the shell scripts
+        run: |
+          shellcheck --version
+          shellcheck -S warning -e SC1091 \
+            install.sh \
+            scripts/provision.sh \
+            scripts/pi/phaser-clock \
+            scripts/pi/phaser-firstboot \
+            scripts/pi/pluto_update_ad9361.sh
+
       - name: Run tests
         run: python -m pytest -q
 

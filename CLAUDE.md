@@ -19,7 +19,12 @@ resolve each other by bare import, so they cannot move), the `LTE*.ftr` filter
 configs that pyadi-iio loads by bare filename, `install.sh`, and the usual
 project metadata.
 
-- `scripts/` — setup/provisioning and the legacy installer packager
+- `scripts/` — `provision.sh` (stock Kuiper card -> working kit, then chains
+  into `install.sh`), the systemd unit template, and the legacy installer
+  packager
+- `scripts/pi/` — files `provision.sh` copies verbatim onto the Pi: the clock
+  fix, the first-boot identity reset for cloned cards, and the vendored
+  PlutoSDR udev rule and iiod unit
 - `tests/` — pytest suite
 - `archive/` — superseded notes, nothing current
 - `docs/` — reference material
