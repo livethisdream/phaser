@@ -21,6 +21,19 @@ Type=simple
 User=@USER@
 WorkingDirectory=@INSTALL_DIR@
 Environment=PYTHONUNBUFFERED=1
+
+# CTF mode secrets (PHASER_CTF_FLAG, PHASER_CTF_SEQUENCE,
+# PHASER_CTF_ALLOW_SIM). The leading "-" makes the file optional, so a Pi that
+# is not running the CTF starts exactly as before -- phaser_ctf.py then falls
+# back to its demo sequence and placeholder flag.
+#
+# The file is NOT in this repo and install.sh cannot ship it: it is written
+# once on the Pi, root-owned and 0600, because a service Environment= line is
+# world-readable via `systemctl show`. Sidecar ctf_flag.txt / ctf_sequence.txt
+# in @INSTALL_DIR@ remain the no-sudo alternative; the environment wins when
+# both are present. See phaser_ctf.py.
+EnvironmentFile=-/etc/default/phaser-ctf
+
 ExecStart=@PYTHON@ -u @INSTALL_DIR@/phaser_headless.py
 Restart=on-failure
 RestartSec=5

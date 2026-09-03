@@ -407,6 +407,32 @@ export PHASER_CTF_ALLOW_SIM=0        # optional: hardware-only flag issue
 python phaser_headless.py
 ```
 
+**Under systemd, exporting in your shell is not enough.** The service starts
+from the unit, not from your login environment, so a backend run by
+`phaser-headless.service` would still be on the placeholder. The unit reads
+`/etc/default/phaser-ctf` if it exists (`EnvironmentFile=-`, so a Pi that is
+not running the CTF is unaffected). Write it once on the Pi, after installing:
+
+```bash
+sudo install -m 600 -o root -g root /dev/null /etc/default/phaser-ctf
+sudo tee /etc/default/phaser-ctf >/dev/null <<'EOF'
+PHASER_CTF_SEQUENCE=3 1 4 1 2
+PHASER_CTF_FLAG=flag{...}
+PHASER_CTF_ALLOW_SIM=0
+EOF
+sudo systemctl restart phaser-headless
+```
+
+Mode `0600` and root ownership matter: `systemctl show phaser-headless` prints
+every `Environment=` value to any user, whereas values loaded from an
+`EnvironmentFile` are read by PID 1 at start and never echoed back. Do not put
+the flag in the unit itself.
+
+No sudo on the machine? The sidecar files are the alternative, and need no
+privileges -- `ctf_flag.txt` and `ctf_sequence.txt` go in the install directory
+next to `phaser_ctf.py` (`/home/analog/pyadi-iio/examples/phaser/`), owned by
+the service user. The environment wins when both are present.
+
 Sectors default to five bins centred at -60/-30/0/+30/+60 degrees with +/-12
 degrees tolerance and a 2 s dwell; all of that is constructor arguments on
 `CtfMode`. The mode is passive -- it watches the commanded `phaseList` and
