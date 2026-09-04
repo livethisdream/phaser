@@ -42,9 +42,14 @@ UNIT_PATH="/etc/systemd/system/${SERVICE}.service"
 PYTHON_BIN="/usr/bin/python3"
 HTTP_PORT=8080
 
+# ctf_flag.txt and ctf_sequence.txt are deliberately absent: this is an
+# allowlist, so the CTF's secrets are excluded by construction rather than by
+# an exclusion rule someone has to remember to maintain. They live on the Pi
+# only, the same treatment config.py gets below.
 BACKEND_FILES=(
   phaser_headless.py phaser_cal_headless.py phaser_find_hb100_headless.py
   phaser_cw_radar.py ADAR_pyadi_functions.py SDR_functions.py phaser_functions.py
+  phaser_ctf.py
   LTE5_MHz.ftr LTE10_MHz.ftr LTE20_MHz.ftr
 )
 

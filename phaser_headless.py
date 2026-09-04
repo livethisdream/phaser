@@ -58,6 +58,7 @@ from phaser_functions import load_hb100_cal
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
+from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additive)
 
 
 class PhaserHeadless:
@@ -287,6 +288,13 @@ class PhaserHeadless:
         self.ignore_res = True
         self.steer_min = -90
         self.steer_max = 90
+
+        # GRCon26 CTF sector-sequence mode. Passive: it only watches the
+        # commanded phaseList and answers ctf_status / ctf_reset, so it has no
+        # effect on the workshop app unless a browser asks for it. Flag and
+        # target sequence come from the environment or gitignored sidecar
+        # files — see phaser_ctf.py.
+        self.ctf = CtfMode()
 
         # Tx mode
         self.Tx_mode = "Transmit Disabled"
@@ -595,6 +603,10 @@ class PhaserHeadless:
             "max_gain": max_gain.tolist(),
             "xf": xf.tolist(),
             "peak_signal": float(max_signal),
+            # Where the SOURCE is, for CTF tracking mode. Computed here rather
+            # than in the browser because the flag is scored backend-side, and
+            # a client-computed sector would be trivially spoofable.
+            "peak_angle_deg": peak_angle_centroid(angles, gain),
         }
 
     # --- Mode dispatcher --------------------------------------------------
@@ -1035,6 +1047,10 @@ class PhaserHeadless:
             if "phaseList" in state:
                 incoming = list(state["phaseList"])[:8]
                 self.phaseList = [float(v) for v in (incoming + [0.0] * 8)[:8]]
+                # Where the operator deliberately pointed the beam. Hooked
+                # here rather than in do_sweep, which walks every steer angle
+                # in the range by design and would swamp the state machine.
+                self.ctf.observe(self.phaseList, self.ConvertPhaseToSteerAngle)
             if "Tx_mode" in state:
                 self.set_tx_mode(state["Tx_mode"])
             if "Averages" in state:
@@ -1100,6 +1116,13 @@ class PhaserHeadless:
                 self.ignore_res = bool(state["ignore_res"])
                 print(f"Ignore steering resolution: {self.ignore_res}")
             return {"status": "ok"}
+
+        elif cmd == "ctf_status":
+            return self.ctf.status(sim_mode=self.sim_mode)
+
+        elif cmd == "ctf_reset":
+            self.ctf.reset()
+            return self.ctf.status(sim_mode=self.sim_mode)
 
         elif cmd == "run_calibration":
             return self.run_calibration(data.get("task_name", "find_hb100"))
@@ -1170,6 +1193,16 @@ class PhaserHeadless:
             if self.mode == "sweep":
                 try:
                     sweep_data = self.do_sweep()
+
+                    # CTF tracking mode watches where the source is. Note this
+                    # is NOT what phaser_ctf's docstring warns against: that
+                    # warning is about hooking the sweep's commanded phases,
+                    # which step through every sector on every pass. One peak
+                    # angle per sweep is a single measurement.
+                    self.ctf.observe_tracked(
+                        sweep_data.get("peak_angle_deg"),
+                        sweep_data.get("peak_signal"),
+                    )
 
                     frame = {
                         "type": "sweep",

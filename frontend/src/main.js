@@ -36,6 +36,19 @@ const state = {
 // Simulator Interferer accordion. Students never see it.
 const instructorMode = new URLSearchParams(window.location.search).get('instructor') === '1';
 
+// CTF mode: ?ctf=1 reveals the GRCon26 sector-sequence panel. Unlike
+// instructor mode this parameter is UI convenience only, NOT a secret —
+// the sequence check and the flag live in the backend, because this bundle
+// is served to every browser that connects and a CTF player's whole job is
+// to go looking. Everything below only displays what the backend reports.
+const ctfMode = new URLSearchParams(window.location.search).get('ctf') === '1';
+
+// Sector geometry as last reported by the backend, and whether to draw it on
+// the beam pattern. Both live here rather than in the CTF block because
+// updateCharts() reads them on every sweep.
+state.ctfSectors = [];
+state.ctfSectorLines = true;
+
 // When switching Manual -> MVDR, we zero B0/B1 so residual manual weights
 // don't fight the adaptive algorithm. These snapshots restore them on the
 // way back.
@@ -937,6 +950,278 @@ function revealSimInterfererIfEligible(serverState) {
     el.hidden = !showIt;
 }
 
+/* --- CTF Mode (GRCon26) ---
+   A display for backend state, nothing more. It polls ctf_status rather than
+   computing anything: the backend needs a poll to advance its dwell clock
+   anyway, since a player who steers and then holds still sends no further
+   commands. */
+let ctfPollTimer = null;
+
+function renderCtfStatus(data) {
+    if (!data) return;
+
+    // Sector geometry comes from the backend, never from a constant here: the
+    // matcher in phaser_ctf.py owns it, so the bands drawn on the plot cannot
+    // drift away from the windows actually being scored.
+    const sectorsEl = document.getElementById('ctf-sectors');
+    if (sectorsEl && Array.isArray(data.sectors) && !sectorsEl.dataset.filled) {
+        // Numbers on top, angles underneath: the sequence is written in sector
+        // numbers but the player has to act on degrees, and the table is what
+        // saves them doing that translation in their head at the table.
+        const nums = data.sectors
+            .map(s => `<th>${Number(s.sector)}</th>`).join('');
+        const degs = data.sectors.map(s => {
+            const deg = Number(s.centre_deg);
+            return `<td>${Number.isFinite(deg) ? deg : '?'}°</td>`;
+        }).join('');
+        sectorsEl.innerHTML = '<table class="ctf-sectors"><tbody>'
+            + `<tr>${nums}</tr><tr>${degs}</tr>`
+            + '</tbody></table>';
+        sectorsEl.dataset.filled = '1';
+    }
+    if (Array.isArray(data.sectors) && !state.ctfSectors.length) {
+        state.ctfSectors = data.sectors;
+        drawCtfSectorBands();
+    }
+
+    // Progress as a pill in the stat row, beside Est. Angle. It lives there
+    // rather than in the panel because that is where the player is already
+    // looking, and because the panel is meant to stay quiet.
+    //
+    // Showing the count at all is a deliberate difficulty decision, not a
+    // convenience: it collapses the search from 5^5 orderings to roughly 25
+    // guesses, which makes the sector sequence an accelerator for
+    // thats_random solvers rather than a hard gate in front of everyone else.
+    // Removing it would re-gate this challenge behind another one.
+    const pillBox = document.getElementById('ctf-progress-box');
+    const pillEl = document.getElementById('ctf-progress-pill');
+    if (pillBox && pillEl) {
+        pillBox.style.display = 'flex';
+        const total = data.sequence_length ?? '—';
+        if (data.armed === false) {
+            pillEl.textContent = `— / ${total}`;
+        } else {
+            const done = data.matched ? total : (data.progress ?? 0);
+            pillEl.textContent = `${done} / ${total}`;
+        }
+
+        // The tracked machine confirms on consecutive sweeps, not on a wall
+        // clock, so quoting dwell_s would state the wrong rule for it.
+        const rule = data.source === 'tracked'
+            ? `Hold the source still in each sector for ${data.dwell_sweeps} sweeps.`
+            : `Hold each sector ${data.dwell_s}s.`;
+        pillBox.title = rule
+            + '  ·  Hold this pill to start a new run. This clears any progress.';
+    }
+
+    // One status line, and it stays quiet during normal play — the bands and
+    // the pill are the display. It speaks up only for the two things neither
+    // of them can show.
+    const statusEl = document.getElementById('ctf-status');
+    if (statusEl) {
+        if (data.armed === false) {
+            // Without this the table reads as broken: the beam moves, the
+            // bands are drawn, and nothing ever scores.
+            statusEl.textContent = 'Hold the CTF Sequence pill to begin'
+                + '  ·  where the source is right now does not count';
+        } else if (data.matched) {
+            statusEl.textContent = 'Sequence complete.';
+        } else {
+            // Quiet during play, which is what the comment above always said
+            // this line was for. The dwell rule is reference material rather
+            // than news -- it never changes mid-run -- so it lives in the
+            // pill's tooltip instead of restating itself every 700 ms.
+            statusEl.textContent = '';
+        }
+    }
+
+    const flagEl = document.getElementById('ctf-flag');
+    if (flagEl) {
+        if (data.flag) {
+            flagEl.textContent = data.flag;
+        } else if (data.flag_withheld_in_sim) {
+            flagEl.textContent = 'Sequence complete — but this backend is in sim mode, so no flag. Come find the array.';
+        } else if (data.matched && !data.configured) {
+            flagEl.textContent = 'Sequence complete — no flag configured on this backend.';
+        } else {
+            flagEl.textContent = '';
+        }
+    }
+}
+
+/* Sector bands on the beam pattern.
+
+   chart-rect's x-axis is already Steering Angle in degrees over [-90, 90], so
+   these need no coordinate mapping — but they cannot be relayout'd on their
+   own. updateCharts() rebuilds layout.shapes from scratch every frame for the
+   peak markers and applies the whole array, so anything set independently is
+   erased on the next sweep. ctfSectorShapes() is therefore called from inside
+   that rebuild, and this function only handles the case where no sweep is
+   running and updateCharts() is not being called at all. */
+function ctfSectorShapes() {
+    if (!ctfMode || !state.ctfSectorLines || !state.ctfSectors.length) return [];
+
+    const shapes = [];
+    for (const s of state.ctfSectors) {
+        const lo = s.centre_deg - s.tolerance_deg;
+        const hi = s.centre_deg + s.tolerance_deg;
+        // A filled band, not a pair of lines: the scoreable region is an
+        // interval, and drawing only its edges invites aiming AT an edge.
+        shapes.push({
+            // Named so drawCtfSectorBands can strip only its own bands if a
+            // future change adds other rects to this plot (Plotly 2.30 keeps
+            // shape.name). Filtering on type alone would take them too.
+            name: 'ctf-sector', type: 'rect', x0: lo, x1: hi, y0: 0, y1: 1, yref: 'paper',
+            fillcolor: 'rgba(99, 102, 241, 0.12)',
+            line: { color: 'rgba(99, 102, 241, 0.45)', width: 1, dash: 'dot' },
+            layer: 'below',
+        });
+    }
+    return shapes;
+}
+
+function drawCtfSectorBands() {
+    const el = document.getElementById('chart-rect');
+    if (!el || !window.Plotly) return;
+    const existing = (el.layout?.shapes || []).filter(sh => sh.name !== 'ctf-sector');
+    try {
+        Plotly.relayout('chart-rect', { shapes: existing.concat(ctfSectorShapes()) });
+    } catch (e) { /* chart not ready yet; the next sweep will draw them */ }
+}
+
+document.getElementById('ctf-show-sectors')?.addEventListener('change', (e) => {
+    state.ctfSectorLines = e.target.checked;
+    drawCtfSectorBands();
+});
+
+async function pollCtfStatus() {
+    try {
+        const resp = await transport.invoke('ctf_status', {});
+        if (resp?.status === 'ok') renderCtfStatus(resp.data);
+    } catch (err) {
+        // A dropped poll is not worth logging every 700 ms; the next one retries.
+    }
+}
+
+/* The browser simulator deliberately has no ctf_status handler: the sequence
+   check and the flag live in the backend precisely so they are not in a
+   downloadable bundle. Under ?sim=1 the panel says so rather than polling a
+   command that will only ever answer "Unknown command". */
+function renderCtfNeedsBackend() {
+    const sectorsEl = document.getElementById('ctf-sectors');
+    if (sectorsEl) {
+        sectorsEl.textContent = '';
+        // Drop the guard too, or a later reconnect finds a filled flag over an
+        // empty table and never rebuilds it.
+        delete sectorsEl.dataset.filled;
+    }
+    const statusEl = document.getElementById('ctf-status');
+    if (statusEl) {
+        statusEl.textContent = 'CTF mode needs the Python backend. The sector'
+            + ' sequence and the flag are checked server-side, so they are not'
+            + ' part of this page. Connect to a phaser_headless.py backend to play.';
+    }
+    const flagEl = document.getElementById('ctf-flag');
+    if (flagEl) flagEl.textContent = '';
+    // No backend means no sector geometry to draw; the toggle would control nothing.
+    const bandsToggle = document.getElementById('ctf-show-sectors');
+    if (bandsToggle) bandsToggle.disabled = true;
+    state.ctfSectorLines = false;
+    // No backend, no progress to report -- leave the stat row alone rather
+    // than parking a dead "— / —" pill next to the live readouts.
+    const pillBox = document.getElementById('ctf-progress-box');
+    if (pillBox) pillBox.style.display = 'none';
+}
+
+function revealCtfIfEligible() {
+    const el = document.getElementById('accordion-ctf');
+    if (!el) return;
+    el.hidden = !ctfMode;
+    if (!ctfMode) return;
+    if (resolveTransportMode() === 'sim') {
+        renderCtfNeedsBackend();
+        return;
+    }
+    if (!ctfPollTimer) {
+        pollCtfStatus();
+        ctfPollTimer = setInterval(pollCtfStatus, 700);
+    }
+}
+
+async function ctfReset() {
+    try {
+        const resp = await transport.invoke('ctf_reset', {});
+        if (resp?.status === 'ok') renderCtfStatus(resp.data);
+        return true;
+    } catch (err) {
+        addRuntimeLog('warn', 'CTF', 'Could not reset: ' + err);
+        return false;
+    }
+}
+
+/* Hold to commit: the action fires only when the pointer has been held long
+   enough for the fill to cross the control. Releasing early aborts, so the
+   gesture is its own confirmation dialog.
+
+   ctf_reset clears the trail, so a stray click mid-run silently discards
+   everything the player has walked. A short click therefore does nothing at
+   all -- on either control. */
+const CTF_HOLD_MS = 1200;
+
+function wireHoldToCommit(el, holdMs, onCommit) {
+    if (!el) return;
+    let holdTimer = null;
+    let pointerActive = false;
+
+    const fire = () => {
+        el.classList.remove('holding');
+        Promise.resolve(onCommit()).then((ok) => {
+            if (ok === false) return;
+            el.classList.add('flash');
+            setTimeout(() => el.classList.remove('flash'), 260);
+        });
+    };
+
+    const startHold = () => {
+        if (el.disabled) return;
+        if (holdTimer) clearTimeout(holdTimer);
+        el.classList.add('holding');
+        holdTimer = setTimeout(() => { holdTimer = null; fire(); }, holdMs);
+    };
+
+    const cancelHold = () => {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+        el.classList.remove('holding');
+    };
+
+    el.addEventListener('pointerdown', (e) => {
+        if (el.disabled) return;
+        if (e.button !== undefined && e.button !== 0) return;  // primary only
+        pointerActive = true;
+        startHold();
+    });
+    el.addEventListener('pointerup', () => { pointerActive = false; cancelHold(); });
+    el.addEventListener('pointercancel', () => { pointerActive = false; cancelHold(); });
+    el.addEventListener('pointerleave', () => {
+        if (pointerActive) cancelHold();
+        pointerActive = false;
+    });
+
+    // Keyboard: a held key repeats rather than reporting a duration, so there
+    // is no honest hold gesture here. Enter/Space commits directly -- reaching
+    // for the keyboard is already deliberate in a way a stray tap is not.
+    el.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && !el.disabled) {
+            e.preventDefault();
+            fire();
+        }
+    });
+}
+
+// The pill in the stat row is the only control: it is the thing the player is
+// already watching during a run.
+wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
+
 const simInterfererEnable = document.getElementById('sim-interferer-enable');
 if (simInterfererEnable) {
     simInterfererEnable.addEventListener('change', (e) => {
@@ -1193,6 +1478,7 @@ async function loadStateFromServer() {
         // ?instructor=1 AND (b) backend is running in sim mode. Also
         // hydrate the panel's controls from the current server state.
         revealSimInterfererIfEligible(msg.data);
+        revealCtfIfEligible();
         if (typeof msg.data.sim_interferer_enable === 'boolean') {
             state.sim_interferer_enable = msg.data.sim_interferer_enable;
             const el = document.getElementById('sim-interferer-enable');
@@ -2208,7 +2494,8 @@ function updateCharts(data) {
         peakValue = Math.max(...yData);
         peakIndex = yData.indexOf(peakValue);
         
-        const shapes = [];
+        // Sector bands first, so the peak markers draw over them.
+        const shapes = ctfSectorShapes();
 
         // Render Peak Markers (applied via Plotly.relayout below)
         if(document.getElementById('opt-peak-angle').checked) {

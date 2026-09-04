@@ -423,6 +423,25 @@
                 </div>
             </div>
 
+            <div class="accordion-item" id="accordion-ctf" hidden>
+                <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="7"></span> CTF Mode <span>▼</span></button>
+                <div class="accordion-body">
+                    <!-- Sector table, the helper-line toggle, and a single status
+                         line. No controls: the live beam/sector readout, the
+                         progress counter and now the start gesture all live on the
+                         plot, because that is where the player is looking. What
+                         survives as text here is only what the plot cannot say --
+                         that the session is not started yet, and the flag. -->
+                    <div id="ctf-sectors" class="mt-2" style="font-size:0.8rem; color:var(--text-muted);"></div>
+                    <label class="mt-2" style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; cursor:pointer;">
+                        <input type="checkbox" id="ctf-show-sectors" checked>
+                        <span>Show sector bands on plot</span>
+                    </label>
+                    <div id="ctf-status" class="mt-2" style="font-size:0.85rem; color:var(--text-muted); line-height:1.35;"></div>
+                    <div id="ctf-flag" class="mt-2" style="font-size:0.95rem; font-weight:600; word-break:break-all;"></div>
+                </div>
+            </div>
+
             </div>
 
           <!-- Theme Toggle (bottom of sidebar) -->
@@ -492,6 +511,26 @@
             <div class="stat-box">
                 <span class="stat-label">Est. Angle</span>
                 <span class="stat-value" id="stat-angle">-- °</span>
+            </div>
+            <!-- CTF progress. It sits in the stat row rather than in the CTF
+                 panel for the same reason the sector bands do: the player is
+                 already looking at the plot and its readouts, not at the
+                 sidebar. Hidden unless ?ctf=1 AND a Python backend answered.
+
+                 Full size, not .compact, to match Peak Array Gain and Est.
+                 Angle. During a run this is the readout the player checks
+                 most, so it should not read as an afterthought next to them;
+                 the beam-squint boxes below stay compact because they are.
+
+                 It is also the control: hold it to start a run. Putting the
+                 reset on the readout the player is already watching beats a
+                 button in the sidebar they have to look away to find. -->
+            <div class="stat-box btn-hold" id="ctf-progress-box" style="display:none;"
+                 role="button" tabindex="0"
+                 title="Hold to start a new run. This clears any progress.">
+                <span class="btn-hold-fill"></span>
+                <span class="stat-label">CTF Sequence</span>
+                <span class="stat-value" id="ctf-progress-pill">— / —</span>
             </div>
             <div class="stat-box compact" id="beam-squint-info" style="display:none;">
                 <span class="stat-label">Calc (GHz)</span>
