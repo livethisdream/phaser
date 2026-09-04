@@ -965,8 +965,18 @@ function renderCtfStatus(data) {
     // drift away from the windows actually being scored.
     const sectorsEl = document.getElementById('ctf-sectors');
     if (sectorsEl && Array.isArray(data.sectors) && !sectorsEl.dataset.filled) {
-        sectorsEl.textContent = 'Sectors: ' + data.sectors
-            .map(s => `${s.sector} @ ${s.centre_deg}°`).join('   ');
+        // Numbers on top, angles underneath: the sequence is written in sector
+        // numbers but the player has to act on degrees, and the table is what
+        // saves them doing that translation in their head at the table.
+        const nums = data.sectors
+            .map(s => `<th>${Number(s.sector)}</th>`).join('');
+        const degs = data.sectors.map(s => {
+            const deg = Number(s.centre_deg);
+            return `<td>${Number.isFinite(deg) ? deg : '?'}°</td>`;
+        }).join('');
+        sectorsEl.innerHTML = '<table class="ctf-sectors"><tbody>'
+            + `<tr>${nums}</tr><tr>${degs}</tr>`
+            + '</tbody></table>';
         sectorsEl.dataset.filled = '1';
     }
     if (Array.isArray(data.sectors) && !state.ctfSectors.length) {
@@ -1004,10 +1014,15 @@ function renderCtfStatus(data) {
         if (data.armed === false) {
             // Without this the table reads as broken: the beam moves, the
             // bands are drawn, and nothing ever scores.
-            statusEl.textContent = 'Press Start to begin'
-                + '  ·  where the beam is parked right now does not count';
+            statusEl.textContent = 'Hold the CTF Sequence button to begin'
+                + '  ·  where the source is right now does not count';
         } else if (data.matched) {
             statusEl.textContent = 'Sequence complete.';
+        } else if (data.source === 'tracked') {
+            // The tracked machine confirms on consecutive sweeps, not on a
+            // wall clock, so quoting dwell_s here would state the wrong rule.
+            statusEl.textContent =
+                `Hold the source still in each sector for ${data.dwell_sweeps} sweeps.`;
         } else {
             statusEl.textContent = `Hold each sector ${data.dwell_s}s.`;
         }
@@ -1087,7 +1102,12 @@ async function pollCtfStatus() {
    command that will only ever answer "Unknown command". */
 function renderCtfNeedsBackend() {
     const sectorsEl = document.getElementById('ctf-sectors');
-    if (sectorsEl) sectorsEl.textContent = '';
+    if (sectorsEl) {
+        sectorsEl.textContent = '';
+        // Drop the guard too, or a later reconnect finds a filled flag over an
+        // empty table and never rebuilds it.
+        delete sectorsEl.dataset.filled;
+    }
     const statusEl = document.getElementById('ctf-status');
     if (statusEl) {
         statusEl.textContent = 'CTF mode needs the Python backend. The sector'
@@ -1123,14 +1143,75 @@ function revealCtfIfEligible() {
     }
 }
 
-document.getElementById('btn-ctf-reset')?.addEventListener('click', async () => {
+async function ctfReset() {
     try {
         const resp = await transport.invoke('ctf_reset', {});
         if (resp?.status === 'ok') renderCtfStatus(resp.data);
+        return true;
     } catch (err) {
         addRuntimeLog('warn', 'CTF', 'Could not reset: ' + err);
+        return false;
     }
-});
+}
+
+/* CTF Sequence button: hold to start a run, and only hold. A short click does
+   nothing on purpose.
+
+   ctf_reset clears the trail, so a stray click mid-run silently discards
+   everything the player has walked. Requiring a deliberate hold, with the fill
+   telegraphing what is about to happen, makes that impossible to do by
+   accident while leaving it one gesture away on purpose. */
+const CTF_HOLD_MS = 1200;
+(() => {
+    const btn = document.getElementById('btn-ctf-reset');
+    if (!btn) return;
+    let holdTimer = null;
+    let pointerActive = false;
+
+    const fire = () => {
+        btn.classList.remove('holding');
+        ctfReset().then((ok) => {
+            if (!ok) return;
+            btn.classList.add('flash');
+            setTimeout(() => btn.classList.remove('flash'), 260);
+        });
+    };
+
+    const startHold = () => {
+        if (btn.disabled) return;
+        if (holdTimer) clearTimeout(holdTimer);
+        btn.classList.add('holding');
+        holdTimer = setTimeout(() => { holdTimer = null; fire(); }, CTF_HOLD_MS);
+    };
+
+    const cancelHold = () => {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+        btn.classList.remove('holding');
+    };
+
+    btn.addEventListener('pointerdown', (e) => {
+        if (btn.disabled) return;
+        if (e.button !== undefined && e.button !== 0) return;  // primary only
+        pointerActive = true;
+        startHold();
+    });
+    btn.addEventListener('pointerup', () => { pointerActive = false; cancelHold(); });
+    btn.addEventListener('pointercancel', () => { pointerActive = false; cancelHold(); });
+    btn.addEventListener('pointerleave', () => {
+        if (pointerActive) cancelHold();
+        pointerActive = false;
+    });
+
+    // Keyboard: a held key repeats rather than reporting a duration, so there
+    // is no honest hold gesture here. Enter/Space commits directly -- reaching
+    // for the keyboard is already deliberate in a way a stray tap is not.
+    btn.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && !btn.disabled) {
+            e.preventDefault();
+            fire();
+        }
+    });
+})();
 
 const simInterfererEnable = document.getElementById('sim-interferer-enable');
 if (simInterfererEnable) {

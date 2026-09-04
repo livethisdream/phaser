@@ -861,6 +861,70 @@ input[type=number]::-webkit-outer-spin-button {
   100% { background: transparent; }
 }
 
+/* Hold-to-commit button — the fill grows left to right while the pointer is
+   held and the action fires only when it reaches full width. Releasing early
+   aborts, so the gesture is its own confirmation dialog.
+
+   Duration and colour come from custom properties so a caller can tune the
+   dwell without a new rule. .btn-freeze above is the older, hard-coded version
+   of the same idea; it is left alone deliberately rather than refactored
+   underneath a working control. */
+.btn-hold {
+  --hold-ms: 1200ms;
+  --hold-fill: rgba(99, 102, 241, 0.55);
+  position: relative;
+  overflow: hidden;
+}
+.btn-hold-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: var(--hold-fill);
+  pointer-events: none;
+  border-radius: inherit;
+  transition: width 0s linear;
+}
+.btn-hold.holding .btn-hold-fill {
+  width: 100%;
+  transition: width var(--hold-ms) linear;
+}
+.btn-hold.flash {
+  animation: btn-hold-flash 240ms ease-out;
+}
+.btn-hold-label {
+  position: relative;
+  z-index: 1;
+}
+@keyframes btn-hold-flash {
+  0%   { background: rgba(99, 102, 241, 0.4); }
+  100% { background: transparent; }
+}
+
+/* Sector reference table in the CTF panel. Two rows, one column per sector:
+   the number the sequence is written in, and the angle to put the source at. */
+.ctf-sectors {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+.ctf-sectors th,
+.ctf-sectors td {
+  border: 1px solid var(--border-color, rgba(128, 128, 128, 0.35));
+  padding: 0.2rem 0.15rem;
+  text-align: center;
+}
+.ctf-sectors th {
+  font-weight: 600;
+  color: var(--text-color, inherit);
+  background: rgba(99, 102, 241, 0.12);
+}
+.ctf-sectors td {
+  color: var(--text-muted);
+}
+
 .btn-danger:hover {
   background: #dc2626;
   border-color: #b91c1c;
