@@ -61,6 +61,20 @@ import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchang
 from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additive)
 
 
+# GUI shutdown. The physical button on the Phaser is a gpio-shutdown overlay
+# (GPIO21) that makes the kernel emit KEY_POWER, which logind turns into exactly
+# this command -- so triggering it from the browser is the same clean poweroff
+# rather than a second, parallel mechanism.
+#
+# The backend runs unprivileged and cannot do it alone: polkit refuses a process
+# with no active session, and there is no blanket NOPASSWD. install.sh grants
+# this one command when the operator opts in with PHASER_ALLOW_GUI_SHUTDOWN=1,
+# and grants nothing otherwise -- so a Pi that should not be shut down from a
+# browser simply has no rule, from identical code. That opt-in is the access
+# control: anyone who can reach the backend can call this.
+SHUTDOWN_CMD = ["/usr/bin/systemctl", "poweroff"]
+
+
 class PhaserHeadless:
     def __init__(self, pub_port=5555, rep_port=5556, ws_port=8765, http_port=8080,
                  radar_http_port=8081, sim_mode=False):
@@ -78,6 +92,7 @@ class PhaserHeadless:
         # _set_mode() keeps the two in sync.
         self.mode = "idle"
         self.sweeping = False
+        self._shutdown_permitted = None   # probed lazily, then cached
 
         # CW radar runtime state
         self.cw_params = {}                # effective config (after defaults)
@@ -716,6 +731,25 @@ class PhaserHeadless:
             fft_window=cfg.get("fft_window", "blackman"),
         )
 
+    def shutdown_permitted(self):
+        """Whether sudo will run the poweroff command without a password.
+
+        `sudo -l <cmd>` answers that without running anything. Cached: the
+        answer only changes when the sudoers drop-in does, and install.sh
+        restarts the service whenever it writes one.
+        """
+        if self._shutdown_permitted is None:
+            try:
+                probe = subprocess.run(
+                    ["sudo", "-n", "-l"] + SHUTDOWN_CMD,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                self._shutdown_permitted = probe.returncode == 0
+            except Exception:
+                self._shutdown_permitted = False
+        return self._shutdown_permitted
+
     def get_state(self):
         """Return current configuration state"""
         return {
@@ -750,6 +784,8 @@ class PhaserHeadless:
                 "sim_interferer_power_db": self.sim_interferer_power_db,
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
+                # Lets the UI hide the affordance where it would only fail.
+                "shutdown_available": self.shutdown_permitted(),
             }
         }
 
@@ -1116,6 +1152,17 @@ class PhaserHeadless:
                 self.ignore_res = bool(state["ignore_res"])
                 print(f"Ignore steering resolution: {self.ignore_res}")
             return {"status": "ok"}
+
+        elif cmd == "power_off":
+            if not self.shutdown_permitted():
+                return {"status": "error",
+                        "message": "Shutdown is not permitted on this host. "
+                                   "Re-run install.sh with "
+                                   "PHASER_ALLOW_GUI_SHUTDOWN=1 to grant it."}
+            # Popen, not run: the reply has to reach the browser before systemd
+            # starts tearing the machine down.
+            subprocess.Popen(["sudo", "-n"] + SHUTDOWN_CMD)
+            return {"status": "ok", "message": "Shutting down."}
 
         elif cmd == "ctf_status":
             return self.ctf.status(sim_mode=self.sim_mode, sweeping=self.sweeping)

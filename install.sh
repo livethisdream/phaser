@@ -237,6 +237,34 @@ if [ "$NEED_UNIT" = "1" ]; then
     say "OK: unit installed and enabled"
 fi
 
+# ---- 5b. optional: let the GUI power the machine off -----------------------
+# Off by default, and deliberately so. The backend is unauthenticated, so
+# anyone who can reach it can call the endpoint -- on a shared network that is
+# a power switch for the room. Granting it per machine means a bench Pi can
+# have it while a Pi on a conference floor, running identical code, cannot.
+#
+# The rule is a single command. It grants no other privilege, and revoking it
+# is deleting one file.
+SUDOERS_PATH="/etc/sudoers.d/phaser-shutdown"
+if [ -n "${PHASER_ALLOW_GUI_SHUTDOWN:-}" ]; then
+    step 5b "Granting the GUI permission to power off..."
+    RENDERED_SUDO="$TMP/phaser-shutdown"
+    {
+        printf '# Installed by phaser install.sh (PHASER_ALLOW_GUI_SHUTDOWN=1).\n'
+        printf '# Exactly one command; delete this file to revoke.\n'
+        printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n' "$SERVICE_USER"
+    } > "$RENDERED_SUDO"
+    # visudo -c refuses a file that would otherwise break sudo entirely.
+    if sudo visudo -cqf "$RENDERED_SUDO"; then
+        sudo install -m 440 -o root -g root "$RENDERED_SUDO" "$SUDOERS_PATH"
+        say "OK: $SUDOERS_PATH installed"
+    else
+        die "the generated sudoers rule failed validation; refusing to install it."
+    fi
+elif [ -e "$SUDOERS_PATH" ]; then
+    say "KEEP: $SUDOERS_PATH (GUI shutdown already granted; delete it to revoke)"
+fi
+
 # ---- 6. start and verify ---------------------------------------------------
 step 6 "Starting the service..."
 sudo systemctl restart "$SERVICE"

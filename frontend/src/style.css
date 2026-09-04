@@ -920,6 +920,28 @@ input[type=number]::-webkit-outer-spin-button {
   100% { background: transparent; }
 }
 
+/* The connection pill doubles as the power switch where the backend permits it.
+   Red fill and a longer hold than the CTF control, because this one cannot be
+   undone from the browser: the machine it powers off is the one serving the
+   page. Only ever applied from JS, and only when shutdown_available is true. */
+.status-indicator.btn-hold {
+  --hold-ms: 2000ms;
+  --hold-fill: rgba(239, 68, 68, 0.55);
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+}
+.status-indicator.btn-hold > .dot,
+.status-indicator.btn-hold > span:not(.btn-hold-fill) {
+  position: relative;
+  z-index: 1;
+}
+.status-indicator.btn-hold:focus-visible {
+  outline: 2px solid rgba(239, 68, 68, 0.8);
+  outline-offset: 2px;
+}
+
 /* Sector reference table in the CTF panel. Two rows, one column per sector:
    the number the sequence is written in, and the angle to put the source at. */
 .ctf-sectors {

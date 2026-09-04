@@ -1173,6 +1173,10 @@ async function ctfReset() {
    everything the player has walked. A short click therefore does nothing at
    all -- on either control. */
 const CTF_HOLD_MS = 1200;
+// Longer, because powering the Pi off cannot be undone from the browser — the
+// machine it stops is the one serving the page. Keep in step with the
+// --hold-ms on .status-indicator.btn-hold, or the fill and the timer disagree.
+const SHUTDOWN_HOLD_MS = 2000;
 
 function wireHoldToCommit(el, holdMs, onCommit) {
     if (!el) return;
@@ -1448,6 +1452,47 @@ function applyInitialStateToControls() {
     updateBeamSquintDisplay();
 }
 
+/* The connection pill doubles as a power switch, but only where the backend
+   says the grant exists (install.sh + PHASER_ALLOW_GUI_SHUTDOWN=1). Everywhere
+   else the pill stays an ordinary readout, with no cursor, no tooltip and no
+   listeners — an affordance for something that would only ever return an error
+   is worse than no affordance.
+
+   Armed once and left armed: the grant is a file on the Pi, so it cannot change
+   without the service restarting. */
+let shutdownArmed = false;
+
+function armShutdownIfPermitted(available) {
+    if (!available || shutdownArmed) return;
+    const pill = document.getElementById('connection-pill');
+    if (!pill) return;
+
+    pill.classList.add('btn-hold');
+    pill.setAttribute('role', 'button');
+    pill.setAttribute('tabindex', '0');
+    pill.title = 'Hold to shut the Phaser down cleanly.';
+
+    wireHoldToCommit(pill, SHUTDOWN_HOLD_MS, async () => {
+        try {
+            const resp = await transport.invoke('power_off', {});
+            if (resp?.status === 'ok') {
+                addRuntimeLog('warn', 'POWER', 'Shutting down — the Pi is going away.');
+                const text = document.getElementById('connection-text');
+                if (text) text.innerText = 'Shutting down...';
+                // Nothing will answer after this, so stop the reconnect churn
+                // from painting "Disconnected - Retrying..." over the message.
+                pill.classList.remove('btn-hold');
+                return true;
+            }
+            addRuntimeLog('error', 'POWER', resp?.message || 'Shutdown refused');
+        } catch (err) {
+            addRuntimeLog('error', 'POWER', 'Could not shut down: ' + err);
+        }
+        return false;
+    });
+    shutdownArmed = true;
+}
+
 function updateHardwareConnectionStatus(connected) {
     const dot = document.getElementById('connection-dot');
     const text = document.getElementById('connection-text');
@@ -1479,6 +1524,7 @@ async function loadStateFromServer() {
 
         // Update hardware connection indicator
         updateHardwareConnectionStatus(msg.data.hardware_connected ?? false);
+        armShutdownIfPermitted(msg.data.shutdown_available === true);
 
         // Reveal the instructor-only interferer panel iff (a) URL has
         // ?instructor=1 AND (b) backend is running in sim mode. Also
@@ -1738,6 +1784,7 @@ const transport = createTransport({
                 if (Number.isFinite(data.d)) state.d = data.d;
                 if (Number.isFinite(data.BW)) state.BW = data.BW;
                 updateHardwareConnectionStatus(data.hardware_connected ?? false);
+                armShutdownIfPermitted(data.shutdown_available === true);
                 applyInitialStateToControls();
                 setBackendStatus('ready', 'Backend: Ready');
                 updateSweepAvailability();
