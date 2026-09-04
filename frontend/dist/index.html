@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CKXhbmBx.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-DtVDgoHQ.css">
+  <script type="module" crossorigin src="./assets/index-yYGfGt3f.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DuP_KnM_.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -532,8 +532,15 @@
                  Full size, not .compact, to match Peak Array Gain and Est.
                  Angle. During a run this is the readout the player checks
                  most, so it should not read as an afterthought next to them;
-                 the beam-squint boxes below stay compact because they are. -->
-            <div class="stat-box" id="ctf-progress-box" style="display:none;">
+                 the beam-squint boxes below stay compact because they are.
+
+                 It is also the control: hold it to start a run. Putting the
+                 reset on the readout the player is already watching beats a
+                 button in the sidebar they have to look away to find. -->
+            <div class="stat-box btn-hold" id="ctf-progress-box" style="display:none;"
+                 role="button" tabindex="0"
+                 title="Hold to start a new run. This clears any progress.">
+                <span class="btn-hold-fill"></span>
                 <span class="stat-label">CTF Sequence</span>
                 <span class="stat-value" id="ctf-progress-pill">— / —</span>
             </div>
