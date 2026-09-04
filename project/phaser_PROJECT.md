@@ -50,9 +50,11 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
   mainlobe to weight, so `DEFAULT_SIGNAL_FLOOR_DB` is load-bearing rather than
   defensive: without it a player who walks away is scored into whichever sector
   the noise favoured.
-- **CTF tracking is fed by the sweep loop, not by the poll.** A stopped sweep
-  freezes `holding_sweeps` behind a stale angle, and the panel cannot currently
-  tell that from "between sectors". A service restart leaves the sweep stopped.
+- **CTF tracking is fed by the sweep loop, not the poll.** A service restart
+  leaves the sweep stopped, which is where every install lands. The backend
+  reports `measuring:false` and nulls the live readouts rather than serving the
+  last angle — anything reading `ctf_status` must honour that flag or it draws
+  stale data as live.
 - **`install.sh`'s `BACKEND_FILES` is an allowlist.** A backend module missing
   from it installs silently absent and the service crash-loops on the import —
   which is why installing a branch needs *that branch's* `install.sh`.
@@ -61,6 +63,7 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
 - **2026-09-04** — CTF scores the **tracked** source by default: the sweep's measured peak, not a commanded beam. Reason: the table challenge is carrying an HB100 in front of the array; `commanded` stays behind `PHASER_CTF_SOURCE` as the fallback, and exactly one source scores at a time.
 - **2026-09-04** — Peak angle is a -3 dB power-weighted centroid, not an argmax. Reason: 0.53 deg p-p versus 4.80 deg for argmax on a stationary source — see Traps.
 - **2026-09-04** — Tracked confirmation counts 3 consecutive in-sector sweeps, not seconds. Reason: the sweep runs at ~0.9/s, so a 2 s dwell was ~2 observations; `status()` no longer advances the tracked machine, so polling faster cannot confirm sooner.
+- **2026-09-04** — `status()` takes `sweeping` and reports `measuring`, nulling the live readouts and dropping the in-flight sweep count when nothing observes. Reason: a stopped sweep looks on screen exactly like a challenge that refuses to score. The trail is kept — earned progress is still earned.
 - **2026-09-04** — The start gesture is a 1.2 s hold on the stat-row pill; the sidebar Start button was removed. Reason: `ctf_reset` discards a run and a tap did it silently — three taps in thirty seconds during testing threw away a scored sector.
 - **2026-08-27** — Installation runs **on the Pi**: `ssh` in, then `curl -fsSL .../install.sh | bash`. Reason: every deployment bug was client-side (cmd.exe globbing, PATHEXT, no ControlMaster on Windows, `ssh -t` vs sudo, a Store alias posing as `python`); the Pi is the one environment we control, and sudo works normally there.
 - **2026-08-27** — `deploy.py` kept, rebuilt on a pure `ssh_argv` seam with tests. Reason: `install.sh` provisions, `deploy.py` iterates — it ships a working tree to the Pi without a round trip through GitHub.
@@ -88,9 +91,9 @@ Older and superseded decisions: see `archive/Phaser GUI Update Archive.md`.
 - Radar Phase 1 (CW Doppler waterfall) and Phase 2 (FMCW range-Doppler) — separate stream; keep hooks in backend mode dispatcher without pretending range axis exists yet.
 
 # Status
-**CTF tracking mode is merged and running on the array.** `main` is at `6365ede`
-(PR #1, 17 commits), 90 tests passing and 1 skipped, all three workflows green.
-The Pi was reinstalled from `main` on 2026-09-04.
+**CTF tracking mode is merged and running on the array.** `main` is at `a4a765e`
+(PR #1 plus follow-ups), 94 tests passing and 1 skipped, all three workflows
+green. The Pi runs `main` as of 2026-09-04.
 
 The challenge: the array sweeps while a player carries an HB100 in front of it.
 `do_sweep` returns `peak_angle_deg` (a -3 dB power-weighted centroid),
@@ -102,7 +105,8 @@ env-tunable (`PHASER_CTF_SOURCE`, `_TOLERANCE_DEG`, `_DWELL_S`, `_TRACK_SWEEPS`,
 `_SIGNAL_FLOOR_DB`) so they can be loosened at the table without a redeploy.
 
 Verified end to end on hardware, including two complete runs of the real sequence
-ending in an issued flag; evidence is in the archive. The sidebar panel holds no
+ending in an issued flag, and `measuring` flipping correctly with the sweep
+stopped and restarted; evidence is in the archive. The sidebar panel holds no
 controls — sector table, bands toggle, and a status line that speaks only when
 the run has not started or has completed.
 
@@ -118,7 +122,6 @@ not apply them. Beamforming Phase 1 is otherwise untouched.
 
 # ToDo
 - [ ] **Set `Rx_gain = 30` in the Pi's `config.py`** — deliberately not changed for you. It now reads **10** (was 1), so the sweep is ~10 dB down rather than ~27
-- [ ] Teach the CTF panel to distinguish "no sweep running" from "between sectors" — a stopped sweep freezes the counter silently
 - [ ] Delete the merged `claude/ctf-mode` branch
 - [ ] Wire per-element phase delays into `do_sweep` (Plan Phase 1 item 1)
 - [ ] Rename "Set All Phase to 0" → "Reset"
