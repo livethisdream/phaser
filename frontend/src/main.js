@@ -1014,7 +1014,7 @@ function renderCtfStatus(data) {
         if (data.armed === false) {
             // Without this the table reads as broken: the beam moves, the
             // bands are drawn, and nothing ever scores.
-            statusEl.textContent = 'Hold the CTF Sequence button to begin'
+            statusEl.textContent = 'Hold the CTF Sequence pill to begin'
                 + '  ·  where the source is right now does not count';
         } else if (data.matched) {
             statusEl.textContent = 'Sequence complete.';
@@ -1154,50 +1154,50 @@ async function ctfReset() {
     }
 }
 
-/* CTF Sequence button: hold to start a run, and only hold. A short click does
-   nothing on purpose.
+/* Hold to commit: the action fires only when the pointer has been held long
+   enough for the fill to cross the control. Releasing early aborts, so the
+   gesture is its own confirmation dialog.
 
    ctf_reset clears the trail, so a stray click mid-run silently discards
-   everything the player has walked. Requiring a deliberate hold, with the fill
-   telegraphing what is about to happen, makes that impossible to do by
-   accident while leaving it one gesture away on purpose. */
+   everything the player has walked. A short click therefore does nothing at
+   all -- on either control. */
 const CTF_HOLD_MS = 1200;
-(() => {
-    const btn = document.getElementById('btn-ctf-reset');
-    if (!btn) return;
+
+function wireHoldToCommit(el, holdMs, onCommit) {
+    if (!el) return;
     let holdTimer = null;
     let pointerActive = false;
 
     const fire = () => {
-        btn.classList.remove('holding');
-        ctfReset().then((ok) => {
-            if (!ok) return;
-            btn.classList.add('flash');
-            setTimeout(() => btn.classList.remove('flash'), 260);
+        el.classList.remove('holding');
+        Promise.resolve(onCommit()).then((ok) => {
+            if (ok === false) return;
+            el.classList.add('flash');
+            setTimeout(() => el.classList.remove('flash'), 260);
         });
     };
 
     const startHold = () => {
-        if (btn.disabled) return;
+        if (el.disabled) return;
         if (holdTimer) clearTimeout(holdTimer);
-        btn.classList.add('holding');
-        holdTimer = setTimeout(() => { holdTimer = null; fire(); }, CTF_HOLD_MS);
+        el.classList.add('holding');
+        holdTimer = setTimeout(() => { holdTimer = null; fire(); }, holdMs);
     };
 
     const cancelHold = () => {
         if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
-        btn.classList.remove('holding');
+        el.classList.remove('holding');
     };
 
-    btn.addEventListener('pointerdown', (e) => {
-        if (btn.disabled) return;
+    el.addEventListener('pointerdown', (e) => {
+        if (el.disabled) return;
         if (e.button !== undefined && e.button !== 0) return;  // primary only
         pointerActive = true;
         startHold();
     });
-    btn.addEventListener('pointerup', () => { pointerActive = false; cancelHold(); });
-    btn.addEventListener('pointercancel', () => { pointerActive = false; cancelHold(); });
-    btn.addEventListener('pointerleave', () => {
+    el.addEventListener('pointerup', () => { pointerActive = false; cancelHold(); });
+    el.addEventListener('pointercancel', () => { pointerActive = false; cancelHold(); });
+    el.addEventListener('pointerleave', () => {
         if (pointerActive) cancelHold();
         pointerActive = false;
     });
@@ -1205,13 +1205,19 @@ const CTF_HOLD_MS = 1200;
     // Keyboard: a held key repeats rather than reporting a duration, so there
     // is no honest hold gesture here. Enter/Space commits directly -- reaching
     // for the keyboard is already deliberate in a way a stray tap is not.
-    btn.addEventListener('keydown', (e) => {
-        if ((e.key === 'Enter' || e.key === ' ') && !btn.disabled) {
+    el.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && !el.disabled) {
             e.preventDefault();
             fire();
         }
     });
-})();
+}
+
+// The pill in the stat row is the primary control: it is the thing the player
+// is already watching during a run. The sidebar button does the same job for
+// anyone who went looking for it in the panel.
+wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
+wireHoldToCommit(document.getElementById('btn-ctf-reset'), CTF_HOLD_MS, ctfReset);
 
 const simInterfererEnable = document.getElementById('sim-interferer-enable');
 if (simInterfererEnable) {
