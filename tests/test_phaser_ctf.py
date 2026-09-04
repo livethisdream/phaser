@@ -11,6 +11,12 @@ state machine behaves under the cases that are easy to get wrong:
   - a target that repeats a sector still matches, which a visited-set
     implementation cannot do
   - arbitrary per-element phases are not a steering angle at all
+
+The commanded tests below construct their CtfMode with source="commanded"
+explicitly. The shipped default is "tracked" -- the con challenge is a player
+walking an HB100 in front of the array -- so a bare CtfMode() ignores
+`observe()` entirely, and these tests would silently pass by never scoring
+anything.
 """
 
 import math
@@ -21,9 +27,26 @@ from pathlib import Path
 # root from pythonpath = ["."] in pyproject.toml.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from phaser_ctf import (
-    CtfMode, fit_ramp, PLACEHOLDER_FLAG,
+    CtfMode, fit_ramp, peak_angle_centroid, PLACEHOLDER_FLAG,
     DEFAULT_SECTOR_CENTRES_DEG, DEFAULT_TOLERANCE_DEG,
 )
+
+# One real sweep excerpt off the array (HB100 lit, Rx_gain 10, 10.42 GHz):
+# 25 grid points either side of the mainlobe peak, verbatim. The point of
+# keeping real numbers rather than a clean synthetic lobe is that the top of
+# this one is CLIPPED and ragged -- gains hover around -0.3 dB across four
+# degrees with a single 0.69 dB sample sticking up -- which is exactly the
+# shape that makes an argmax useless.
+REAL_LOBE_ANGLES = [
+    -12.98, -12.04, -11.10, -10.17, -9.23, -8.30, -7.38, -6.45, -5.53,
+    -4.60, -3.68, -2.76, -1.84, -0.92, 0.00, 0.92, 1.84, 2.76, 3.68,
+    4.60, 5.53, 6.45, 7.38, 8.30, 9.23,
+]
+REAL_LOBE_GAINS = [
+    -10.36, -8.30, -6.68, -5.55, -4.23, -3.32, -2.85, -1.42, -1.39,
+    -0.52, -0.30, -0.43, 0.69, -0.27, -0.11, -0.46, -0.36, -0.61, -0.82,
+    -1.74, -2.04, -2.64, -3.13, -4.30, -5.22,
+]
 
 C = 299792458.0
 SIGNAL_FREQ = 10.25e9
@@ -37,9 +60,28 @@ def armed(**kwargs):
     nothing no matter how long the beam sits somewhere. Every test that expects
     progress has to start the session first, exactly as a player does.
     """
+    kwargs.setdefault("source", "commanded")
     ctf = CtfMode(**kwargs)
     ctf.reset()
     return ctf
+
+
+def tracked(**kwargs):
+    """A CtfMode scoring the measured peak angle, cleared and ARMED."""
+    kwargs.setdefault("source", "tracked")
+    ctf = CtfMode(**kwargs)
+    ctf.reset()
+    return ctf
+
+
+def see(ctf, angle_deg, sweeps=1, signal_db=0.0):
+    """Deliver `sweeps` identical sweep observations of a source at an angle.
+
+    signal_db defaults to 0 (full scale), which is roughly where the HB100
+    actually sits at the table.
+    """
+    for _ in range(sweeps):
+        ctf.observe_tracked(angle_deg, signal_db)
 
 
 def angle_of(sector):
@@ -57,6 +99,18 @@ def angle_of(sector):
 def between_sectors(low, high):
     """An angle in the dead band between two adjacent sectors."""
     return (DEFAULT_SECTOR_CENTRES_DEG[low - 1] + DEFAULT_SECTOR_CENTRES_DEG[high - 1]) / 2
+
+
+def dead_band_beside(sector):
+    """A genuine no-sector angle next to `sector`.
+
+    between_sectors() only lands in a dead band for ADJACENT sectors. The
+    midpoint of 1 and 3 is -20, which is the dead CENTRE of sector 2 -- using
+    it as a "crossing" silently scores sector 2 and corrupts the trail.
+    """
+    n = len(DEFAULT_SECTOR_CENTRES_DEG)
+    other = sector + 1 if sector < n else sector - 1
+    return between_sectors(min(sector, other), max(sector, other))
 
 
 def make_ramp(theta_deg, signal_freq=SIGNAL_FREQ, d=D):
@@ -222,7 +276,7 @@ def test_resting_position_does_not_score_before_start():
     sequence opens with 3), but at a busy table the parked sector is really
     just wherever the last player left the array.
     """
-    ctf = CtfMode(target=[3, 1, 4, 1, 2])          # NOT armed: no Start pressed
+    ctf = CtfMode(target=[3, 1, 4, 1, 2], source="commanded")   # NOT armed: no Start pressed
     steer(ctf, angle_of(3), now=0.0)                # boresight == sector 3
     data = ctf.status(now=60.0)["data"]
     assert data["armed"] is False
@@ -239,7 +293,7 @@ def test_start_while_already_in_the_first_sector_counts():
     restarts the dwell clock, so holding still is a legitimate way to enter the
     first sector.
     """
-    ctf = CtfMode(target=[3, 1])
+    ctf = CtfMode(target=[3, 1], source="commanded")
     steer(ctf, angle_of(3), now=0.0)                # sitting in sector 3 already
     ctf.reset()                                     # Start, without moving
     steer(ctf, angle_of(3), now=0.1)                # same position, still held
@@ -261,6 +315,133 @@ def test_reset_clears_progress_and_stays_armed():
     assert data["progress"] == 0
     print("restart clears progress, stays armed: ok")
 
+def test_centroid_beats_argmax_on_a_real_clipped_lobe():
+    """The measurement the whole tracked challenge is scored on.
+
+    On this real lobe the argmax lands on -1.84 deg purely because one sample
+    spiked to 0.69 dB while its neighbours sat near -0.3. The centroid weighs
+    the whole mainlobe instead and lands near -0.6.
+    """
+    imax = max(range(len(REAL_LOBE_GAINS)), key=lambda k: REAL_LOBE_GAINS[k])
+    argmax_angle = REAL_LOBE_ANGLES[imax]
+    centroid = peak_angle_centroid(REAL_LOBE_ANGLES, REAL_LOBE_GAINS)
+
+    assert argmax_angle == -1.84, "fixture changed; the argmax case is the point"
+    assert abs(centroid - argmax_angle) > 1.0, \
+        "centroid tracked the argmax spike instead of the lobe"
+    assert -1.6 < centroid < 0.4, f"centroid landed at {centroid}, off the lobe"
+    print("centroid vs argmax on real data: ok (%.2f vs %.2f)"
+          % (centroid, argmax_angle))
+
+
+def test_centroid_ignores_a_sidelobe():
+    """A strong sidelobe outside the -3 dB mainlobe must not drag the answer.
+
+    The walk stops at the first sample past the drop, so a second peak of
+    comparable height 30 deg away is never entered.
+    """
+    clean = peak_angle_centroid(REAL_LOBE_ANGLES, REAL_LOBE_GAINS)
+    with_lobe = peak_angle_centroid(
+        REAL_LOBE_ANGLES + [30.0, 31.0, 32.0],
+        REAL_LOBE_GAINS + [0.5, 0.6, 0.5],
+    )
+    assert abs(with_lobe - clean) < 1e-9, \
+        f"a sidelobe moved the centroid from {clean} to {with_lobe}"
+    print("centroid ignores a sidelobe: ok")
+
+
+def test_centroid_rejects_degenerate_input():
+    """No sweep, no angle. None is the value the tracker treats as 'no source'."""
+    assert peak_angle_centroid([], []) is None
+    assert peak_angle_centroid([1.0, 2.0], [1.0]) is None
+    assert peak_angle_centroid(None, None) is None
+    print("centroid degenerate input: ok")
+
+
+def test_tracked_confirms_on_consecutive_sweeps():
+    """The tracked dwell is counted in sweeps, not seconds."""
+    ctf = tracked(target=[4])
+    see(ctf, angle_of(4), sweeps=ctf.track_sweeps - 1)
+    assert not ctf.status()["data"]["matched"], "confirmed early"
+    see(ctf, angle_of(4))
+    assert ctf.status()["data"]["matched"], "should confirm on the Nth sweep"
+    print("tracked dwell counts sweeps: ok")
+
+
+def test_polling_cannot_confirm_a_tracked_sector():
+    """status() must not advance the tracked machine.
+
+    The commanded source is clock-driven and confirmed by the panel's poll.
+    If that path stayed wired up for tracking, a 700 ms poll would confirm a
+    sector the array had only seen once, and the whole sweep-count rule would
+    be decorative.
+    """
+    ctf = tracked(target=[4])
+    see(ctf, angle_of(4))                      # one sweep only
+    for _ in range(50):
+        ctf.status()
+    assert not ctf.status()["data"]["matched"], "polling confirmed a sector"
+    print("polling does not confirm tracked sectors: ok")
+
+
+def test_tracked_ignores_a_peak_below_the_signal_floor():
+    """A noise-floor peak is not a source and must not read as a sector."""
+    ctf = tracked(target=[3])
+    see(ctf, angle_of(3), sweeps=10, signal_db=ctf.signal_floor_db - 1.0)
+    data = ctf.status()["data"]
+    assert data["current_sector"] is None, "scored a sector off the noise floor"
+    assert not data["matched"]
+    print("signal floor rejects a weak peak: ok")
+
+
+def test_dead_band_crossing_resets_the_tracked_count():
+    """Carrying the source between sectors must not accumulate progress.
+
+    Measured on the array, a hand-carried crossing of a 10 deg dead band took
+    11.5 s (11 sweeps) and reported no sector throughout.
+    """
+    ctf = tracked(target=[2, 3])
+    see(ctf, angle_of(2), sweeps=ctf.track_sweeps)      # sector 2 confirmed
+    see(ctf, between_sectors(2, 3), sweeps=11)          # the crossing
+    assert ctf.status()["data"]["current_sector"] is None
+    see(ctf, angle_of(3), sweeps=ctf.track_sweeps - 1)
+    assert not ctf.status()["data"]["matched"], "dead band leaked into the count"
+    see(ctf, angle_of(3))
+    assert ctf.status()["data"]["matched"]
+    print("dead band resets the sweep count: ok")
+
+
+def test_sources_do_not_cross_feed():
+    """Exactly one source scores. Both directions."""
+    t = tracked(target=[4])
+    steer(t, angle_of(4), now=0.0)                      # commanded input
+    t.status()
+    assert t.status()["data"]["current_sector"] is None, \
+        "a tracked run scored a commanded steer"
+
+    c = armed(target=[4])
+    see(c, angle_of(4), sweeps=10)                      # tracked input
+    assert not c.status(now=99.0)["data"]["matched"], \
+        "a commanded run scored a tracked observation"
+    print("sources do not cross-feed: ok")
+
+
+def test_tracked_full_sequence_with_dead_bands():
+    """The whole challenge, walked the way a player actually walks it."""
+    ctf = tracked(target=[3, 1, 4, 1, 2], flag="flag{tracked}")
+    walk = [3, 1, 4, 1, 2]
+    for i, sector in enumerate(walk):
+        if i:
+            # Leave the previous sector through a real dead band before
+            # arriving at the next one, the way a carried horn does.
+            see(ctf, dead_band_beside(walk[i - 1]), sweeps=4)
+        see(ctf, angle_of(sector), sweeps=ctf.track_sweeps)
+    data = ctf.status()["data"]
+    assert data["matched"], "the walked sequence should complete"
+    assert data["flag"] == "flag{tracked}"
+    print("tracked full sequence: ok")
+
+
 if __name__ == "__main__":
     test_fit_ramp()
     test_sector_is_not_mirrored()
@@ -274,4 +455,13 @@ if __name__ == "__main__":
     test_resting_position_does_not_score_before_start()
     test_start_while_already_in_the_first_sector_counts()
     test_reset_clears_progress_and_stays_armed()
+    test_centroid_beats_argmax_on_a_real_clipped_lobe()
+    test_centroid_ignores_a_sidelobe()
+    test_centroid_rejects_degenerate_input()
+    test_tracked_confirms_on_consecutive_sweeps()
+    test_polling_cannot_confirm_a_tracked_sector()
+    test_tracked_ignores_a_peak_below_the_signal_floor()
+    test_dead_band_crossing_resets_the_tracked_count()
+    test_sources_do_not_cross_feed()
+    test_tracked_full_sequence_with_dead_bands()
     print("\nall ctf-mode tests passed")

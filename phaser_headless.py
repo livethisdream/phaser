@@ -58,7 +58,7 @@ from phaser_functions import load_hb100_cal
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
-from phaser_ctf import CtfMode  # GRCon26 CTF sector-sequence mode (additive)
+from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additive)
 
 
 class PhaserHeadless:
@@ -603,6 +603,10 @@ class PhaserHeadless:
             "max_gain": max_gain.tolist(),
             "xf": xf.tolist(),
             "peak_signal": float(max_signal),
+            # Where the SOURCE is, for CTF tracking mode. Computed here rather
+            # than in the browser because the flag is scored backend-side, and
+            # a client-computed sector would be trivially spoofable.
+            "peak_angle_deg": peak_angle_centroid(angles, gain),
         }
 
     # --- Mode dispatcher --------------------------------------------------
@@ -1189,6 +1193,16 @@ class PhaserHeadless:
             if self.mode == "sweep":
                 try:
                     sweep_data = self.do_sweep()
+
+                    # CTF tracking mode watches where the source is. Note this
+                    # is NOT what phaser_ctf's docstring warns against: that
+                    # warning is about hooking the sweep's commanded phases,
+                    # which step through every sector on every pass. One peak
+                    # angle per sweep is a single measurement.
+                    self.ctf.observe_tracked(
+                        sweep_data.get("peak_angle_deg"),
+                        sweep_data.get("peak_signal"),
+                    )
 
                     frame = {
                         "type": "sweep",
