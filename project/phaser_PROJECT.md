@@ -58,8 +58,16 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
 - **`install.sh`'s `BACKEND_FILES` is an allowlist.** A backend module missing
   from it installs silently absent and the service crash-loops on the import —
   which is why installing a branch needs *that branch's* `install.sh`.
+- **The backend cannot power the Pi off through logind.** It runs unprivileged
+  with no active session, so polkit refuses `org.freedesktop.login1.power-off`
+  with "authorization requires authentication" — a permission error that looks
+  nothing like one. The GUI path works only because of the sudoers drop-in;
+  without it, `sudo -n` fails and `shutdown_available` is false by design.
 
 # Decisions
+- **2026-09-04** — GUI shutdown is **off by default**, granted per machine by re-running `install.sh` with `PHASER_ALLOW_GUI_SHUTDOWN=1`. Reason: the backend is unauthenticated, so on a conference network the endpoint is a power switch for the room; the default *is* the access control. A bench Pi can have it while a Pi on the floor, running identical code, does not. The drop-in is one command, `visudo -c`-validated before install, and revoking it is deleting one file.
+- **2026-09-04** — The UI arms the gesture only when `get_state` reports `shutdown_available`, probed with `sudo -l` (which answers permission without running anything). Reason: an affordance for something that can only return an error is worse than no affordance.
+- **2026-09-04** — Shutdown is a 2 s hold and red, against the CTF control's 1.2 s. Reason: this one cannot be undone from the browser — the machine it stops is the one serving the page.
 - **2026-09-04** — CTF scores the **tracked** source by default: the sweep's measured peak, not a commanded beam. Reason: the table challenge is carrying an HB100 in front of the array; `commanded` stays behind `PHASER_CTF_SOURCE` as the fallback, and exactly one source scores at a time.
 - **2026-09-04** — Peak angle is a -3 dB power-weighted centroid, not an argmax. Reason: 0.53 deg p-p versus 4.80 deg for argmax on a stationary source — see Traps.
 - **2026-09-04** — Tracked confirmation counts 3 consecutive in-sector sweeps, not seconds. Reason: the sweep runs at ~0.9/s, so a 2 s dwell was ~2 observations; `status()` no longer advances the tracked machine, so polling faster cannot confirm sooner.
@@ -91,9 +99,19 @@ Older and superseded decisions: see `archive/Phaser GUI Update Archive.md`.
 - Radar Phase 1 (CW Doppler waterfall) and Phase 2 (FMCW range-Doppler) — separate stream; keep hooks in backend mode dispatcher without pretending range axis exists yet.
 
 # Status
-**CTF tracking mode is merged and running on the array.** `main` is at `a4a765e`
-(PR #1 plus follow-ups), 94 tests passing and 1 skipped, all three workflows
-green. The Pi runs `main` as of 2026-09-04.
+**CTF tracking mode and GUI shutdown are merged and running on the array.**
+`main` is at `75993af` (the CI frontend rebuild over `ba26820`), 94 tests
+passing and 1 skipped, all three workflows green. The Pi runs `main` as of
+2026-09-04.
+
+**Hold-to-shutdown is done and verified on hardware.** A 2 s hold on the
+connection pill sends `power_off`; the backend checks `shutdown_permitted()`
+and then `Popen`s `sudo -n /usr/bin/systemctl poweroff` — Popen rather than
+run, so the reply reaches the browser before systemd tears the machine down.
+The physical button on the Phaser is a `gpio-shutdown` overlay on GPIO21 that
+logind already turns into the same command, so there was no bespoke script to
+replicate. Granted on this Pi; `shutdown_available` reads true. Evidence for
+the live test is in the archive.
 
 The challenge: the array sweeps while a player carries an HB100 in front of it.
 `do_sweep` returns `peak_angle_deg` (a -3 dB power-weighted centroid),

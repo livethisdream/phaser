@@ -87,6 +87,39 @@ no angle or sector, so there was nothing on screen to debug from. `ctf_status`
 already carried `current_angle_deg`, `current_sector` and `holding`; the panel
 threw all three away.
 
+## 2026-09-04 — GUI shutdown (closed, verified on hardware)
+
+Shipped as `ba26820` on `main`: a 2 s hold on the connection pill calls
+`power_off`, which `Popen`s `sudo -n /usr/bin/systemctl poweroff`. The physical
+button is a `gpio-shutdown` overlay on GPIO21 and logind already maps KEY_POWER
+to that same command, so the GUI reproduces the button rather than inventing a
+shutdown path.
+
+The grant is `PHASER_ALLOW_GUI_SHUTDOWN=1` on `install.sh`, off by default —
+see Decisions. Installed on this Pi at 16:47; `get_state` returned
+`shutdown_available: true` over `ws://192.168.86.61:8765`, confirming the
+`sudo -l` probe.
+
+Live test at 16:52. All four probes went dark together — LAN and tailnet, 8080
+and 22 — and port 22 dying alongside 8080 is what separates a poweroff from a
+crashed backend. The previous boot's journal attributes it to the daemon, not a
+shell or the button:
+
+    16:52:14 sudo[8028]: analog : PWD=/home/analog/pyadi-iio/examples/phaser ;
+                         USER=root ; COMMAND=/usr/bin/systemctl poweroff
+    16:52:14 sudo[8028]: session opened for user root(uid=0) by (uid=1000)
+
+No `TTY=` field (the install-time sudo lines five minutes earlier all carry
+`TTY=pts/0`) and an empty "by" name — a session-less process, exactly the case
+polkit refuses and the sudoers drop-in covers. No KEY_POWER or gpio line
+anywhere in that boot, so the hardware button was not involved.
+
+Teardown was clean: "Syncing filesystems and block devices", SIGTERM to
+remaining processes, "Finished Power-Off", journal stopped. `wtmp` recorded a
+`shutdown system down` entry. The next boot logged no journal recovery, no
+unclean mount and no orphan inodes, and `phaser-headless.service` came back
+`active`.
+
 ## 2026-09-04 — Deployment, calibration and live sweep (rotated from Status)
 
 Install is two lines from any OS — `ssh analog@phaser.local` then
