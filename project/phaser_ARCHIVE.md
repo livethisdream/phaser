@@ -87,6 +87,28 @@ no angle or sector, so there was nothing on screen to debug from. `ctf_status`
 already carried `current_angle_deg`, `current_sector` and `holding`; the panel
 threw all three away.
 
+## 2026-09-04 — Branch cleanup (closed)
+
+`claude/ctf-mode` and `fix/fresh-pi-deploy-provisioning` deleted, local and
+remote. `claude/ctf-mode` was a clean merge — zero commits in `main..` for both
+its local and remote tips.
+
+`fix/fresh-pi-deploy-provisioning` was **not** "fully contained in `main`" as
+the ToDo claimed. Three commits (`149626b`, `30987eb`, `1d44d67`) were not
+ancestors of `main`; it had been *squash*-merged, so the content was there under
+different SHAs. Checked file by file before deleting: `test_calibration_math.py`
+and `test_calibration_status.py` identical, `phaser_functions.py` and
+`phaser_headless.py` both larger on `main` (127 and 260 lines), and the only
+branch-side content `main` lacked was superseded — `hb100_cal.txt` reads that
+the 2026-08-27 `calibration.json` decision replaced, and pre-refactor
+`phaseList` / `HTTPServer` forms. One thing worth re-adding: the branch carried
+a comment on `test_payload_imports.py` reading "Kept in step with deploy.py's
+BACKEND_FILES and install.sh's BACKEND_FILES", which is exactly the trap above.
+
+A `fetch --prune` in the same pass dropped three remote-tracking refs that were
+already gone from GitHub: `docs/install-offline`, `feat/offline-wheels`,
+`fix/lo-divide-by-four`.
+
 ## 2026-09-04 — GUI shutdown (closed, verified on hardware)
 
 Shipped as `ba26820` on `main`: a 2 s hold on the connection pill calls

@@ -140,7 +140,6 @@ not apply them. Beamforming Phase 1 is otherwise untouched.
 
 # ToDo
 - [ ] **Set `Rx_gain = 30` in the Pi's `config.py`** — deliberately not changed for you. It now reads **10** (was 1), so the sweep is ~10 dB down rather than ~27
-- [ ] Delete the merged `claude/ctf-mode` branch
 - [ ] Wire per-element phase delays into `do_sweep` (Plan Phase 1 item 1)
 - [ ] Rename "Set All Phase to 0" → "Reset"
 - [ ] Add Manual / MVDR mode toggle in Digital Beam Forming
@@ -154,6 +153,10 @@ not apply them. Beamforming Phase 1 is otherwise untouched.
 - [ ] Add the Windows + Linux CI matrix — deferred; without it the Windows half of the test suite never runs, and the golden-tar test is meaningless as a single-platform check
 - [ ] Audit Lab 1–9 presets against `docs/2025_Phaser_labs_Python.pdf`
 - [ ] Handle iiod / SDR connection failures gracefully (retry, restart, UI fallback)
-- [ ] Delete the superseded `fix/fresh-pi-deploy-provisioning` branch (fully contained in `main`)
-- [ ] Decide the fate of stale local branches; `radar-app` (`667c19c`) is **not** merged
+- [ ] Decide the fate of `radar-app` (`667c19c`) — **not in this clone**: it was never
+  pushed, and the 2026-08-25 re-clone during the WSL move could not inherit an
+  unpushed local branch. `git cat-file` does not know the object here. Located
+  outside the repo 2026-09-04; nothing merged depends on it (`frontend-radar/`
+  and `phaser_cw_radar.py` are in `main`, and `origin/radar-dev` is an ancestor
+  of `main`)
 - [ ] Clarify plot-range configurability request
