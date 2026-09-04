@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-yYGfGt3f.js"></script>
+  <script type="module" crossorigin src="./assets/index-CNg4CyTu.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-DuP_KnM_.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -428,27 +428,17 @@
             <div class="accordion-item" id="accordion-ctf" hidden>
                 <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="7"></span> CTF Mode <span>▼</span></button>
                 <div class="accordion-body">
-                    <!-- Sector table, the helper-line toggle, Start, and a single
-                         status line. The live beam/sector readout and the progress
-                         counter that used to sit here are gone on purpose: the
-                         sector bands drawn on the beam pattern show the same thing
-                         where the player is already looking. What survives as text
-                         is only what the plot cannot say -- that the session is not
-                         started yet, and the flag. -->
+                    <!-- Sector table, the helper-line toggle, and a single status
+                         line. No controls: the live beam/sector readout, the
+                         progress counter and now the start gesture all live on the
+                         plot, because that is where the player is looking. What
+                         survives as text here is only what the plot cannot say --
+                         that the session is not started yet, and the flag. -->
                     <div id="ctf-sectors" class="mt-2" style="font-size:0.8rem; color:var(--text-muted);"></div>
                     <label class="mt-2" style="display:flex; align-items:center; gap:0.5rem; font-size:0.85rem; cursor:pointer;">
                         <input type="checkbox" id="ctf-show-sectors" checked>
                         <span>Show sector bands on plot</span>
                     </label>
-                    <!-- Hold, don't click. A tap used to reset the run instantly,
-                         and three taps in thirty seconds is what it looked like
-                         when a player treated it as "refresh". The fill is the
-                         whole point: it makes discarding progress deliberate. -->
-                    <button class="btn btn-outline btn-small mt-2 btn-hold" id="btn-ctf-reset"
-                            title="Hold to start a new run. This clears any progress.">
-                      <span class="btn-hold-fill"></span>
-                      <span class="btn-hold-label">CTF Sequence</span>
-                    </button>
                     <div id="ctf-status" class="mt-2" style="font-size:0.85rem; color:var(--text-muted); line-height:1.35;"></div>
                     <div id="ctf-flag" class="mt-2" style="font-size:0.95rem; font-weight:600; word-break:break-all;"></div>
                 </div>
