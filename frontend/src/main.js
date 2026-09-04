@@ -1004,6 +1004,14 @@ function renderCtfStatus(data) {
             const done = data.matched ? total : (data.progress ?? 0);
             pillEl.textContent = `${done} / ${total}`;
         }
+
+        // The tracked machine confirms on consecutive sweeps, not on a wall
+        // clock, so quoting dwell_s would state the wrong rule for it.
+        const rule = data.source === 'tracked'
+            ? `Hold the source still in each sector for ${data.dwell_sweeps} sweeps.`
+            : `Hold each sector ${data.dwell_s}s.`;
+        pillBox.title = rule
+            + '  ·  Hold this pill to start a new run. This clears any progress.';
     }
 
     // One status line, and it stays quiet during normal play — the bands and
@@ -1018,13 +1026,12 @@ function renderCtfStatus(data) {
                 + '  ·  where the source is right now does not count';
         } else if (data.matched) {
             statusEl.textContent = 'Sequence complete.';
-        } else if (data.source === 'tracked') {
-            // The tracked machine confirms on consecutive sweeps, not on a
-            // wall clock, so quoting dwell_s here would state the wrong rule.
-            statusEl.textContent =
-                `Hold the source still in each sector for ${data.dwell_sweeps} sweeps.`;
         } else {
-            statusEl.textContent = `Hold each sector ${data.dwell_s}s.`;
+            // Quiet during play, which is what the comment above always said
+            // this line was for. The dwell rule is reference material rather
+            // than news -- it never changes mid-run -- so it lives in the
+            // pill's tooltip instead of restating itself every 700 ms.
+            statusEl.textContent = '';
         }
     }
 
