@@ -44,6 +44,16 @@ All closed by PRs #2 and #3.
 
 ## 2026-09-04 — CTF tracking mode (closed, merged)
 
+Shape of the shipped challenge, rotated from Status: the array sweeps while a
+player carries an HB100 in front of it. `do_sweep` returns `peak_angle_deg` (a
+-3 dB power-weighted centroid), `CtfMode.observe_tracked` maps it to one of five
+sectors at -40/-20/0/+20/+40 deg (+/-5 deg each), and three consecutive
+in-sector sweeps confirm one. Walking the configured sequence returns the flag.
+Scoring is backend-side. Two complete runs of the real sequence ended in an
+issued flag, and `measuring` flipped correctly with the sweep stopped and
+restarted. The sidebar panel holds no controls — sector table, bands toggle, and
+a status line that speaks only when the run has not started or has completed.
+
 Rebuilt the GRCon26 CTF around the tracked source and merged it as PR #1
 (`main` at `6365ede`). Backend in `phaser_ctf.py` + the `do_sweep` hook;
 panel rebuilt around the stat-row pill.
@@ -181,6 +191,11 @@ ADF4159 without the `/4` the CN0566 needs, and the Pi's `config.py` carried
 
 # Rotated Decisions (still true, just closed)
 
+- **2026-08-27** — Calibration consolidated into one `calibration.json`, read
+  with a per-key fallback to the legacy pickles, dropping `pickle` from the load
+  path. Per-key so re-running one calibration cannot revert the others.
+- **2026-08-27** — Windows is a supported target but unverified: the Windows box
+  has no real Python, only the Store alias. Still open as the CI-matrix ToDo.
 _Rotated 2026-09-04 from the hot note to meet its size budget. Still true._
 
 - **2026-08-25** — Project moved off OneDrive to `~/projects/phaser` in WSL, as a fresh clone. Reason: OneDrive forced venvs out-of-tree and made recursive greps time out. Venv in-tree (`.venv/`, uv, Python 3.12), `.python-version` tracked.
@@ -198,6 +213,10 @@ _Rotated 2026-09-04 from the hot note to meet its size budget. Still true._
 
 # Superseded Decisions
 
+- **2026-08-27** — `deploy.py` kept, rebuilt on a pure `ssh_argv` seam with
+  tests, so `install.sh` provisions and `deploy.py` iterates. Superseded by
+  `319fd56`, which removed `deploy.py` and the laptop-side setup scripts;
+  `install.sh` on the Pi is the only path.
 - **2026-08-25** — `deploy.py` is the deploy path, `scripts/setup.sh` the
   first-time provisioning path. Superseded 2026-08-27: `install.sh` on the Pi is
   the install path; both wrappers deleted.

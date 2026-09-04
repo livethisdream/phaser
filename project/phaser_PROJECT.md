@@ -27,8 +27,9 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
   the running service.** Only the UI path triggers `_reload_calibration`. Debug
   over ssh and the backend keeps its old frequency.
 - **`config.py` on the Pi is site-owned and never deployed over.** It drifts from
-  the repo: this Pi carries `Rx_gain = 1` against a repo default of 30, which
-  costs ~27 dB. Check it before believing a weak spectrum.
+  the repo: this Pi now carries `Rx_gain = 10` against a repo default of 30,
+  costing ~10 dB (it was 1, costing ~27). Check it before believing a weak
+  spectrum.
 - **A wrong clock breaks apt and HTTPS.** The Pi has no battery-backed RTC and
   restores `fake-hwclock` time on boot; NTP is blocked on some networks. Symptom
   is apt refusing repo metadata as "not valid yet". Fix with `date -u -s` then
@@ -74,11 +75,8 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
 - **2026-09-04** — `status()` takes `sweeping` and reports `measuring`, nulling the live readouts and dropping the in-flight sweep count when nothing observes. Reason: a stopped sweep looks on screen exactly like a challenge that refuses to score. The trail is kept — earned progress is still earned.
 - **2026-09-04** — The start gesture is a 1.2 s hold on the stat-row pill; the sidebar Start button was removed. Reason: `ctf_reset` discards a run and a tap did it silently — three taps in thirty seconds during testing threw away a scored sector.
 - **2026-08-27** — Installation runs **on the Pi**: `ssh` in, then `curl -fsSL .../install.sh | bash`. Reason: every deployment bug was client-side (cmd.exe globbing, PATHEXT, no ControlMaster on Windows, `ssh -t` vs sudo, a Store alias posing as `python`); the Pi is the one environment we control, and sudo works normally there.
-- **2026-08-27** — `deploy.py` kept, rebuilt on a pure `ssh_argv` seam with tests. Reason: `install.sh` provisions, `deploy.py` iterates — it ships a working tree to the Pi without a round trip through GitHub. **Superseded:** `319fd56` removed `deploy.py` and the laptop-side setup scripts; `install.sh` on the Pi is the only path.
-- **2026-08-27** — Calibration consolidated into one `calibration.json`, read with a **per-key** fallback to the legacy pickles. Reason: finishes a JSON migration the headless rewrite silently reverted, and drops `pickle` from the load path. Per-key so re-running one calibration cannot revert the others to defaults.
-- **2026-08-27** — Windows is a supported target but **unverified**. Reason: the Windows box has no real Python, only the Store alias, so that path is reasoned-about rather than executed.
 
-Older and superseded decisions: see `archive/Phaser GUI Update Archive.md`.
+Older and superseded decisions: see `project/phaser_ARCHIVE.md`.
 
 # Plan
 
@@ -99,44 +97,30 @@ Older and superseded decisions: see `archive/Phaser GUI Update Archive.md`.
 - Radar Phase 1 (CW Doppler waterfall) and Phase 2 (FMCW range-Doppler) — separate stream; keep hooks in backend mode dispatcher without pretending range axis exists yet.
 
 # Status
-**CTF tracking mode and GUI shutdown are merged and running on the array.**
-`main` is at `75993af` (the CI frontend rebuild over `ba26820`), 94 tests
-passing and 1 skipped, all three workflows green. The Pi runs `main` as of
-2026-09-04.
+`main` is at `0921c6e`, clean and in sync with origin — 94 tests passing, 1
+skipped, all three workflows green. The Pi runs `main` and the service is
+active.
 
-**Hold-to-shutdown is done and verified on hardware.** A 2 s hold on the
-connection pill sends `power_off`; the backend checks `shutdown_permitted()`
-and then `Popen`s `sudo -n /usr/bin/systemctl poweroff` — Popen rather than
-run, so the reply reaches the browser before systemd tears the machine down.
-The physical button on the Phaser is a `gpio-shutdown` overlay on GPIO21 that
-logind already turns into the same command, so there was no bespoke script to
-replicate. Granted on this Pi; `shutdown_available` reads true. Evidence for
-the live test is in the archive.
+Two features are shipped and verified on hardware: GRCon26 CTF tracking mode,
+and GUI shutdown (a 2 s hold on the connection pill, off by default, granted per
+machine with `PHASER_ALLOW_GUI_SHUTDOWN=1`). Both are covered in Decisions; the
+hardware evidence is in the archive.
 
-The challenge: the array sweeps while a player carries an HB100 in front of it.
-`do_sweep` returns `peak_angle_deg` (a -3 dB power-weighted centroid),
-`CtfMode.observe_tracked` maps it to one of five sectors at -40/-20/0/+20/+40 deg
-(+/-5 deg each), and three consecutive in-sector sweeps confirm one. Walking the
-configured sequence returns the flag. Scoring is backend-side; the flag and
-sequence live in `/etc/default/phaser-ctf` and are in no repo. Thresholds are
-env-tunable (`PHASER_CTF_SOURCE`, `_TOLERANCE_DEG`, `_DWELL_S`, `_TRACK_SWEEPS`,
-`_SIGNAL_FLOOR_DB`) so they can be loosened at the table without a redeploy.
-
-Verified end to end on hardware, including two complete runs of the real sequence
-ending in an issued flag, and `measuring` flipping correctly with the sweep
-stopped and restarted; evidence is in the archive. The sidebar panel holds no
-controls — sector table, bands toggle, and a status line that speaks only when
-the run has not started or has completed.
+**CTF knobs, for the table:** the flag and sequence live in
+`/etc/default/phaser-ctf` and are in no repo. Thresholds are env-tunable
+(`PHASER_CTF_SOURCE`, `_TOLERANCE_DEG`, `_DWELL_S`, `_TRACK_SWEEPS`,
+`_SIGNAL_FLOOR_DB`) so they can be loosened without a redeploy.
 
 **Reaching the Pi:** LAN `192.168.86.61` (the Overview's `.20` is stale), or
 Tailscale `100.81.68.73` / `phaser`. HTTP works over the tailnet from anywhere;
-Tailscale SSH authenticates by tailnet identity — see Traps.
+Tailscale SSH authenticates by tailnet identity — see Traps. HB100 reads
+10.4245 GHz.
 
-HB100 reads 10.4245 GHz. Deployment, calibration and the live sweep are done and
-merged; that history is in the archive.
+**Next is beamforming Phase 1, untouched.** The per-element phase sliders still
+send `state.phaseList` and the backend still ignores it.
 
-Per-element phase sliders still send `state.phaseList`; the backend still does
-not apply them. Beamforming Phase 1 is otherwise untouched.
+Branches: `main` only, locally. `origin` carries `main`, a stale `radar-dev`
+(an ancestor of `main`), and seven abandoned `claude/*` refs.
 
 # ToDo
 - [ ] **Set `Rx_gain = 30` in the Pi's `config.py`** — deliberately not changed for you. It now reads **10** (was 1), so the sweep is ~10 dB down rather than ~27
@@ -152,10 +136,4 @@ not apply them. Beamforming Phase 1 is otherwise untouched.
 - [ ] Add the Windows + Linux CI matrix — deferred; without it the Windows half of the test suite never runs, and the golden-tar test is meaningless as a single-platform check
 - [ ] Audit Lab 1–9 presets against `docs/2025_Phaser_labs_Python.pdf`
 - [ ] Handle iiod / SDR connection failures gracefully (retry, restart, UI fallback)
-- [ ] Decide the fate of `radar-app` (`667c19c`) — **not in this clone**: it was never
-  pushed, and the 2026-08-25 re-clone during the WSL move could not inherit an
-  unpushed local branch. `git cat-file` does not know the object here. Located
-  outside the repo 2026-09-04; nothing merged depends on it (`frontend-radar/`
-  and `phaser_cw_radar.py` are in `main`, and `origin/radar-dev` is an ancestor
-  of `main`)
 - [ ] Clarify plot-range configurability request
