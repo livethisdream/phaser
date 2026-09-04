@@ -74,7 +74,7 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
 - **2026-09-04** — `status()` takes `sweeping` and reports `measuring`, nulling the live readouts and dropping the in-flight sweep count when nothing observes. Reason: a stopped sweep looks on screen exactly like a challenge that refuses to score. The trail is kept — earned progress is still earned.
 - **2026-09-04** — The start gesture is a 1.2 s hold on the stat-row pill; the sidebar Start button was removed. Reason: `ctf_reset` discards a run and a tap did it silently — three taps in thirty seconds during testing threw away a scored sector.
 - **2026-08-27** — Installation runs **on the Pi**: `ssh` in, then `curl -fsSL .../install.sh | bash`. Reason: every deployment bug was client-side (cmd.exe globbing, PATHEXT, no ControlMaster on Windows, `ssh -t` vs sudo, a Store alias posing as `python`); the Pi is the one environment we control, and sudo works normally there.
-- **2026-08-27** — `deploy.py` kept, rebuilt on a pure `ssh_argv` seam with tests. Reason: `install.sh` provisions, `deploy.py` iterates — it ships a working tree to the Pi without a round trip through GitHub.
+- **2026-08-27** — `deploy.py` kept, rebuilt on a pure `ssh_argv` seam with tests. Reason: `install.sh` provisions, `deploy.py` iterates — it ships a working tree to the Pi without a round trip through GitHub. **Superseded:** `319fd56` removed `deploy.py` and the laptop-side setup scripts; `install.sh` on the Pi is the only path.
 - **2026-08-27** — Calibration consolidated into one `calibration.json`, read with a **per-key** fallback to the legacy pickles. Reason: finishes a JSON migration the headless rewrite silently reverted, and drops `pickle` from the load path. Per-key so re-running one calibration cannot revert the others to defaults.
 - **2026-08-27** — Windows is a supported target but **unverified**. Reason: the Windows box has no real Python, only the Store alias, so that path is reasoned-about rather than executed.
 
@@ -149,7 +149,6 @@ not apply them. Beamforming Phase 1 is otherwise untouched.
 - [ ] Gate `channel_calibration` on signal presence — it returned a 348 dB correction against noise, which is unusable by construction (`Rx_gain + ccal` far outside the driver's range)
 - [ ] Release the iio contexts on mode change — nothing ever closes them; four sockets stay open regardless of mode. Prerequisite for the sim toggle below, and it also fixes calibration's broken-pipe-on-first-attempt
 - [ ] Build sim start into the GUI as a live toggle so there is one way to launch (`--sim` becomes the initial value only). Needs the teardown above; capabilities differ by source (CW radar refuses in sim, interferer control is sim-only)
-- [ ] Collapse the duplicated placement logic — `install.sh` and `deploy.py` each implement it; have `deploy.py` ship the tree and invoke `install.sh` with `PHASER_SRC`
 - [ ] Add the Windows + Linux CI matrix — deferred; without it the Windows half of the test suite never runs, and the golden-tar test is meaningless as a single-platform check
 - [ ] Audit Lab 1–9 presets against `docs/2025_Phaser_labs_Python.pdf`
 - [ ] Handle iiod / SDR connection failures gracefully (retry, restart, UI fallback)
