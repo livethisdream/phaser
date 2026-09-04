@@ -156,6 +156,17 @@ class SimSDR:
         (-1.2, 15.0, 0.25),  # a slower one receding, off boresight
     )
 
+    # FMCW radar scene. Each target is (range_m, velocity_mps, angle_deg,
+    # amplitude); velocity is positive for closing targets. Ranges are chosen
+    # to sit inside the default 20 m window and to be resolvable at the
+    # default 500 MHz of chirp bandwidth (0.3 m resolution), so the range plot
+    # shows separate returns rather than one smear.
+    FMCW_DEFAULT_TARGETS = (
+        (1.0, 0.0, 0.0, 1.0),    # the lab's corner reflector, stationary at 1 m
+        (3.5, 1.8, 0.0, 0.6),    # something walking in at 3.5 m
+        (7.0, -2.4, 12.0, 0.35), # receding, off boresight
+    )
+
     def __init__(self, array, signal_freq, element_spacing, sample_rate=3e6,
                  buffer_size=1024 * 16):
         self._array = array
@@ -192,6 +203,19 @@ class SimSDR:
         self._cw_output_freq = 12.2e9
         self._cw_targets = list(self.CW_DEFAULT_TARGETS)
 
+        # FMCW radar state. Like the CW state above, off until the backend
+        # enters the mode.
+        self._fmcw_enable = False
+        self._fmcw_targets = list(self.FMCW_DEFAULT_TARGETS)
+        self._fmcw = {
+            "chirp_bw": 500e6,
+            "ramp_time": 1e-3,
+            "pri": 1e-3,
+            "num_chirps": 1,
+            "signal_freq": 100_000.0,
+            "output_freq": 12.2e9,
+        }
+
         # Tx buffer bookkeeping, so enter_cw_mode's tx()/tx_destroy_buffer()
         # calls have something to land on.
         self._tx_buffer = None
@@ -224,6 +248,8 @@ class SimSDR:
         be developed or demonstrated without hardware on the bench.
         """
         self._cw_enable = bool(enable)
+        if self._cw_enable:
+            self._fmcw_enable = False
         if signal_freq is not None:
             self._cw_signal_freq = float(signal_freq)
         if output_freq is not None:
@@ -241,6 +267,100 @@ class SimSDR:
                 continue
             scene.append((float(v), float(angle), float(amp)))
         self._cw_targets = scene or list(self.CW_DEFAULT_TARGETS)
+
+    def set_fmcw_mode(self, enable, **params):
+        """Switch the synthesized scene to (or away from) FMCW radar.
+
+        Accepts any of chirp_bw, ramp_time, pri, num_chirps, signal_freq,
+        output_freq, and a `targets` list. CW and FMCW are mutually exclusive:
+        entering one leaves the other, the same way the hardware's mode
+        dispatcher works.
+        """
+        targets = params.pop("targets", None)
+        for key, value in params.items():
+            if key in self._fmcw and value is not None:
+                self._fmcw[key] = float(value)
+        if targets is not None:
+            self.set_fmcw_targets(targets)
+        self._fmcw_enable = bool(enable)
+        if self._fmcw_enable:
+            self._cw_enable = False
+
+    def set_fmcw_targets(self, targets):
+        """Replace the simulated FMCW scene.
+
+        Each entry is (range_m, velocity_mps, angle_deg, amplitude).
+        """
+        scene = []
+        for entry in targets or ():
+            try:
+                r, v, angle, amp = entry
+            except (TypeError, ValueError):
+                continue
+            scene.append((float(r), float(v), float(angle), float(amp)))
+        self._fmcw_targets = scene or list(self.FMCW_DEFAULT_TARGETS)
+
+    def _synthesize_fmcw(self):
+        """FMCW scene: one beat tone per target, with slow-time Doppler phase.
+
+        The Phaser mixes the echo against the transmitted ramp in hardware, so
+        what reaches the Pluto is already the beat -- there is no chirp to
+        synthesize, only its result. For a target at range R closing at v:
+
+            f_b = 2*S*R/c        (S = chirp_bw / ramp_time)
+            f_d = 2*v*f_c/c
+
+        and sample n of chirp m carries phase
+            2*pi*[ (signal_freq + f_b + f_d)*t_fast + f_d*m*PRI ]
+
+        The fast-time term is what the range FFT reads; the slow-time term,
+        advancing by f_d*PRI per chirp, is what the Doppler FFT reads. Those
+        are exactly the two relations phaser_radar_dsp inverts, so a sign error
+        on either side shows up as a target in the wrong place rather than
+        cancelling out.
+
+        Samples are laid out chirp-major to match chirp_matrix(), which
+        reshapes (num_chirps, samples_per_chirp) and transposes.
+        """
+        n_total = int(self.rx_buffer_size)
+        fs = float(self.sample_rate)
+        cfg = self._fmcw
+
+        num_chirps = max(1, int(cfg["num_chirps"]))
+        spc = max(1, n_total // num_chirps)
+        usable = spc * num_chirps
+
+        slope = float(cfg["chirp_bw"]) / float(cfg["ramp_time"])
+        f_c = float(cfg["output_freq"])
+        c = 299_792_458.0
+        wavelength = c / max(f_c, 1.0)
+
+        t_fast = np.arange(spc) / fs
+        m_idx = np.arange(num_chirps)
+
+        chan_sub = [
+            np.zeros(n_total, dtype=np.complex64),
+            np.zeros(n_total, dtype=np.complex64),
+        ]
+
+        for target_range, velocity, angle_deg, amplitude in self._fmcw_targets:
+            f_beat = 2.0 * slope * float(target_range) / c
+            f_doppler = 2.0 * float(velocity) * f_c / c
+
+            fast_phase = 2 * np.pi * (float(cfg["signal_freq"]) + f_beat + f_doppler) * t_fast
+            slow_phase = 2 * np.pi * f_doppler * m_idx * float(cfg["pri"])
+
+            wave = np.exp(1j * (fast_phase[None, :] + slow_phase[:, None]))
+            wave = wave.ravel().astype(np.complex64)
+
+            if usable < n_total:
+                # A buffer that is not a whole number of chirps gets the
+                # remainder zero-filled; chirp_matrix drops it anyway.
+                wave = np.concatenate([wave, np.zeros(n_total - usable, np.complex64)])
+
+            self._superpose_wave(chan_sub, wave, angle_deg, amplitude, wavelength)
+
+        return chan_sub
 
     # enter_cw_mode loads a cyclic Tx buffer and tears it down again. Nothing
     # in the sim transmits, but the calls have to succeed.
@@ -298,6 +418,20 @@ class SimSDR:
         the ADAR device_element_map wiring in _do_init_hardware).
         """
         wave = np.exp(1j * 2 * np.pi * if_hz * t).astype(np.complex64)
+        self._superpose_wave(chan_sub, wave, arrival_angle_deg, amplitude,
+                             wavelength)
+
+    def _superpose_wave(self, chan_sub, wave, arrival_angle_deg, amplitude,
+                        wavelength):
+        """The element loop of _superpose_source, over a precomputed waveform.
+
+        Split out for the FMCW scene, whose waveform is not a single tone: its
+        phase advances across slow time as well as fast, so it cannot be
+        expressed as exp(j*2*pi*f*t) for one f. The spatial half -- taper,
+        latched phase, element error, sub-array mapping -- is identical, which
+        is the point of sharing it: the simulated radar array steers and tapers
+        exactly like the simulated beamforming array.
+        """
         theta_rad = np.radians(arrival_angle_deg)
         for k in range(8):
             el = self._array.elements[k + 1]
@@ -321,7 +455,8 @@ class SimSDR:
         """Return (chan0, chan1) as 1D complex arrays, shape (buffer_size,).
 
         In CW radar mode the scene comes from _synthesize_cw() instead (the
-        Doppler returns), and only the scaling and noise below are shared.
+        Doppler returns), and in FMCW mode from _synthesize_fmcw() (beat tones
+        with slow-time Doppler); only the scaling and noise below are shared.
 
         Sums:
           - Target: plane wave at TARGET_ANGLE_DEG, IF = TARGET_IF_HZ, unit amp
@@ -332,7 +467,9 @@ class SimSDR:
         N = self.rx_buffer_size
         fs = float(self.sample_rate)
 
-        if self._cw_enable:
+        if self._fmcw_enable:
+            chan_sub = self._synthesize_fmcw()
+        elif self._cw_enable:
             chan_sub = self._synthesize_cw()
         else:
             t = np.arange(N) / fs
