@@ -525,8 +525,13 @@
             <!-- CTF progress. It sits in the stat row rather than in the CTF
                  panel for the same reason the sector bands do: the player is
                  already looking at the plot and its readouts, not at the
-                 sidebar. Hidden unless ?ctf=1 AND a Python backend answered. -->
-            <div class="stat-box compact" id="ctf-progress-box" style="display:none;">
+                 sidebar. Hidden unless ?ctf=1 AND a Python backend answered.
+
+                 Full size, not .compact, to match Peak Array Gain and Est.
+                 Angle. During a run this is the readout the player checks
+                 most, so it should not read as an afterthought next to them;
+                 the beam-squint boxes below stay compact because they are. -->
+            <div class="stat-box" id="ctf-progress-box" style="display:none;">
                 <span class="stat-label">CTF Sequence</span>
                 <span class="stat-value" id="ctf-progress-pill">— / —</span>
             </div>
