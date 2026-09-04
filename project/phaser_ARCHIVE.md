@@ -103,7 +103,7 @@ branch-side content `main` lacked was superseded — `hb100_cal.txt` reads that
 the 2026-08-27 `calibration.json` decision replaced, and pre-refactor
 `phaseList` / `HTTPServer` forms. One thing worth re-adding: the branch carried
 a comment on `test_payload_imports.py` reading "Kept in step with deploy.py's
-BACKEND_FILES and install.sh's BACKEND_FILES", which is exactly the trap above.
+BACKEND_FILES and install.sh's BACKEND_FILES", which is exactly the BACKEND_FILES trap in `phaser_PROJECT.md`.
 
 A `fetch --prune` in the same pass dropped three remote-tracking refs that were
 already gone from GitHub: `docs/install-offline`, `feat/offline-wheels`,
