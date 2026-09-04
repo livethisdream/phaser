@@ -1116,8 +1116,6 @@ function renderCtfNeedsBackend() {
     }
     const flagEl = document.getElementById('ctf-flag');
     if (flagEl) flagEl.textContent = '';
-    const resetBtn = document.getElementById('btn-ctf-reset');
-    if (resetBtn) resetBtn.disabled = true;
     // No backend means no sector geometry to draw; the toggle would control nothing.
     const bandsToggle = document.getElementById('ctf-show-sectors');
     if (bandsToggle) bandsToggle.disabled = true;
@@ -1213,11 +1211,9 @@ function wireHoldToCommit(el, holdMs, onCommit) {
     });
 }
 
-// The pill in the stat row is the primary control: it is the thing the player
-// is already watching during a run. The sidebar button does the same job for
-// anyone who went looking for it in the panel.
+// The pill in the stat row is the only control: it is the thing the player is
+// already watching during a run.
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
-wireHoldToCommit(document.getElementById('btn-ctf-reset'), CTF_HOLD_MS, ctfReset);
 
 const simInterfererEnable = document.getElementById('sim-interferer-enable');
 if (simInterfererEnable) {
