@@ -426,6 +426,64 @@ def test_sources_do_not_cross_feed():
     print("sources do not cross-feed: ok")
 
 
+def test_stopped_sweep_reports_nothing_live():
+    """A stale reading must not be served as a live one.
+
+    The tracked source is fed by the sweep loop. With the sweep stopped the
+    last angle is where the source WAS, and the plot cannot say otherwise --
+    a static chart with the bands still drawn looks like a live plot of a
+    stationary source.
+    """
+    ctf = tracked(target=[3])
+    see(ctf, angle_of(3))
+    live = ctf.status()["data"]
+    assert live["measuring"] is True
+    assert live["current_sector"] == 3
+
+    stopped = ctf.status(sweeping=False)["data"]
+    assert stopped["measuring"] is False
+    assert stopped["current_angle_deg"] is None, "served a stale angle as live"
+    assert stopped["current_sector"] is None
+    assert stopped["holding"] is None
+    print("stopped sweep reports nothing live: ok")
+
+
+def test_confirmation_does_not_span_a_stopped_sweep():
+    """A sweep-count chain cannot bridge an interval nothing observed."""
+    ctf = tracked(target=[3])
+    see(ctf, angle_of(3), sweeps=ctf.track_sweeps - 1)   # one short
+    ctf.status(sweeping=False)                            # sweep stops
+    see(ctf, angle_of(3))                                 # resumes, same sector
+    assert not ctf.status()["data"]["matched"], \
+        "the count bridged an interval where nothing was watching"
+    see(ctf, angle_of(3), sweeps=ctf.track_sweeps - 1)
+    assert ctf.status()["data"]["matched"], "should confirm once seen again"
+    print("confirmation does not span a stopped sweep: ok")
+
+
+def test_stopped_sweep_keeps_earned_progress():
+    """Only the in-flight confirmation is dropped; the trail is untouched."""
+    ctf = tracked(target=[3, 1])
+    see(ctf, angle_of(3), sweeps=ctf.track_sweeps)        # sector 3 confirmed
+    assert ctf.status()["data"]["progress"] == 1
+    assert ctf.status(sweeping=False)["data"]["progress"] == 1, \
+        "a stopped sweep erased progress the player had already earned"
+    print("stopped sweep keeps earned progress: ok")
+
+
+def test_commanded_source_ignores_the_sweep_flag():
+    """The commanded source is fed by set_state, not the sweep loop.
+
+    Guards the fallback path: it must keep scoring with the sweep stopped.
+    """
+    ctf = armed(target=[4], dwell_s=2.0)
+    steer(ctf, angle_of(4), now=0.0)
+    data = ctf.status(now=2.5, sweeping=False)["data"]
+    assert data["measuring"] is True, "commanded source should not care"
+    assert data["matched"], "a stopped sweep must not block the commanded path"
+    print("commanded source ignores the sweep flag: ok")
+
+
 def test_tracked_full_sequence_with_dead_bands():
     """The whole challenge, walked the way a player actually walks it."""
     ctf = tracked(target=[3, 1, 4, 1, 2], flag="flag{tracked}")
@@ -463,5 +521,9 @@ if __name__ == "__main__":
     test_tracked_ignores_a_peak_below_the_signal_floor()
     test_dead_band_crossing_resets_the_tracked_count()
     test_sources_do_not_cross_feed()
+    test_stopped_sweep_reports_nothing_live()
+    test_confirmation_does_not_span_a_stopped_sweep()
+    test_stopped_sweep_keeps_earned_progress()
+    test_commanded_source_ignores_the_sweep_flag()
     test_tracked_full_sequence_with_dead_bands()
     print("\nall ctf-mode tests passed")

@@ -392,16 +392,36 @@ class CtfMode:
 
     # --------------------------------------------------------------- report
 
-    def status(self, now=None, sim_mode=False):
+    def status(self, now=None, sim_mode=False, sweeping=True):
         """Advance the dwell clock and report. This is what the panel polls.
 
         Only the commanded source is clock-driven, and only it is advanced
         here: a player who steers and then holds still sends no further
         commands, so the poll is what confirms the dwell. The tracked source
         advances on sweeps arriving in `observe_tracked` instead.
+
+        `sweeping` is whether the backend is actually measuring. It defaults
+        True so that every existing caller keeps its behaviour; only the
+        tracked source cares, since the commanded source is fed by set_state
+        and not by the sweep loop.
         """
         if self.source == "commanded":
             self._advance(time.monotonic() if now is None else now)
+
+        # With the sweep stopped nothing is observing, so the last reading is
+        # not where the source IS -- it is where the source WAS. Reporting it
+        # as live is how a stopped sweep reads as a working challenge that
+        # simply refuses to score: the plot still shows a pattern and the bands
+        # are still drawn, so there is nothing on screen to say otherwise.
+        measuring = bool(sweeping) or self.source == "commanded"
+        if not measuring:
+            self._current_angle = None
+            self._current_sector = None
+            # A confirmation chain must not span a blind interval -- the source
+            # may have been carried anywhere while nothing was watching. The
+            # trail is left alone: progress already earned is still earned.
+            self._pending_sector = None
+            self._pending_count = 0
 
         flag_withheld = self._matched and sim_mode and not self.allow_sim
 
@@ -415,6 +435,7 @@ class CtfMode:
                     for i, c in enumerate(self.sector_centres_deg)
                 ],
                 "source": self.source,
+                "measuring": measuring,
                 "sequence_length": len(self.target),
                 "dwell_s": self.dwell_s,
                 "dwell_sweeps": self.track_sweeps,

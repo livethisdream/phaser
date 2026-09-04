@@ -1118,11 +1118,11 @@ class PhaserHeadless:
             return {"status": "ok"}
 
         elif cmd == "ctf_status":
-            return self.ctf.status(sim_mode=self.sim_mode)
+            return self.ctf.status(sim_mode=self.sim_mode, sweeping=self.sweeping)
 
         elif cmd == "ctf_reset":
             self.ctf.reset()
-            return self.ctf.status(sim_mode=self.sim_mode)
+            return self.ctf.status(sim_mode=self.sim_mode, sweeping=self.sweeping)
 
         elif cmd == "run_calibration":
             return self.run_calibration(data.get("task_name", "find_hb100"))

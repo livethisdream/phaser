@@ -1019,13 +1019,19 @@ function renderCtfStatus(data) {
     // of them can show.
     const statusEl = document.getElementById('ctf-status');
     if (statusEl) {
-        if (data.armed === false) {
-            // Without this the table reads as broken: the beam moves, the
+        if (data.matched) {
+            statusEl.textContent = 'Sequence complete.';
+        } else if (data.measuring === false) {
+            // The one thing the plot genuinely cannot say. A stopped sweep
+            // leaves a static chart with the sector bands still drawn, which
+            // looks exactly like a live plot of a stationary source.
+            statusEl.textContent = 'Sweep stopped — nothing is being measured'
+                + '  ·  start the sweep to play';
+        } else if (data.armed === false) {
+            // Without this the table reads as broken: the source moves, the
             // bands are drawn, and nothing ever scores.
             statusEl.textContent = 'Hold the CTF Sequence pill to begin'
                 + '  ·  where the source is right now does not count';
-        } else if (data.matched) {
-            statusEl.textContent = 'Sequence complete.';
         } else {
             // Quiet during play, which is what the comment above always said
             // this line was for. The dwell rule is reference material rather
