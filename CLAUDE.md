@@ -23,8 +23,13 @@ project metadata.
   into `install.sh`), the systemd unit template, and the legacy installer
   packager
 - `scripts/pi/` — files `provision.sh` copies verbatim onto the Pi: the clock
-  fix, the first-boot identity reset for cloned cards, and the vendored
-  PlutoSDR udev rule and iiod unit
+  fix, the fixed-IP alias, the first-boot identity reset for cloned cards, the
+  `firstrun.sh` card bootstrap, and the vendored PlutoSDR udev rule and iiod unit
+- `tools/prep_sdcard.py` — the one laptop-side tool, and a deliberate exception
+  to the rule below. It writes files to a card's FAT boot partition so a kit
+  comes up at a known IP; it runs no logic against the Pi and opens no
+  connection. That is what makes it different from the `deploy.py` this project
+  removed
 - `tests/` — pytest suite
 - `archive/` — superseded notes, nothing current
 - `docs/` — reference material
@@ -73,12 +78,17 @@ the UI answers 200. Idempotent — re-running it is how you update.
 `PHASER_SRC=/path/to/repo` installs from a local copy instead of downloading,
 which is how you test an unpushed branch. `PHASER_WHEELS` adds offline pip.
 
-There is deliberately no laptop-side deploy tool. `deploy.py` and
+There is deliberately no laptop-side *deploy* tool. `deploy.py` and
 `scripts/setup*.sh` used to be one, and every deployment bug this project had
 came from the client side — cmd.exe globbing, PATHEXT, no ControlMaster on
 Windows OpenSSH, `ssh -t` versus sudo, a Microsoft Store alias masquerading as
 `python`. Moving the logic onto the Pi means the client needs nothing but ssh.
 Do not reintroduce one.
+
+`tools/prep_sdcard.py` is not that, and is allowed: it copies files onto a FAT
+partition before the card has ever been in a Pi, which is the one job that
+cannot be done from the Pi. It runs nothing remotely and needs no ssh. Keep the
+line there -- config onto a card is fine, logic against a running Pi is not.
 
 `frontend/dist/` and `frontend-radar/dist/` are **committed** (built by
 `.github/workflows/build-frontends.yml`), so install.sh never needs Node.

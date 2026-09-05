@@ -356,6 +356,28 @@ if install_if_changed "$SRC/scripts/pi/phaser-clock.service" \
 fi
 sudo systemctl enable phaser-clock.service >/dev/null 2>&1 || true
 
+# Fixed-IP alias. A kit prepped by tools/prep_sdcard.py already has this, but a
+# kit provisioned the plain way over ssh should get it too -- it is what makes
+# the address predictable next time, and it is how a golden image carries the
+# behaviour to every card cloned from it.
+install_if_changed "$SRC/scripts/pi/phaser-netalias" /usr/local/sbin/phaser-netalias 755 \
+    "netalias script" || true
+if install_if_changed "$SRC/scripts/pi/phaser-netalias.service" \
+       /etc/systemd/system/phaser-netalias.service 644 "netalias unit"; then
+    sudo systemctl daemon-reload
+fi
+sudo systemctl enable phaser-netalias.service >/dev/null 2>&1 || true
+# No <boot>/phaser-ip means the alias is inert, which is the right default for
+# a kit reachable some other way. Seed the file commented-out so it documents
+# itself for whoever opens the card next.
+if [ ! -f "$BOOTDIR/phaser-ip" ]; then
+    printf '%s\n' \
+        '# Fixed IP for this kit, added alongside whatever DHCP assigns.' \
+        '# Uncomment and edit to make this kit reachable at a known address.' \
+        '#192.168.7.2/24' | sudo tee "$BOOTDIR/phaser-ip" >/dev/null
+    say "seeded $BOOTDIR/phaser-ip (commented out; edit to enable a fixed IP)"
+fi
+
 # ---- 7. pyadi-iio ----------------------------------------------------------
 # Upstream uninstalls and rebuilds from the tip of main on every run. That is
 # slow (minutes on a Pi), needs a network, and silently moves a working
@@ -435,6 +457,8 @@ printf '\n'; printf '=%.0s' {1..64}; printf '\n'
 say "Provisioned."
 say ""
 say "  hostname   $HOSTNAME_NEW  (http://${HOSTNAME_NEW}.local:8080/ after reboot)"
+ALIAS="$(grep -vE '^\s*(#|$)' "$BOOTDIR/phaser-ip" 2>/dev/null | head -n1 | tr -d ' \t\r\n' || true)"
+[ -n "${ALIAS:-}" ] && say "  fixed IP   ${ALIAS%%/*}  (also reachable there after reboot)"
 say "  clock      $(date '+%Y-%m-%d %H:%M:%S %Z')  NTP: $(timedatectl show -p NTP --value 2>/dev/null || echo unknown)"
 say "  overlay    merged into $CFG (original at $CFG.phaser-orig)"
 say ""

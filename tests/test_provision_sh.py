@@ -208,3 +208,184 @@ def test_shellcheck(script):
         ["shellcheck", "-S", "warning", "-e", "SC1091", str(script)],
         capture_output=True, text=True)
     assert r.returncode == 0, f"shellcheck on {script.name}:\n{r.stdout}"
+
+
+# ---------------------------------------------------------------------------
+# SD card prep (tools/prep_sdcard.py + scripts/pi/firstrun.sh)
+#
+# This is the one piece that runs on a laptop rather than the Pi. It is allowed
+# to exist because it runs no logic against the Pi and opens no connection --
+# it writes files to a FAT partition. The tests below are mostly about the two
+# ways it could brick a card: a malformed cmdline.txt, and a first-boot hook
+# that never disarms itself.
+# ---------------------------------------------------------------------------
+
+import importlib.util
+
+PREP = ROOT / "tools" / "prep_sdcard.py"
+FIRSTRUN = PI_DIR / "firstrun.sh"
+
+
+def _load_prep():
+    spec = importlib.util.spec_from_file_location("prep_sdcard", PREP)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture
+def fake_card(tmp_path):
+    """A directory shaped like a Raspberry Pi FAT boot partition."""
+    card = tmp_path / "boot"
+    card.mkdir()
+    (card / "cmdline.txt").write_text(
+        "console=serial0,115200 console=tty1 root=PARTUUID=abcd-02 "
+        "rootfstype=ext4 fsck.repair=yes rootwait\n", encoding="utf-8")
+    (card / "config.txt").write_text("dtparam=audio=on\n[all]\n", encoding="utf-8")
+    return card
+
+
+def test_prep_sdcard_writes_expected_files(fake_card):
+    prep = _load_prep()
+    assert prep.main(["--boot", str(fake_card), "--hostname", "phaser-01",
+                      "--ip", "192.168.7.11"]) == 0
+    for name in ("phaser-hostname", "phaser-ip", "phaser-netalias",
+                 "phaser-netalias.service", "firstrun.sh"):
+        assert (fake_card / name).is_file(), f"{name} was not written"
+    assert (fake_card / "phaser-hostname").read_text().strip() == "phaser-01"
+    assert "192.168.7.11/24" in (fake_card / "phaser-ip").read_text()
+
+
+def test_cmdline_stays_exactly_one_line(fake_card):
+    """A cmdline.txt with a stray newline makes the Pi refuse to boot silently."""
+    prep = _load_prep()
+    prep.main(["--boot", str(fake_card), "--ip", "none"])
+    raw = (fake_card / "cmdline.txt").read_bytes()
+    assert raw.count(b"\n") <= 1, "cmdline.txt must be a single line"
+    assert b"\r" not in raw, "cmdline.txt must not contain carriage returns"
+    assert raw.endswith(b"\n")
+
+
+def test_cmdline_backup_is_taken_and_not_clobbered(fake_card):
+    prep = _load_prep()
+    original = (fake_card / "cmdline.txt").read_text()
+    prep.main(["--boot", str(fake_card), "--ip", "none"])
+    backup = fake_card / "cmdline.txt.phaser-orig"
+    assert backup.is_file()
+    assert backup.read_text() == original
+    # A second run must not overwrite the pristine backup with the patched file.
+    prep.main(["--boot", str(fake_card), "--ip", "none"])
+    assert backup.read_text() == original
+
+
+def test_prep_is_idempotent(fake_card):
+    """Re-running must not stack a second systemd.run onto the cmdline."""
+    prep = _load_prep()
+    prep.main(["--boot", str(fake_card), "--ip", "none"])
+    first = (fake_card / "cmdline.txt").read_text()
+    prep.main(["--boot", str(fake_card), "--ip", "none"])
+    second = (fake_card / "cmdline.txt").read_text()
+    assert first == second
+    assert second.count("systemd.run=") == 1
+
+
+def test_firstrun_disarm_restores_the_original_cmdline(fake_card):
+    """The hook must strip itself, or the Pi runs it on every boot forever.
+
+    Applies firstrun.sh's own sed to a cmdline prep_sdcard.py produced and
+    checks it round-trips exactly back to the backup. If these two ever drift
+    apart, a kit boot-loops through its first-run script.
+    """
+    prep = _load_prep()
+    prep.main(["--boot", str(fake_card), "--ip", "none"])
+    patched = (fake_card / "cmdline.txt").read_text()
+    original = (fake_card / "cmdline.txt.phaser-orig").read_text()
+
+    sed_expr = re.search(r"sed -i '([^']+)'", FIRSTRUN.read_text(encoding="utf-8"))
+    assert sed_expr, "could not find the disarm sed in firstrun.sh"
+
+    tmp = fake_card / "roundtrip.txt"
+    tmp.write_text(patched, encoding="utf-8")
+    r = subprocess.run(["sed", "-i", sed_expr.group(1), str(tmp)],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert tmp.read_text().strip() == original.strip(), (
+        "firstrun.sh's disarm does not restore the cmdline prep_sdcard.py wrote"
+    )
+
+
+@pytest.mark.parametrize("bad", ["phaser_01", "-bad", "bad-", "", "a" * 64])
+def test_invalid_hostnames_rejected(bad):
+    prep = _load_prep()
+    with pytest.raises(prep.Failure):
+        prep.validate_hostname(bad)
+
+
+@pytest.mark.parametrize("bad", ["999.1.1.1", "127.0.0.1", "192.168.7.2/32",
+                                 "not-an-ip", "0.0.0.0"])
+def test_invalid_addresses_rejected(bad):
+    prep = _load_prep()
+    with pytest.raises(prep.Failure):
+        prep.validate_cidr(bad)
+
+
+def test_bare_address_becomes_slash_24():
+    prep = _load_prep()
+    assert prep.validate_cidr("192.168.7.55") == "192.168.7.55/24"
+
+
+def test_refuses_a_directory_that_is_not_a_boot_partition(tmp_path):
+    """Writing to the wrong mounted volume is the expensive mistake here."""
+    prep = _load_prep()
+    (tmp_path / "config.txt").write_text("x")   # only one of the two markers
+    with pytest.raises(prep.Failure, match="does not look like"):
+        prep.main(["--boot", str(tmp_path)])
+
+
+def test_dry_run_writes_nothing(fake_card):
+    prep = _load_prep()
+    before = sorted(p.name for p in fake_card.iterdir())
+    prep.main(["--boot", str(fake_card), "--dry-run"])
+    assert sorted(p.name for p in fake_card.iterdir()) == before
+
+
+def test_boot_mount_choice_reaches_the_cmdline(fake_card):
+    """bookworm moved the FAT mount; a wrong path means the hook never runs."""
+    prep = _load_prep()
+    prep.main(["--boot", str(fake_card), "--ip", "none",
+               "--boot-mount", "/boot/firmware"])
+    assert "systemd.run=/boot/firmware/firstrun.sh" in \
+        (fake_card / "cmdline.txt").read_text()
+
+
+def test_autoprovision_revokes_its_own_sudo_grant():
+    """The unattended path grants analog passwordless root; it must hand it back.
+
+    ExecStopPost as well as ExecStartPost, so a provision that dies partway
+    does not leave a kit with NOPASSWD sudo and the stock analog/analog
+    password sitting on a workshop LAN.
+    """
+    text = FIRSTRUN.read_text(encoding="utf-8")
+    assert "NOPASSWD" in text, "expected the unattended path to grant sudo"
+    sudoers = "/etc/sudoers.d/010-phaser-autoprovision"
+    assert f"ExecStartPost=/bin/rm -f {sudoers}" in text
+    assert f"ExecStopPost=/bin/rm -f {sudoers}" in text
+
+
+def test_netalias_is_an_alias_not_a_static_config():
+    """Adding an address must not rewrite the network stack's own config.
+
+    An alias works on dhcpcd, NetworkManager and systemd-networkd alike, and
+    survives Kuiper changing stacks underneath us. Editing dhcpcd.conf or
+    NetworkManager profiles would not.
+    """
+    raw = (PI_DIR / "phaser-netalias").read_text(encoding="utf-8")
+    # Strip comments: the script *names* these stacks to explain why it does
+    # not touch them, and matching prose would make this test meaningless.
+    code = "\n".join(ln for ln in raw.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    assert "ip addr add" in code
+    for forbidden in ("dhcpcd.conf", "NetworkManager", "systemd/network",
+                      "nmcli", "/etc/network/interfaces"):
+        assert forbidden not in code, \
+            f"netalias must not touch {forbidden}; it adds an alias instead"

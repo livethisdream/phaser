@@ -63,7 +63,10 @@ jobs:
             scripts/provision.sh \
             scripts/pi/phaser-clock \
             scripts/pi/phaser-firstboot \
+            scripts/pi/phaser-netalias \
             scripts/pi/pluto_update_ad9361.sh
+          # POSIX sh, not bash: it runs before much of userspace exists.
+          shellcheck -S warning -s sh scripts/pi/firstrun.sh
 
       - name: Run tests
         run: python -m pytest -q

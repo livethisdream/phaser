@@ -26,10 +26,21 @@ Then open `http://phaser.local:8080`. That is install *and* update; re-running
 it is how you upgrade. The only thing needed on your own machine is `ssh`; on
 Windows that is Settings > Apps > Optional features > OpenSSH Client.
 
-**A brand-new kit, straight from a stock ADI Kuiper card** -- use
-`provision.sh` instead. It does the OS-level setup the Phaser needs (clock,
-device tree overlay, hostname, PlutoSDR plumbing, pyadi-iio) and then runs
-`install.sh` for you:
+**A brand-new kit, from a stock ADI Kuiper card** -- prep the card on your
+laptop first, so the kit comes up at an address you already know:
+
+```bash
+python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
+```
+
+Then put the card in the Pi and power up. It comes up at
+`ssh analog@192.168.7.11` (and `phaser-01.local`), no mDNS or DHCP lease
+hunting required. Add `--autoprovision` and it installs everything by itself
+with no ssh at all. See [Preparing an SD card](#preparing-an-sd-card).
+
+**Already have a reachable kit that needs the Phaser setup** -- run
+`provision.sh` on it. Clock, device tree overlay, hostname, PlutoSDR plumbing,
+pyadi-iio, then `install.sh`:
 
 ```bash
 ssh analog@analog.local          # stock Kuiper hostname, before provisioning
@@ -165,6 +176,100 @@ Deliberately: the Pi is the one machine whose environment we control, and every
 deployment bug this project has had came from the client side instead. The
 header comment in `install.sh` has the full account, and CLAUDE.md records that
 a laptop-side deploy tool is not to be reintroduced.
+
+## Preparing an SD card
+
+`tools/prep_sdcard.py` runs on **your laptop**, on a card you have just flashed
+with stock ADI Kuiper. It writes a few files to the card's FAT boot partition
+so the kit comes up reachable at an address you chose before you plugged it in.
+
+```bash
+python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
+```
+
+Standard library only, no root, no dependencies. It finds the card
+automatically; `--boot` says where if it cannot, and `--dry-run` shows what it
+would write.
+
+| Option | Effect |
+| --- | --- |
+| `--hostname NAME` | Hostname for this kit (default `phaser`) |
+| `--ip ADDR` | Fixed IP, added *alongside* DHCP (default `192.168.7.2/24`; `none` to skip) |
+| `--autoprovision [REF]` | Provision unattended on first boot, no ssh needed |
+| `--boot PATH` | Where the card is mounted (`E:\`, `/mnt/e`, `/Volumes/boot`) |
+| `--boot-mount PATH` | Where the FAT partition mounts **on the Pi**: `/boot` for Kuiper, `/boot/firmware` for bookworm |
+| `--dry-run` | Say what would be written, change nothing |
+
+### Why this one laptop-side tool is allowed
+
+This project deliberately has no laptop-side deploy tool -- see
+[Why it runs on the Pi](#why-it-runs-on-the-pi). `prep_sdcard.py` is not that.
+It runs no logic against the Pi, opens no ssh connection, and touches a card
+that has never been in a Pi yet. Every client-side bug that motivated removing
+`deploy.py` came from *executing things remotely from Windows*; copying config
+onto a FAT filesystem has none of that surface. The line is: **config onto a
+card is fine, logic against a running Pi is not.**
+
+It also solves a problem that genuinely cannot be solved from the Pi. A kit is
+unreachable until you know its address, and you cannot ssh in to fix that.
+
+### The fixed IP is an alias, not a static configuration
+
+The kit answers on **two** addresses: whatever DHCP gives it, and the one in
+`<boot>/phaser-ip`. `phaser-netalias.service` adds the second with
+`ip addr add` at every boot.
+
+That matters because it works on **any** network stack -- dhcpcd on bullseye,
+NetworkManager on bookworm, systemd-networkd -- without parsing or rewriting
+any of their config files. Nothing here breaks when Kuiper changes stacks
+underneath us, and a kit on a normal DHCP LAN still behaves completely
+normally. The address file lives on the FAT partition so each card in a batch
+can be given its own with Notepad; delete the line and you are back to DHCP
+only.
+
+### First boot, step by step
+
+`prep_sdcard.py` adds `systemd.run=/boot/firstrun.sh` to `cmdline.txt` -- the
+same mechanism Raspberry Pi Imager's own "Advanced options" use. On first boot
+`firstrun.sh` sets the hostname, installs the IP alias, strips itself back out
+of `cmdline.txt`, and reboots once.
+
+Its **only** job is making the kit reachable. Everything else is `provision.sh`,
+over ssh, where you can watch it and it can fail loudly. If `firstrun.sh`
+breaks, the kit never appears on the network and there is nothing to ssh into
+to debug -- which is also why it logs to `firstrun.log` **on the boot
+partition**. If a kit does not show up, pull the card, put it in your laptop,
+and read the log.
+
+Two things it is careful about, both of which brick a card:
+
+- **`cmdline.txt` must stay exactly one line.** A stray newline makes the Pi
+  refuse to boot with no output at all. The tool backs the file up to
+  `cmdline.txt.phaser-orig` first, and a test asserts the round-trip.
+- **The hook must disarm itself**, or the Pi runs it on every boot forever.
+  `test_firstrun_disarm_restores_the_original_cmdline` applies `firstrun.sh`'s
+  own `sed` to what `prep_sdcard.py` wrote and checks it restores the original
+  exactly, so the two cannot drift apart.
+
+### Unattended provisioning
+
+`--autoprovision` goes the whole way: the kit installs everything on first
+boot with no ssh at all. Give it 20-40 minutes, most of it building pyadi-iio.
+
+It defers the work to a systemd unit that runs after `network-online` rather
+than doing it inside the first-boot hook, so it logs to the journal like
+anything else and a stall is visible:
+
+```bash
+sudo journalctl -u phaser-autoprovision -f
+```
+
+It needs passwordless sudo, since nobody is at a keyboard to answer the
+prompt. That grant is revoked in both `ExecStartPost` and `ExecStopPost` -- the
+latter fires even when provisioning fails, so a kit that dies partway does not
+sit on a workshop LAN with NOPASSWD sudo and the stock `analog`/`analog`
+password. **Change that password anyway** before any of this goes on a network
+you do not control.
 
 ## Provisioning a new kit
 
@@ -615,6 +720,10 @@ Frontend (`frontend/`):
 
 Tooling:
 
+- `tools/prep_sdcard.py` — the one laptop-side tool: writes hostname, fixed IP
+  and the first-boot hook onto a flashed card's FAT boot partition. Standard
+  library only. Runs no logic against the Pi — see
+  [Why this one laptop-side tool is allowed](#why-this-one-laptop-side-tool-is-allowed)
 - `tools/vendor_plotly.mjs` — `prebuild` hook, vendors Plotly
 - `tools/fetch_fonts.py` — refetch the webfont subsets
 - `tools/gen_sim_constants.py` — regenerates the JS simulator constants
@@ -645,6 +754,12 @@ here is imported by the backend or served to the browser. See
   which breaks TLS and `apt` before anything can install a fix
 - `phaser-firstboot`, `phaser-firstboot.service` — per-kit SSH host keys,
   machine-id and hostname for SD cards cloned from a golden image
+- `phaser-netalias`, `phaser-netalias.service` — a fixed IP added alongside
+  DHCP, read from `<boot>/phaser-ip`. An alias rather than a static config, so
+  it works on any network stack and survives Kuiper changing stacks
+- `firstrun.sh` — first-boot bootstrap for a stock card, placed on the FAT boot
+  partition by `tools/prep_sdcard.py`. Makes the kit reachable and nothing
+  else; logs to the boot partition so a failure is readable on your laptop
 - `89-pluto.rules`, `iiod-usb@.service` — vendored from
   [thorenscientific/rpi_setup_stuff](https://github.com/thorenscientific/rpi_setup_stuff);
   launch a second `iiod` bound to a PlutoSDR when one is plugged in

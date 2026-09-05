@@ -70,17 +70,30 @@ overwrite the wrong disk — check with `lsblk` first.
 ### 4. Flash and name each card
 
 Write `phaser-golden.img` to each card (`dd`, Raspberry Pi Imager, balenaEtcher
-— all fine). Then, **for each card**, open the FAT boot partition — which
-Windows and macOS mount without any extra tooling — and edit `phaser-hostname`
-to one line:
+— all fine). Then give each one its identity. Either run the prep tool per
+card:
+
+```bash
+python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
+python tools/prep_sdcard.py --hostname phaser-02 --ip 192.168.7.12
+```
+
+…or, since a golden image already carries `phaser-netalias`, just edit two
+plain-text files on the FAT boot partition by hand — Windows and macOS mount it
+without any extra tooling:
 
 ```
-phaser-01
+phaser-hostname     phaser-01
+phaser-ip           192.168.7.11/24
 ```
 
 That is the whole per-card step. On first boot each kit regenerates its host
-keys and machine-id, takes that hostname, reboots once, and comes up at
-`http://phaser-01.local:8080/`.
+keys and machine-id, takes that hostname and address, reboots once, and comes
+up at `http://phaser-01.local:8080/` — and at `http://192.168.7.11:8080/`,
+which works even where mDNS does not.
+
+**Give each kit a different address.** Ten cards sharing one alias IP collide
+exactly the way ten cards sharing one hostname do.
 
 ## Updating kits already in the field
 

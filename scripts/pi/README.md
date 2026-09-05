@@ -36,3 +36,12 @@ hand when a Pluto needs it.
   wrong date, which makes TLS and `apt` fail before anything can install a fix.
 - `phaser-firstboot` / `phaser-firstboot.service` -- per-kit identity for
   cloned SD cards. See `docs/golden-image.md`.
+- `phaser-netalias` / `phaser-netalias.service` -- adds a fixed IP alongside
+  whatever DHCP assigns, read from `<boot>/phaser-ip`. An *alias* rather than a
+  static configuration, so it works on dhcpcd, NetworkManager and
+  systemd-networkd alike and does not break when Kuiper changes stacks.
+- `firstrun.sh` -- first-boot bootstrap for a stock Kuiper card, placed on the
+  FAT boot partition by `tools/prep_sdcard.py` and launched by `systemd.run=`
+  in `cmdline.txt`. Its only job is to make the kit reachable; keep it small,
+  because if it breaks there is nothing to ssh into to find out why. It logs to
+  the boot partition so you can read the failure on your laptop.
