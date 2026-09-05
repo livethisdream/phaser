@@ -34,6 +34,13 @@ jobs:
         with:
           node-version: '24'
 
+      # tools/build_kit_image.py writes into a FAT filesystem with mtools, and
+      # the end-to-end builder test lays down a real one with mkfs.vfat. Both
+      # skip themselves if absent, and a skipped test that builds SD card
+      # images looks exactly like a passing one.
+      - name: Install mtools and dosfstools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mtools dosfstools
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -70,6 +77,18 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      # Same reasoning as the parity guard below: this one builds a real
+      # FAT image and reads it back, and is the only test that exercises the
+      # MBR parse and the cmdline round-trip end to end.
+      - name: Confirm the image-builder test actually ran
+        run: |
+          python -m pytest tests/test_provision_sh.py -q -rs \
+            -k test_builder_end_to_end_against_a_real_fat_image 2>&1 | tee /tmp/builder.log
+          if grep -qE '^[0-9]+ skipped|SKIPPED' /tmp/builder.log; then
+            echo "::error::the image-builder end-to-end test skipped; it must run in CI."
+            exit 1
+          fi
 
       # Fail loudly if the parity suite silently skipped itself -- a skipped
       # drift guard looks exactly like a passing one in the summary.

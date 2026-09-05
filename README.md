@@ -26,20 +26,20 @@ Then open `http://phaser.local:8080`. That is install *and* update; re-running
 it is how you upgrade. The only thing needed on your own machine is `ssh`; on
 Windows that is Settings > Apps > Optional features > OpenSSH Client.
 
-**A brand-new kit** -- flash ADI Kuiper to the card as usual, then prep it on
-your laptop before it ever goes in the Pi, so the kit comes up at an address
-you already know:
+**A brand-new kit** -- bake a Phaser image once from the Kuiper image you
+downloaded, then flash it to as many cards as you like:
 
 ```bash
-# 1. Write ADI Kuiper to the card (Raspberry Pi Imager, balenaEtcher, dd)
-# 2. Leave the card in the reader and:
-python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
+python tools/build_kit_image.py --image ~/Downloads/kuiper.img.xz --autoprovision
 ```
 
-Then put the card in the Pi and power up. It comes up at
-`ssh analog@192.168.7.11` (and `phaser-01.local`), no mDNS or DHCP lease
-hunting required. Add `--autoprovision` and it installs everything by itself
-with no ssh at all. See [Preparing an SD card](#preparing-an-sd-card).
+Flash the result with Raspberry Pi Imager, put the card in the Pi, power up,
+walk away. It comes up at `192.168.7.2` (and `phaser.local`), provisions
+itself, and reboots into the UI -- no ssh, no mDNS, no DHCP lease hunting.
+
+Already flashed a card and just want to prep it in place? `prep_sdcard.py`
+does the same thing to a mounted card. Either way, see
+[Preparing SD cards](#preparing-sd-cards).
 
 **Already have a reachable kit that needs the Phaser setup** -- run
 `provision.sh` on it. Clock, device tree overlay, hostname, PlutoSDR plumbing,
@@ -180,24 +180,60 @@ deployment bug this project has had came from the client side instead. The
 header comment in `install.sh` has the full account, and CLAUDE.md records that
 a laptop-side deploy tool is not to be reintroduced.
 
-## Preparing an SD card
+## Preparing SD cards
 
-`tools/prep_sdcard.py` runs on **your laptop**, on a card you have **already
-flashed** with stock ADI Kuiper. It writes a few files to the card's FAT boot
-partition so the kit comes up reachable at an address you chose before you
-plugged it in.
+Two tools, same job, different moment. Both run on **your laptop**, both are
+standard library only, and both share their logic — `build_kit_image.py`
+imports `prep_sdcard.py`, so an image and a hand-prepped card cannot disagree
+about what a prepared kit looks like.
 
-**It does not flash the card, and it refuses a blank one.** Writing the image
-is left to Raspberry Pi Imager, balenaEtcher or `dd` — they already do it well,
-with a verify pass and guardrails against picking the wrong disk, and none of
-that is worth reimplementing badly. So the order is:
+### `build_kit_image.py` — bake an image once, flash it many times
 
 ```bash
-# 1. Flash ADI Kuiper to the card with whatever you normally use
-# 2. Leave it in the reader — the boot partition stays mounted — and:
-python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
-# 3. Eject, card into the Pi, power up
+python tools/build_kit_image.py --image ~/Downloads/kuiper.img.xz
 ```
+
+Takes a stock Kuiper `.img` or `.img.xz` you have already downloaded and
+produces a copy with the first-boot bootstrap baked in. Flash that to ten
+cards and every kit comes up reachable.
+
+**No root, and no mounting.** It parses the MBR to find the FAT boot partition
+and writes into it with [mtools](https://www.gnu.org/software/mtools/), which
+edits a FAT filesystem inside a file directly. A loop mount would need `sudo`
+*and* a kernel with `vfat` — which rules out plenty of environments, including
+some WSL and container setups. Install with `sudo apt install mtools` (or
+`brew install mtools`).
+
+This is also the only option that works from WSL at all: **WSL2 cannot see a
+USB card reader**, so a script there can never write to a card — but it can
+build an image for one perfectly well.
+
+| Option | Effect |
+| --- | --- |
+| `--image PATH` | Stock Kuiper `.img` or `.img.xz` (required; nothing is downloaded) |
+| `--out PATH` | Output image (default: `<name>-phaser-kit.img` beside the source) |
+| `--hostname NAME` | Default hostname baked in (default `phaser`) |
+| `--ip ADDR` | Default fixed IP (default `192.168.7.2/24`; `none` to skip) |
+| `--autoprovision [REF]` | Bake in unattended provisioning |
+| `--boot-mount PATH` | Where the FAT partition mounts on the Pi |
+| `--force` | Overwrite an existing output image |
+
+It refuses to edit your stock image in place, and validates the MBR before
+copying anything — an `.img.xz` is checked by decompressing only its first
+512 bytes, so a wrong file fails instantly rather than after an 8 GB copy.
+
+### `prep_sdcard.py` — prep a card you have already flashed
+
+```bash
+python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
+```
+
+Same result, applied to a flashed card sitting in your reader. Useful for
+re-prepping one kit, or for giving a card from a batch its own identity.
+
+**It does not flash the card and refuses a blank one.** Writing the image is
+left to Raspberry Pi Imager, balenaEtcher or `dd`, which already do it with a
+verify pass and guardrails against picking the wrong disk.
 
 Standard library only, no root, no dependencies. It finds the card
 automatically; `--boot` says where if it cannot, and `--dry-run` shows what it
@@ -212,12 +248,12 @@ would write.
 | `--boot-mount PATH` | Where the FAT partition mounts **on the Pi**: `/boot` for Kuiper, `/boot/firmware` for bookworm |
 | `--dry-run` | Say what would be written, change nothing |
 
-### Why this one laptop-side tool is allowed
+### Why these laptop-side tools are allowed
 
 This project deliberately has no laptop-side deploy tool -- see
-[Why it runs on the Pi](#why-it-runs-on-the-pi). `prep_sdcard.py` is not that.
-It runs no logic against the Pi, opens no ssh connection, and touches a card
-that has never been in a Pi yet. Every client-side bug that motivated removing
+[Why it runs on the Pi](#why-it-runs-on-the-pi). These are not that. They run
+no logic against the Pi, open no ssh connection, and touch a card or an image
+file that has never been in a Pi yet. Every client-side bug that motivated removing
 `deploy.py` came from *executing things remotely from Windows*; copying config
 onto a FAT filesystem has none of that surface. The line is: **config onto a
 card is fine, logic against a running Pi is not.**
@@ -732,10 +768,15 @@ Frontend (`frontend/`):
 
 Tooling:
 
-- `tools/prep_sdcard.py` — the one laptop-side tool: writes hostname, fixed IP
-  and the first-boot hook onto a flashed card's FAT boot partition. Standard
-  library only. Runs no logic against the Pi — see
-  [Why this one laptop-side tool is allowed](#why-this-one-laptop-side-tool-is-allowed)
+- `tools/build_kit_image.py` — bakes a ready-to-flash Phaser image from a stock
+  Kuiper `.img`/`.img.xz`. Parses the MBR and writes the boot partition with
+  mtools, so no root and no loop mount. The only path that works from WSL,
+  which cannot see a USB card reader
+- `tools/prep_sdcard.py` — the same preparation applied to an already-flashed
+  card. Owns `build_file_plan()` and `patch_cmdline_text()`, which the image
+  builder imports, so a card and an image cannot disagree. Standard library
+  only. Runs no logic against the Pi — see
+  [Why these laptop-side tools are allowed](#why-these-laptop-side-tools-are-allowed)
 - `tools/vendor_plotly.mjs` — `prebuild` hook, vendors Plotly
 - `tools/fetch_fonts.py` — refetch the webfont subsets
 - `tools/gen_sim_constants.py` — regenerates the JS simulator constants

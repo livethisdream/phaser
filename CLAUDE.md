@@ -25,11 +25,14 @@ project metadata.
 - `scripts/pi/` — files `provision.sh` copies verbatim onto the Pi: the clock
   fix, the fixed-IP alias, the first-boot identity reset for cloned cards, the
   `firstrun.sh` card bootstrap, and the vendored PlutoSDR udev rule and iiod unit
-- `tools/prep_sdcard.py` — the one laptop-side tool, and a deliberate exception
-  to the rule below. It writes files to a card's FAT boot partition so a kit
-  comes up at a known IP; it runs no logic against the Pi and opens no
-  connection. That is what makes it different from the `deploy.py` this project
-  removed
+- `tools/build_kit_image.py`, `tools/prep_sdcard.py` — the laptop-side card
+  tools, and a deliberate exception to the rule below. One bakes a flashable
+  image from a stock Kuiper image, the other preps an already-flashed card;
+  both only write files a kit reads at first boot, run no logic against the Pi
+  and open no connection. That is what makes them different from the
+  `deploy.py` this project removed. `prep_sdcard.py` owns the shared
+  `build_file_plan()` / `patch_cmdline_text()`; the builder imports them rather
+  than carrying a second copy
 - `tests/` — pytest suite
 - `archive/` — superseded notes, nothing current
 - `docs/` — reference material
@@ -85,10 +88,12 @@ Windows OpenSSH, `ssh -t` versus sudo, a Microsoft Store alias masquerading as
 `python`. Moving the logic onto the Pi means the client needs nothing but ssh.
 Do not reintroduce one.
 
-`tools/prep_sdcard.py` is not that, and is allowed: it copies files onto a FAT
-partition before the card has ever been in a Pi, which is the one job that
-cannot be done from the Pi. It runs nothing remotely and needs no ssh. Keep the
-line there -- config onto a card is fine, logic against a running Pi is not.
+`tools/build_kit_image.py` and `tools/prep_sdcard.py` are not that, and are
+allowed: they write files onto a FAT partition (in an image file, or on a card)
+before it has ever been in a Pi, which is the one job that cannot be done from
+the Pi -- a kit is unreachable until you know its address. They run nothing
+remotely and need no ssh. Keep the line there -- config onto a card is fine,
+logic against a running Pi is not.
 
 `frontend/dist/` and `frontend-radar/dist/` are **committed** (built by
 `.github/workflows/build-frontends.yml`), so install.sh never needs Node.

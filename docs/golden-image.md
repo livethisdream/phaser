@@ -1,8 +1,33 @@
 # Cloning a batch of Phaser kits
 
 Provisioning one kit takes tens of minutes, most of it building pyadi-iio from
-source on a Pi. Doing that ten times over is a waste of an afternoon. Provision
-one kit, image its card, and flash the rest.
+source on a Pi. Doing that ten times over is a waste of an afternoon.
+
+**There are two ways to avoid it, and they suit different situations.**
+
+| | `build_kit_image.py` | Golden image (this document) |
+| --- | --- | --- |
+| Start from | Stock Kuiper image | A kit you provisioned and verified |
+| Per-kit first boot | Provisions itself (~30 min, needs internet) | Already provisioned; boots ready |
+| Needs internet on the Pi | Yes, unless you stage wheels | No |
+| Image is | Reproducible from a script in git | An opaque snapshot |
+| Best when | Kits have internet; you want a repeatable build | Kits are offline, or you want them workshop-ready instantly |
+
+If your bench has internet, **start with `build_kit_image.py`** — one command,
+nothing to snapshot, and the image is a pure function of this repo:
+
+```bash
+python tools/build_kit_image.py --image ~/Downloads/kuiper.img.xz --autoprovision
+```
+
+The golden-image route below is the answer when the kits will be **offline**,
+or when you want a card that boots straight into a working UI with no
+provisioning wait at all. It is also the faster one per card, since nothing is
+built on the Pi.
+
+## The golden-image route
+
+Provision one kit, image its card, and flash the rest.
 
 `scripts/provision.sh` stays the source of truth either way: it is the recipe
 the golden image is built *from*, and it is how you update a kit already in the

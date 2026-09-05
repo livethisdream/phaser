@@ -164,6 +164,70 @@ def validate_cidr(value):
 # Writing
 # --------------------------------------------------------------------------
 
+def build_file_plan(hostname, cidr, autoprovision):
+    """Return {filename: text} for everything that belongs on the boot partition.
+
+    Pure: no I/O, no filesystem. tools/build_kit_image.py writes the same plan
+    into an .img with mtools, while prep_sdcard.py writes it to a mounted card.
+    Keeping the decision in one place is what stops a card and an image built
+    from the same repo disagreeing about what a prepared kit looks like.
+    """
+    plan = {"phaser-hostname": hostname + "\n"}
+
+    if cidr:
+        plan["phaser-ip"] = (
+            "# Fixed IP for this kit, added alongside whatever DHCP assigns.\n"
+            "# One address per line, CIDR form. Edit freely -- it is read at\n"
+            "# every boot. Delete the line (or the file) for DHCP only.\n"
+            f"{cidr}\n"
+        )
+        for name in ("phaser-netalias", "phaser-netalias.service"):
+            plan[name] = (PI_DIR / name).read_text(encoding="utf-8")
+
+    if autoprovision:
+        plan["phaser-autoprovision"] = (
+            "# Presence of this file makes the kit provision itself on first\n"
+            "# boot. The line below is the git ref to install from.\n"
+            f"{autoprovision}\n"
+        )
+
+    plan["firstrun.sh"] = (PI_DIR / "firstrun.sh").read_text(encoding="utf-8")
+    return plan
+
+
+def patch_cmdline_text(original, boot_mount):
+    """Add the first-boot hook to a cmdline.txt's text.
+
+    Returns (new_text, changed). Raises Failure rather than returning anything
+    that is not exactly one line: a cmdline.txt with a stray newline makes the
+    Pi refuse to boot, with no output and nothing to debug against.
+    """
+    flat = " ".join(original.split())
+    if "systemd.run=" in flat:
+        return original, False
+    new = f"{flat} {cmdline_addition(boot_mount)}\n"
+    if new.strip().count("\n"):
+        raise Failure("refusing to produce a multi-line cmdline.txt")
+    return new, True
+
+
+#: Files whose whole point is a single value the user chose. Echoing that value
+#: back is a real check against a typo; echoing a line out of a shell script is
+#: noise.
+SINGLE_VALUE_FILES = ("phaser-hostname", "phaser-ip", "phaser-autoprovision")
+
+
+def plan_detail(name, content):
+    """The value to show beside a filename, or '' for a copied script."""
+    if name not in SINGLE_VALUE_FILES:
+        return ""
+    for line in content.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
 def write_text(path, content, dry_run):
     """Write a file with LF endings.
 
@@ -198,9 +262,9 @@ def patch_cmdline(boot, boot_mount, dry_run):
     """
     cmdline = boot / "cmdline.txt"
     original = cmdline.read_text(encoding="utf-8")
-    flat = " ".join(original.split())
+    new_text, changed = patch_cmdline_text(original, boot_mount)
 
-    if "systemd.run=" in flat:
+    if not changed:
         print("    cmdline.txt already has a systemd.run entry; leaving it alone")
         return False
 
@@ -212,10 +276,7 @@ def patch_cmdline(boot, boot_mount, dry_run):
     else:
         print("    cmdline.txt.phaser-orig already exists; not overwriting")
 
-    new = f"{flat} {cmdline_addition(boot_mount)}\n"
-    if "\n" in new.strip():
-        raise Failure("refusing to write a multi-line cmdline.txt")
-    write_text(cmdline, new, dry_run)
+    write_text(cmdline, new_text, dry_run)
     if not dry_run:
         print("    added the first-boot hook to cmdline.txt")
     return True
@@ -318,34 +379,14 @@ examples:
         except OSError:
             pass
 
+    plan = build_file_plan(hostname, cidr, args.autoprovision)
+
     print("  Writing:")
-    write_text(boot / "phaser-hostname", hostname + "\n", args.dry_run)
-    print(f"    phaser-hostname          {hostname}")
-
-    if cidr:
-        write_text(boot / "phaser-ip", (
-            "# Fixed IP for this kit, added alongside whatever DHCP assigns.\n"
-            "# One address per line, CIDR form. Edit freely -- it is read at\n"
-            "# every boot. Delete the line (or the file) for DHCP only.\n"
-            f"{cidr}\n"
-        ), args.dry_run)
-        print(f"    phaser-ip                {cidr}")
-        copy_pi_file("phaser-netalias", boot, args.dry_run)
-        copy_pi_file("phaser-netalias.service", boot, args.dry_run)
-        print("    phaser-netalias          (+ .service)")
-    else:
-        print("    phaser-ip                skipped (--ip none)")
-
-    if args.autoprovision:
-        write_text(boot / "phaser-autoprovision", (
-            "# Presence of this file makes the kit provision itself on first\n"
-            "# boot. The line below is the git ref to install from.\n"
-            f"{args.autoprovision}\n"
-        ), args.dry_run)
-        print(f"    phaser-autoprovision     ref={args.autoprovision}")
-
-    copy_pi_file("firstrun.sh", boot, args.dry_run)
-    print("    firstrun.sh")
+    for name, content in plan.items():
+        write_text(boot / name, content, args.dry_run)
+        print(f"    {name:<24} {plan_detail(name, content)}")
+    if not cidr:
+        print("    (no fixed IP -- DHCP only, --ip none)")
 
     patch_cmdline(boot, args.boot_mount, args.dry_run)
     print(f"    (first-boot hook points at {args.boot_mount}/firstrun.sh on the Pi)")

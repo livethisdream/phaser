@@ -389,3 +389,168 @@ def test_netalias_is_an_alias_not_a_static_config():
                       "nmcli", "/etc/network/interfaces"):
         assert forbidden not in code, \
             f"netalias must not touch {forbidden}; it adds an alias instead"
+
+
+# ---------------------------------------------------------------------------
+# Image builder (tools/build_kit_image.py)
+#
+# Builds a ready-to-flash image from a stock Kuiper one. The MBR parsing and
+# the cmdline round-trip are the parts that produce an unbootable card when
+# wrong, so they are tested against a real FAT filesystem rather than mocked.
+# ---------------------------------------------------------------------------
+
+import lzma
+import struct
+
+BUILDER = ROOT / "tools" / "build_kit_image.py"
+SECTOR = 512
+BOOT_LBA = 8192
+BOOT_SECTORS = 2048            # 1 MB: enough for a FAT16 the tests can write
+
+
+def _load_builder():
+    spec = importlib.util.spec_from_file_location("build_kit_image", BUILDER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _mbr(boot_type=0x0c, boot_lba=BOOT_LBA, boot_sectors=BOOT_SECTORS):
+    """A minimal but real MBR with a FAT boot partition and a Linux rootfs."""
+    mbr = bytearray(SECTOR)
+
+    def entry(ptype, lba, secs):
+        return bytes([0, 0, 0, 0, ptype, 0, 0, 0]) + struct.pack("<II", lba, secs)
+
+    mbr[446:462] = entry(boot_type, boot_lba, boot_sectors)
+    mbr[462:478] = entry(0x83, boot_lba + boot_sectors, 4096)
+    mbr[510:512] = b"\x55\xaa"
+    return bytes(mbr)
+
+
+def test_mbr_parsing_finds_the_fat_partition():
+    b = _load_builder()
+    offset, size = b.parse_mbr(_mbr(), "test")
+    assert offset == BOOT_LBA * SECTOR
+    assert size == BOOT_SECTORS * SECTOR
+
+
+@pytest.mark.parametrize("fat_type", [0x01, 0x04, 0x06, 0x0b, 0x0c, 0x0e])
+def test_all_fat_partition_types_recognised(fat_type):
+    """Pi images have used several of these over the years."""
+    b = _load_builder()
+    offset, _ = b.parse_mbr(_mbr(boot_type=fat_type), "test")
+    assert offset == BOOT_LBA * SECTOR
+
+
+def test_mbr_without_signature_is_rejected():
+    b = _load_builder()
+    with pytest.raises(b.Failure, match="boot signature"):
+        b.parse_mbr(bytes(SECTOR), "test")
+
+
+def test_mbr_with_no_fat_partition_is_rejected():
+    """An ext4-only image would otherwise be written to at a bogus offset."""
+    b = _load_builder()
+    mbr = bytearray(_mbr())
+    mbr[446 + 4] = 0x83          # make the first partition Linux too
+    with pytest.raises(b.Failure, match="no FAT boot partition"):
+        b.parse_mbr(bytes(mbr), "test")
+
+
+def test_first_sector_read_from_xz_without_full_decompression(tmp_path):
+    """Validating an 8 GB .img.xz must not cost an 8 GB decompression."""
+    b = _load_builder()
+    raw = _mbr() + b"\x00" * (SECTOR * 64)
+    xz = tmp_path / "img.xz"
+    with lzma.open(xz, "wb") as fh:
+        fh.write(raw)
+    assert b.read_first_sector(xz)[510:512] == b"\x55\xaa"
+
+
+def test_builder_refuses_to_edit_the_source_in_place(tmp_path):
+    b = _load_builder()
+    img = tmp_path / "kuiper.img"
+    img.write_bytes(_mbr())
+    with pytest.raises(b.Failure, match="Refusing to edit"):
+        b.main(["--image", str(img), "--out", str(img), "--force"])
+
+
+def test_builder_validates_before_copying(tmp_path):
+    """A bad source must fail before an 8 GB copy, leaving no output behind."""
+    b = _load_builder()
+    junk = tmp_path / "junk.img"
+    junk.write_bytes(b"not an image")
+    with pytest.raises(b.Failure):
+        b.main(["--image", str(junk)])
+    assert not list(tmp_path.glob("*phaser-kit.img")), \
+        "a failed build must not leave a partial output image"
+
+
+def test_builder_and_prep_share_one_file_plan():
+    """A built image and a hand-prepped card must not disagree.
+
+    Both call prep_sdcard.build_file_plan; if the builder ever grows its own
+    copy, an image and a card prepared from the same commit start behaving
+    differently and nothing else would catch it.
+    """
+    text = BUILDER.read_text(encoding="utf-8")
+    assert "prep.build_file_plan(" in text
+    assert "prep.patch_cmdline_text(" in text
+
+
+@pytest.mark.skipif(shutil.which("mcopy") is None, reason="mtools not installed")
+def test_builder_end_to_end_against_a_real_fat_image(tmp_path):
+    """Build a real image and read the result back out with mtools.
+
+    This is the one test that exercises the whole path: MBR parse, FAT write,
+    and the cmdline patch preserving the image's own root PARTUUID -- getting
+    that wrong produces a card that does not boot.
+    """
+    b = _load_builder()
+    offset = BOOT_LBA * SECTOR
+
+    img = tmp_path / "kuiper.img"
+    with open(img, "wb") as fh:
+        fh.write(_mbr())
+        fh.truncate((BOOT_LBA + BOOT_SECTORS + 4096) * SECTOR)
+
+    # Lay a real FAT filesystem at the boot offset.
+    part = tmp_path / "part.img"
+    subprocess.run(["dd", "if=/dev/zero", f"of={part}", "bs=512",
+                    f"count={BOOT_SECTORS}", "status=none"], check=True)
+    if subprocess.run(["mkfs.vfat", str(part)], capture_output=True).returncode:
+        pytest.skip("mkfs.vfat unavailable")
+    subprocess.run(["dd", f"if={part}", f"of={img}", "bs=512",
+                    f"seek={BOOT_LBA}", "conv=notrunc", "status=none"], check=True)
+
+    env = dict(os.environ, MTOOLS_SKIP_CHECK="1")
+    original_cmdline = ("console=tty1 root=PARTUUID=6c586e13-02 "
+                        "rootfstype=ext4 rootwait\n")
+    (tmp_path / "cmdline.txt").write_text(original_cmdline, newline="\n")
+    (tmp_path / "config.txt").write_text("[all]\n", newline="\n")
+    for f in ("cmdline.txt", "config.txt"):
+        subprocess.run(["mcopy", "-i", f"{img}@@{offset}", str(tmp_path / f), f"::/{f}"],
+                       check=True, env=env)
+
+    out = tmp_path / "built.img"
+    assert b.main(["--image", str(img), "--out", str(out),
+                   "--hostname", "phaser-07", "--ip", "192.168.7.17"]) == 0
+
+    def read(name):
+        r = subprocess.run(["mtype", "-i", f"{out}@@{offset}", f"::/{name}"],
+                           capture_output=True, text=True, env=env)
+        assert r.returncode == 0, f"{name} missing from the built image: {r.stderr}"
+        return r.stdout
+
+    assert read("phaser-hostname").strip() == "phaser-07"
+    assert "192.168.7.17/24" in read("phaser-ip")
+    assert "ip addr add" in read("phaser-netalias")
+    assert read("firstrun.sh").lstrip().startswith("#!")
+
+    cmdline = read("cmdline.txt")
+    assert cmdline.count("\n") <= 1, "cmdline.txt must stay one line"
+    assert "systemd.run=/boot/firstrun.sh" in cmdline
+    # The image's own PARTUUID must survive: inventing one bricks the card.
+    assert "root=PARTUUID=6c586e13-02" in cmdline
+    assert read("cmdline.txt.phaser-orig").strip() == original_cmdline.strip()
