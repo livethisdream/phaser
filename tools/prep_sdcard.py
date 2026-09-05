@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Prepare a freshly flashed ADI Kuiper SD card so the kit comes up reachable.
 
-Run this on your laptop, on a card you have just written with Raspberry Pi
-Imager (or dd, or balenaEtcher). It writes a handful of files to the card's FAT
+Run this on your laptop, on a card you have ALREADY FLASHED with ADI Kuiper
+(Raspberry Pi Imager, balenaEtcher or dd). It edits the image's FAT boot
+partition; it does not write the image, and it will refuse a blank card.
+Flashing is left to the tools that already do it well, with a GUI, a verify
+pass, and guardrails against picking the wrong disk. It writes a handful of files to the card's FAT
 boot partition and adds one entry to cmdline.txt. On first boot the Pi sets its
 hostname, brings up a known fixed IP alongside DHCP, and -- if you ask it to --
 provisions itself completely without you ever having to find it on the network.
@@ -269,16 +272,25 @@ examples:
         if not looks_like_boot_partition(boot):
             raise Failure(
                 f"{boot} does not look like a Raspberry Pi boot partition "
-                f"(expected {' and '.join(BOOT_MARKERS)} in it).\n"
-                "Point --boot at the small FAT partition, not the card's root."
+                f"(expected {' and '.join(BOOT_MARKERS)} in it).\n\n"
+                "This tool prepares an ALREADY-FLASHED card -- it edits the\n"
+                "Kuiper image's boot partition, it does not create one. Write\n"
+                "ADI Kuiper to the card first (Raspberry Pi Imager, balenaEtcher\n"
+                "or dd), then re-run this.\n\n"
+                "If the card is flashed, point --boot at the small FAT partition\n"
+                "rather than the card's root."
             )
     else:
         found = find_boot_partition()
         if not found:
             raise Failure(
-                "no Raspberry Pi boot partition found.\n"
-                "Insert the flashed card and make sure it is mounted, then "
-                "re-run -- or say where it is with --boot.\n"
+                "no Raspberry Pi boot partition found.\n\n"
+                "This tool prepares an ALREADY-FLASHED card. If the card is\n"
+                "blank, write ADI Kuiper to it first (Raspberry Pi Imager,\n"
+                "balenaEtcher or dd) -- this tool edits the image's boot\n"
+                "partition, it does not create one.\n\n"
+                "If it is flashed, make sure it is mounted and re-run, or say "
+                "where it is with --boot.\n"
                 "  Windows:  --boot E:\\\n"
                 "  WSL:      --boot /mnt/e\n"
                 "  macOS:    --boot /Volumes/boot\n"

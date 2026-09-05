@@ -26,10 +26,13 @@ Then open `http://phaser.local:8080`. That is install *and* update; re-running
 it is how you upgrade. The only thing needed on your own machine is `ssh`; on
 Windows that is Settings > Apps > Optional features > OpenSSH Client.
 
-**A brand-new kit, from a stock ADI Kuiper card** -- prep the card on your
-laptop first, so the kit comes up at an address you already know:
+**A brand-new kit** -- flash ADI Kuiper to the card as usual, then prep it on
+your laptop before it ever goes in the Pi, so the kit comes up at an address
+you already know:
 
 ```bash
+# 1. Write ADI Kuiper to the card (Raspberry Pi Imager, balenaEtcher, dd)
+# 2. Leave the card in the reader and:
 python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
 ```
 
@@ -179,12 +182,21 @@ a laptop-side deploy tool is not to be reintroduced.
 
 ## Preparing an SD card
 
-`tools/prep_sdcard.py` runs on **your laptop**, on a card you have just flashed
-with stock ADI Kuiper. It writes a few files to the card's FAT boot partition
-so the kit comes up reachable at an address you chose before you plugged it in.
+`tools/prep_sdcard.py` runs on **your laptop**, on a card you have **already
+flashed** with stock ADI Kuiper. It writes a few files to the card's FAT boot
+partition so the kit comes up reachable at an address you chose before you
+plugged it in.
+
+**It does not flash the card, and it refuses a blank one.** Writing the image
+is left to Raspberry Pi Imager, balenaEtcher or `dd` — they already do it well,
+with a verify pass and guardrails against picking the wrong disk, and none of
+that is worth reimplementing badly. So the order is:
 
 ```bash
+# 1. Flash ADI Kuiper to the card with whatever you normally use
+# 2. Leave it in the reader — the boot partition stays mounted — and:
 python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
+# 3. Eject, card into the Pi, power up
 ```
 
 Standard library only, no root, no dependencies. It finds the card
