@@ -1,7 +1,7 @@
 ---
 name: "#phasergui archive"
 dateCreated: 2026-08-27
-dateModified: 2026-09-04
+dateModified: 2026-09-10
 ---
 Cold storage for `phaser_PROJECT.md`. Nothing here describes the present.
 
@@ -213,6 +213,12 @@ _Rotated 2026-09-04 from the hot note to meet its size budget. Still true._
 
 # Superseded Decisions
 
+- **2026-09-04** — GUI shutdown off by default, granted per machine with
+  `PHASER_ALLOW_GUI_SHUTDOWN=1`; the default was meant to *be* the access
+  control, so a bench Pi could have it while a floor Pi did not. Superseded
+  2026-09-10: the flag was undocumented, so the only thing it reliably produced
+  was a fresh install where the shutdown gesture silently did nothing.
+  `install.sh` now installs the drop-in every run.
 - **2026-08-27** — `deploy.py` kept, rebuilt on a pure `ssh_argv` seam with
   tests, so `install.sh` provisions and `deploy.py` iterates. Superseded by
   `319fd56`, which removed `deploy.py` and the laptop-side setup scripts;

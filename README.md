@@ -71,6 +71,31 @@ hashed assets; and it never overwrites an existing `config.py`.
 `install.sh` refuses to run if the source has no `frontend/dist/index.html`
 at all, rather than installing a backend with no UI in front of it.
 
+### Shutting the kit down from the browser
+
+Hold the connection pill in the header for two seconds and the Pi powers off
+cleanly -- the same shutdown the push button on the Phaser performs, since that
+button is a `gpio-shutdown` overlay on GPIO21 and logind turns it into the same
+`systemctl poweroff`.
+
+The backend runs unprivileged, so `install.sh` installs a sudoers drop-in at
+`/etc/sudoers.d/phaser-shutdown` granting the service user that one command and
+nothing else. It is validated with `visudo -c` before install, so a malformed
+rule cannot break `sudo` on the kit.
+
+This is standard on every install. **The backend is unauthenticated**, so anyone
+who can reach port 8080 can power the machine off -- on a shared or public
+network, that is a power switch for the room. To revoke it on a particular kit:
+
+```bash
+sudo rm /etc/sudoers.d/phaser-shutdown
+sudo systemctl restart phaser-headless
+```
+
+The next `install.sh` on that kit writes it back. With the rule gone the backend
+reports `shutdown_available: false` and the UI leaves the pill an ordinary
+readout, so nothing in the page offers a gesture that would only fail.
+
 ### Environment variables
 
 | Variable | Effect |
