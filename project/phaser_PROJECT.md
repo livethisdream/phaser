@@ -1,7 +1,7 @@
 ---
 name: "#phasergui"
 dateCreated: 2026-08-06
-dateModified: 2026-09-04
+dateModified: 2026-09-10
 container: cdocker
 ---
 # Overview
@@ -63,10 +63,13 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
   with no active session, so polkit refuses `org.freedesktop.login1.power-off`
   with "authorization requires authentication" — a permission error that looks
   nothing like one. The GUI path works only because of the sudoers drop-in;
-  without it, `sudo -n` fails and `shutdown_available` is false by design.
+  without it, `sudo -n` fails and `shutdown_available` is false. `install.sh`
+  installs that drop-in on every run, so a kit that cannot power off is a kit
+  installed from a ref older than 2026-09-10, or one where the file was
+  deleted.
 
 # Decisions
-- **2026-09-04** — GUI shutdown is **off by default**, granted per machine by re-running `install.sh` with `PHASER_ALLOW_GUI_SHUTDOWN=1`. Reason: the backend is unauthenticated, so on a conference network the endpoint is a power switch for the room; the default *is* the access control. A bench Pi can have it while a Pi on the floor, running identical code, does not. The drop-in is one command, `visudo -c`-validated before install, and revoking it is deleting one file.
+- **2026-09-10** — GUI shutdown is installed **unconditionally** by `install.sh`; the `PHASER_ALLOW_GUI_SHUTDOWN` gate is gone. Reason: it is a standard feature of the kit, and the flag was never documented in the README, so in practice it only meant shutdown silently did not work on a fresh install. Accepted tradeoff: the backend is unauthenticated, so any reachable kit can be powered off by anyone. Revoke per kit by deleting `/etc/sudoers.d/phaser-shutdown` — the next `install.sh` writes it back.
 - **2026-09-04** — The UI arms the gesture only when `get_state` reports `shutdown_available`, probed with `sudo -l` (which answers permission without running anything). Reason: an affordance for something that can only return an error is worse than no affordance.
 - **2026-09-04** — Shutdown is a 2 s hold and red, against the CTF control's 1.2 s. Reason: this one cannot be undone from the browser — the machine it stops is the one serving the page.
 - **2026-09-04** — CTF scores the **tracked** source by default: the sweep's measured peak, not a commanded beam. Reason: the table challenge is carrying an HB100 in front of the array; `commanded` stays behind `PHASER_CTF_SOURCE` as the fallback, and exactly one source scores at a time.
@@ -102,14 +105,27 @@ skipped, all three workflows green. The Pi runs `main` and the service is
 active.
 
 Two features are shipped and verified on hardware: GRCon26 CTF tracking mode,
-and GUI shutdown (a 2 s hold on the connection pill, off by default, granted per
-machine with `PHASER_ALLOW_GUI_SHUTDOWN=1`). Both are covered in Decisions; the
-hardware evidence is in the archive.
+and GUI shutdown (a 2 s hold on the connection pill). As of 2026-09-10 shutdown
+is granted on every install rather than per machine. Both are covered in
+Decisions; the hardware evidence is in the archive.
 
 **CTF knobs, for the table:** the flag and sequence live in
 `/etc/default/phaser-ctf` and are in no repo. Thresholds are env-tunable
 (`PHASER_CTF_SOURCE`, `_TOLERANCE_DEG`, `_DWELL_S`, `_TRACK_SWEEPS`,
 `_SIGNAL_FLOOR_DB`) so they can be loosened without a redeploy.
+
+**Turning GUI shutdown off on one kit:** it is granted on every install now, so
+removing it is a per-kit action that has to be repeated after each install:
+
+```bash
+sudo rm /etc/sudoers.d/phaser-shutdown
+sudo systemctl restart phaser-headless
+```
+
+The restart is not optional — `shutdown_permitted()` caches the `sudo -l` probe
+for the process lifetime, so without it the UI keeps offering a gesture that now
+errors. Afterwards `get_state` reports `shutdown_available: false` and the pill
+goes back to being a plain readout.
 
 **Reaching the Pi:** LAN `192.168.86.61` (the Overview's `.20` is stale), or
 Tailscale `100.81.68.73` / `phaser`. HTTP works over the tailnet from anywhere;

@@ -67,11 +67,14 @@ from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additiv
 # rather than a second, parallel mechanism.
 #
 # The backend runs unprivileged and cannot do it alone: polkit refuses a process
-# with no active session, and there is no blanket NOPASSWD. install.sh grants
-# this one command when the operator opts in with PHASER_ALLOW_GUI_SHUTDOWN=1,
-# and grants nothing otherwise -- so a Pi that should not be shut down from a
-# browser simply has no rule, from identical code. That opt-in is the access
-# control: anyone who can reach the backend can call this.
+# with no active session, and there is no blanket NOPASSWD. install.sh therefore
+# installs a sudoers drop-in for this one command on every install -- shutting
+# the kit down from the page it is serving is a standard feature, not an opt-in.
+#
+# Note what that means: the backend is unauthenticated, so anyone who can reach
+# it can power the machine off. On a shared or public network that is a power
+# switch for the room. Revoking is deleting /etc/sudoers.d/phaser-shutdown, but
+# the next install.sh writes it back.
 SHUTDOWN_CMD = ["/usr/bin/systemctl", "poweroff"]
 
 
@@ -1157,8 +1160,8 @@ class PhaserHeadless:
             if not self.shutdown_permitted():
                 return {"status": "error",
                         "message": "Shutdown is not permitted on this host. "
-                                   "Re-run install.sh with "
-                                   "PHASER_ALLOW_GUI_SHUTDOWN=1 to grant it."}
+                                   "Re-run install.sh to install the sudoers "
+                                   "drop-in that grants it."}
             # Popen, not run: the reply has to reach the browser before systemd
             # starts tearing the machine down.
             subprocess.Popen(["sudo", "-n"] + SHUTDOWN_CMD)

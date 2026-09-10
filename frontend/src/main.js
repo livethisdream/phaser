@@ -1452,11 +1452,15 @@ function applyInitialStateToControls() {
     updateBeamSquintDisplay();
 }
 
-/* The connection pill doubles as a power switch, but only where the backend
-   says the grant exists (install.sh + PHASER_ALLOW_GUI_SHUTDOWN=1). Everywhere
-   else the pill stays an ordinary readout, with no cursor, no tooltip and no
-   listeners — an affordance for something that would only ever return an error
-   is worse than no affordance.
+/* The connection pill doubles as a power switch. install.sh grants this on
+   every install, so on a current Pi the backend reports it available and the
+   gesture is simply there.
+
+   It is still gated on that report rather than assumed, because the cases where
+   it is false are real: a Pi installed from a ref older than the grant, the
+   browser simulator, a dev box. There the pill stays an ordinary readout, with
+   no cursor, no tooltip and no listeners — an affordance for something that
+   would only ever return an error is worse than no affordance.
 
    Armed once and left armed: the grant is a file on the Pi, so it cannot change
    without the service restarting. */
