@@ -114,6 +114,19 @@ Decisions; the hardware evidence is in the archive.
 (`PHASER_CTF_SOURCE`, `_TOLERANCE_DEG`, `_DWELL_S`, `_TRACK_SWEEPS`,
 `_SIGNAL_FLOOR_DB`) so they can be loosened without a redeploy.
 
+**Turning GUI shutdown off on one kit:** it is granted on every install now, so
+removing it is a per-kit action that has to be repeated after each install:
+
+```bash
+sudo rm /etc/sudoers.d/phaser-shutdown
+sudo systemctl restart phaser-headless
+```
+
+The restart is not optional — `shutdown_permitted()` caches the `sudo -l` probe
+for the process lifetime, so without it the UI keeps offering a gesture that now
+errors. Afterwards `get_state` reports `shutdown_available: false` and the pill
+goes back to being a plain readout.
+
 **Reaching the Pi:** LAN `192.168.86.61` (the Overview's `.20` is stale), or
 Tailscale `100.81.68.73` / `phaser`. HTTP works over the tailnet from anywhere;
 Tailscale SSH authenticates by tailnet identity — see Traps. HB100 reads
