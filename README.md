@@ -402,6 +402,11 @@ It works in the browser simulator too, including on the hosted demo:
 `?sim=1&instructor=1`, or just `?instructor=1` on the Pages site, which is
 already in simulation.
 
+The parameter *name* is matched case-insensitively (`?INSTRUCTOR=1` works),
+because a flag that is silently ignored looks exactly like a stale bundle. The
+value still has to be `1`. `?sim=` and `?backend=` are unchanged -- they are
+read by the transport, not by `main.js`, and are lowercase-only.
+
 ### CTF mode
 
 `?ctf=1` reveals a **CTF Mode** panel for the GRCon26 signals CTF. A player
@@ -411,6 +416,8 @@ backend hands back a flag when the sequence completes.
 ```text
 http://phaser.local:8080/?ctf=1
 ```
+
+The name is case-insensitive, so `?CTF=1` works too; the value must be `1`.
 
 Unlike instructor mode, the URL parameter is UI convenience, **not** a secret.
 `frontend/dist` is served to every browser that connects and a CTF player's

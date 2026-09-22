@@ -32,16 +32,33 @@ const state = {
     sim_interferer_power_db: 0,
 };
 
+/* Read a `?name=1` flag from the URL, matching the parameter name
+   case-insensitively.
+
+   URLSearchParams.get() matches the name exactly, so `?CTF=1` -- a plausible
+   thing to type, and what a phone keyboard's autocapitalize produces -- reads
+   as absent and the panel silently stays hidden. That is indistinguishable
+   from a stale bundle, which is the wrong thing to be debugging at a table.
+   Neither flag below is a secret (see the CTF note), so accepting any
+   capitalization costs nothing. The value still has to be exactly 1. */
+function urlFlag(name) {
+    const wanted = name.toLowerCase();
+    for (const [key, value] of new URLSearchParams(window.location.search)) {
+        if (key.toLowerCase() === wanted) return value === '1';
+    }
+    return false;
+}
+
 // Instructor mode: adds ?instructor=1 to the URL to reveal the
 // Simulator Interferer accordion. Students never see it.
-const instructorMode = new URLSearchParams(window.location.search).get('instructor') === '1';
+const instructorMode = urlFlag('instructor');
 
 // CTF mode: ?ctf=1 reveals the GRCon26 sector-sequence panel. Unlike
 // instructor mode this parameter is UI convenience only, NOT a secret —
 // the sequence check and the flag live in the backend, because this bundle
 // is served to every browser that connects and a CTF player's whole job is
 // to go looking. Everything below only displays what the backend reports.
-const ctfMode = new URLSearchParams(window.location.search).get('ctf') === '1';
+const ctfMode = urlFlag('ctf');
 
 // Sector geometry as last reported by the backend, and whether to draw it on
 // the beam pattern. Both live here rather than in the CTF block because
