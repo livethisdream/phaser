@@ -200,3 +200,47 @@ def test_elements_are_left_enabled_afterwards(monkeypatch):
     assert phaser.gains == [127] * 8
     # And it really did turn them off in between, or it measured nothing.
     assert (0, 0) in phaser.gain_history
+
+
+def test_a_tone_seen_by_one_step_is_still_trusted():
+    """Regression: the gate that rejected a real 72.9 dB tone on the bench.
+
+    How many LO steps see a tone is set by the ANALOG bandwidth, not the
+    sample rate. The HB100 search runs rx_rf_bandwidth at 10 MHz behind a
+    20 MHz filter and steps 10 MHz, so usable coverage is about +/-5 MHz and
+    one step is the normal case, not a warning sign. Requiring two confirming
+    steps refused a perfectly good bench, so the default must not.
+    """
+    m, bb, steps = build_scan(real_tone_hz=None)          # spur + noise only
+    bb_narrow = bb
+    # Put the tone in exactly one row, as a 10 MHz analog window does.
+    row = int(np.argmin(np.abs(steps - 10.450e9)))
+    col = int(np.argmin(np.abs(bb_narrow - (REAL_TONE_HZ - steps[row]))))
+    m[row, col] = -30.0
+
+    result = pf.find_scan_peak(m, bb_narrow, steps)
+    assert result["freq_hz"] == pytest.approx(REAL_TONE_HZ, abs=30e3)
+    assert result["steps_confirming"] == 1
+    ok, reason = pf.scan_peak_is_trustworthy(result)
+    assert ok, reason
+
+
+def test_step_count_can_still_be_required_explicitly():
+    """The gate remains available for a scan whose steps really do overlap."""
+    m, bb, steps = build_scan(real_tone_hz=None)
+    row = int(np.argmin(np.abs(steps - 10.450e9)))
+    col = int(np.argmin(np.abs(bb - (REAL_TONE_HZ - steps[row]))))
+    m[row, col] = -30.0
+    result = pf.find_scan_peak(m, bb, steps)
+    ok, reason = pf.scan_peak_is_trustworthy(result, min_confirming=2)
+    assert not ok
+    assert "LO step" in reason
+
+
+def test_spur_only_scan_fails_on_snr_not_step_count():
+    """With the step gate off, spur rejection plus SNR must still catch it."""
+    m, bb, steps = build_scan(real_tone_hz=None)
+    result = pf.find_scan_peak(m, bb, steps)
+    ok, reason = pf.scan_peak_is_trustworthy(result, min_confirming=1)
+    assert not ok
+    assert "no signal" in reason

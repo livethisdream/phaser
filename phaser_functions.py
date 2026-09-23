@@ -446,12 +446,26 @@ def find_scan_peak(matrix, baseband_freqs, step_freqs,
 
 
 def scan_peak_is_trustworthy(result, min_snr_db=MIN_SCAN_SNR_DB,
-                             min_confirming=2):
+                             min_confirming=1):
     """(ok, reason) for a `find_scan_peak` result.
 
     Returns the reason as text so the caller can put it in front of whoever is
     standing at the bench, which is the whole point: the old behaviour was to
     save a bogus frequency silently.
+
+    `min_confirming` defaults to 1, i.e. off. It is tempting to require that
+    several LO steps agree, on the grounds that a real tone is visible from
+    every step whose window covers it -- but how many steps that is depends on
+    the ANALOG bandwidth, not the sample rate. The HB100 search runs
+    rx_rf_bandwidth at 10 MHz with a 20 MHz filter and steps 10 MHz, so usable
+    coverage is about +/-5 MHz and a tone is normally seen by exactly one step.
+    Requiring two rejected a real 72.9 dB tone on a healthy bench. Raise it
+    only for a scan whose steps genuinely overlap.
+
+    Spur rejection is what removes spurs here: a fixed-baseband spur subtracts
+    to nothing, so it cannot clear `min_snr_db` afterwards. Callers should
+    still confirm against a live LO shift, which tests the real-versus-spur
+    distinction directly rather than by proxy.
     """
     if result["snr_db"] < min_snr_db:
         return False, (
@@ -460,9 +474,8 @@ def scan_peak_is_trustworthy(result, min_snr_db=MIN_SCAN_SNR_DB,
         )
     if result["steps_confirming"] < min_confirming:
         return False, (
-            "peak was seen by only %d LO step(s) (need %d); a real tone is "
-            "visible from every step whose window covers it, so this looks "
-            "like a spur or a sweep-edge artefact"
+            "peak was seen by only %d LO step(s), fewer than the %d required "
+            "for this scan geometry"
             % (result["steps_confirming"], min_confirming)
         )
     return True, "ok"
