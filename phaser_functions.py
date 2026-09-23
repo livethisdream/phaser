@@ -338,3 +338,168 @@ def phase_calibration(phaser, verbose=False, averages=2):
 
     return phase_values, plot_data
 
+
+
+# --- Signal validation ------------------------------------------------------
+#
+# Both the HB100 search and the calibration used to trust whichever bin held
+# the most energy. That is only safe when the loudest thing in the band is the
+# signal, and on this hardware it often is not: the Pluto emits a spur at a
+# fixed BASEBAND offset which measured -20 dBFS on a kit whose HB100 sat 28 MHz
+# away from the frequency the stored cal claimed.
+#
+# The search steps the LO and maps each capture to absolute frequency, so a
+# fixed-baseband spur lands on a DIFFERENT absolute frequency at every step --
+# one false candidate per step, and the loudest of them wins the argmax. The
+# scan then reports a frequency the array cannot receive; the phase
+# calibration, tuned 28 MHz off the tone, maximises a quantity that does not
+# depend on element phase at all; and the pcal it writes is noise. Reruns on
+# the same bench disagreed by 256 degrees and channel_cal came out negative,
+# which is impossible for a magnitude ratio. Nothing in the pipeline noticed.
+#
+# What separates the two is movement. A real tone holds its ABSOLUTE frequency
+# while the LO moves; a spur holds its BASEBAND offset. Everything below rests
+# on that one distinction.
+
+# A real HB100 at workshop range clears the floor by tens of dB; 10 dB is a
+# floor for "there is something here", not a target.
+MIN_SCAN_SNR_DB = 10.0
+
+# Measured ~15 dB on a healthy bench and 0.0 dB with no illumination, so 6 dB
+# is comfortably clear of both.
+MIN_ARRAY_CONTRAST_DB = 6.0
+
+# Below this many LO steps the per-bin median is estimated from too few
+# samples to be a trustworthy spur template, so rejection is skipped rather
+# than applied badly.
+SCAN_MIN_STEPS_FOR_SPUR_REJECTION = 8
+
+
+def reject_fixed_baseband_spurs(matrix):
+    """Subtract, per baseband bin, the median across all LO steps.
+
+    A spur occupies the same bin in every row, so that bin's median *is* the
+    spur and subtracting it leaves nothing. A real tone occupies a given bin
+    only in the few rows whose window covers it, so it barely moves that bin's
+    median and survives the subtraction intact.
+
+    `matrix` is (LO steps x baseband bins) in dB.
+    """
+    m = np.asarray(matrix, dtype=float)
+    if m.ndim != 2:
+        raise ValueError("expected a 2-D (steps x bins) matrix")
+    return m - np.median(m, axis=0)
+
+
+def find_scan_peak(matrix, baseband_freqs, step_freqs,
+                   min_steps=SCAN_MIN_STEPS_FOR_SPUR_REJECTION):
+    """Locate the strongest *real* tone in a stepped-LO scan.
+
+    The caller owns any spectral inversion: pass amplitudes already in the
+    same bin order as `baseband_freqs`.
+
+    `raw_freq_hz` is what a plain argmax would have returned. It is reported
+    rather than discarded so callers can log the disagreement -- that
+    disagreement is the failure this function exists to catch.
+    """
+    m = np.asarray(matrix, dtype=float)
+    bb = np.asarray(baseband_freqs, dtype=float)
+    steps = np.asarray(step_freqs, dtype=float)
+    if m.shape != (steps.size, bb.size):
+        raise ValueError(
+            "matrix %s does not match %d steps x %d bins"
+            % (m.shape, steps.size, bb.size)
+        )
+
+    absolute = steps[:, None] + bb[None, :]
+    raw_r, raw_c = np.unravel_index(int(np.argmax(m)), m.shape)
+
+    spur_rejected = steps.size >= min_steps
+    residual = reject_fixed_baseband_spurs(m) if spur_rejected else m
+
+    r, c = np.unravel_index(int(np.argmax(residual)), residual.shape)
+    freq = float(absolute[r, c])
+    noise = float(np.median(residual))
+    snr = float(residual[r, c]) - noise
+
+    # A tone inside the swept band is visible from every step whose window
+    # covers it. One that only a single step can see is either at the very
+    # edge of the sweep or is not a tone.
+    half_window = float(np.max(np.abs(bb))) if bb.size else 0.0
+    confirming = 0
+    for row in range(steps.size):
+        offset = freq - steps[row]
+        if abs(offset) > half_window:
+            continue
+        col = int(np.argmin(np.abs(bb - offset)))
+        if residual[row, col] >= noise + 0.5 * max(snr, 0.0):
+            confirming += 1
+
+    return {
+        "freq_hz": freq,
+        "snr_db": snr,
+        "peak_db": float(m[r, c]),
+        "steps_confirming": confirming,
+        "spur_rejected": bool(spur_rejected),
+        "raw_freq_hz": float(absolute[raw_r, raw_c]),
+    }
+
+
+def scan_peak_is_trustworthy(result, min_snr_db=MIN_SCAN_SNR_DB,
+                             min_confirming=1):
+    """(ok, reason) for a `find_scan_peak` result.
+
+    Returns the reason as text so the caller can put it in front of whoever is
+    standing at the bench, which is the whole point: the old behaviour was to
+    save a bogus frequency silently.
+
+    `min_confirming` defaults to 1, i.e. off. It is tempting to require that
+    several LO steps agree, on the grounds that a real tone is visible from
+    every step whose window covers it -- but how many steps that is depends on
+    the ANALOG bandwidth, not the sample rate. The HB100 search runs
+    rx_rf_bandwidth at 10 MHz with a 20 MHz filter and steps 10 MHz, so usable
+    coverage is about +/-5 MHz and a tone is normally seen by exactly one step.
+    Requiring two rejected a real 72.9 dB tone on a healthy bench. Raise it
+    only for a scan whose steps genuinely overlap.
+
+    Spur rejection is what removes spurs here: a fixed-baseband spur subtracts
+    to nothing, so it cannot clear `min_snr_db` afterwards. Callers should
+    still confirm against a live LO shift, which tests the real-versus-spur
+    distinction directly rather than by proxy.
+    """
+    if result["snr_db"] < min_snr_db:
+        return False, (
+            "peak is only %.1f dB above the noise floor (need %.1f dB) -- "
+            "no signal detected" % (result["snr_db"], min_snr_db)
+        )
+    if result["steps_confirming"] < min_confirming:
+        return False, (
+            "peak was seen by only %d LO step(s), fewer than the %d required "
+            "for this scan geometry"
+            % (result["steps_confirming"], min_confirming)
+        )
+    return True, "ok"
+
+
+def measure_array_contrast(phaser, averages=4, max_gain=127):
+    """(contrast_db, on_dbfs, off_dbfs) for all elements on versus all off.
+
+    This is the one measurement that tells "the array is receiving a signal"
+    apart from "something inside the receiver is loud". Element state cannot
+    change a spur produced after the mixer, so a healthy bench gives a large
+    positive number here and a bench with no illumination gives about zero.
+    """
+    for chan in range(8):
+        phaser.set_chan_gain(chan, max_gain, apply_cal=False)
+        phaser.set_chan_phase(chan, 0, apply_cal=False)
+    on, _ = _capture_peak_dbfs(phaser, averages=averages)
+
+    for chan in range(8):
+        phaser.set_chan_gain(chan, 0, apply_cal=False)
+    off, _ = _capture_peak_dbfs(phaser, averages=averages)
+
+    # Leave the array as we found it; callers calibrate straight after.
+    for chan in range(8):
+        phaser.set_chan_gain(chan, max_gain, apply_cal=False)
+
+    return float(on - off), float(on), float(off)
