@@ -503,3 +503,97 @@ def measure_array_contrast(phaser, averages=4, max_gain=127):
         phaser.set_chan_gain(chan, max_gain, apply_cal=False)
 
     return float(on - off), float(on), float(off)
+
+
+# --- LO planning ------------------------------------------------------------
+#
+# LO = SignalFreq + Rx_freq, and the ADF4159 register takes a QUARTER of it
+# because the CN0566 divides by 4 ahead of the PLL's RFIN. Both halves have
+# already produced a silent failure on this hardware:
+#
+#   - writing the LO undivided (c9761c8) asked for four times the frequency,
+#     which the part accepted and read straight back while receiving nothing;
+#   - asking for an LO the chain cannot reach does exactly the same thing.
+#
+# There is no lock-detect to consult. MUXOUT is not configured as one on this
+# board -- it reads 0 at every LO, including one demonstrably receiving a
+# 43 dB pattern -- so a bad LO is indistinguishable from a dead source until
+# someone measures. Hence arithmetic, checked before the kit reaches a table.
+#
+# Measured 2026-09-24 on kit "phaser" with the HB100 at 10.446953 GHz, by
+# stepping Rx_freq and reading the peak out of a 30 MSPS capture:
+#
+#     Rx_freq   LO (GHz)   ADF4159 (GHz)   peak dBFS   SNR
+#      2.15      12.597       3.1492         -4.12    63.9   clean
+#      2.20      12.647       3.1617         -4.85    64.2   clean
+#      2.35      12.797       3.1992         -4.86    64.1   clean
+#      2.40      12.847       3.2117        -14.08    77.3   degrading
+#      2.45      12.897       3.2242        -74.77    19.2   dead
+#      2.50      12.947       3.2367        -74.65    19.1   dead
+#
+# The readback matched the request at every row, including the dead ones.
+#
+# One kit, one HB100. Treat the ceiling as "measured here", not as a datasheet
+# limit -- which is why crossing it warns rather than fails.
+
+# Thresholds sit just below the measurements they classify, so the measured
+# rows land on the right side of them: 12.797 was the last clean reading and
+# 12.897 the first dead one, so anything at or above 12.89 is "measured dead"
+# and 12.80 upward is "past what was measured clean".
+LO_USABLE_CEILING_HZ = 12.80e9
+LO_DEAD_HZ = 12.89e9
+
+# What an HB100 can be. Not a tolerance -- the 2025 workshop labs say outright
+# that it "is not well controlled - it could be anywhere from 10.1 to 10.7 GHz".
+HB100_MIN_HZ = 10.1e9
+HB100_MAX_HZ = 10.7e9
+
+
+def lo_chain(signal_freq_hz, rx_freq_hz):
+    """The LO and ADF4159 register for a signal and IF, in Hz."""
+    lo = float(signal_freq_hz) + float(rx_freq_hz)
+    return {"lo_hz": lo, "adf4159_hz": lo / 4.0}
+
+
+def lo_warnings(signal_freq_hz, rx_freq_hz,
+                hb100_max_hz=HB100_MAX_HZ,
+                ceiling_hz=LO_USABLE_CEILING_HZ,
+                dead_hz=LO_DEAD_HZ):
+    """Everything wrong with this IF choice, worst first, as plain sentences.
+
+    Two separate questions, and the second is the one that bites a workshop:
+    whether THIS kit's HB100 is reachable, and whether the IF can reach every
+    HB100 the labs say a kit might be handed. An IF that works on the bench and
+    fails on a unit 200 MHz higher is a configuration that passes its own test
+    and then goes deaf at the table.
+    """
+    out = []
+    lo = lo_chain(signal_freq_hz, rx_freq_hz)["lo_hz"]
+
+    if lo >= dead_hz:
+        out.append(
+            "LO %.3f GHz is at or past %.2f GHz, where this chain was measured "
+            "receiving nothing. The write will be accepted and read back "
+            "correctly; the only symptom is an empty spectrum."
+            % (lo / 1e9, dead_hz / 1e9)
+        )
+    elif lo > ceiling_hz:
+        out.append(
+            "LO %.3f GHz is above the highest frequency measured receiving "
+            "cleanly (%.2f GHz). It may work; it was not measured to."
+            % (lo / 1e9, ceiling_hz / 1e9)
+        )
+
+    worst_lo = float(hb100_max_hz) + float(rx_freq_hz)
+    if worst_lo > ceiling_hz:
+        reachable = ceiling_hz - float(rx_freq_hz)
+        out.append(
+            "with Rx_freq %.2f GHz this kit cannot cover the whole HB100 range: "
+            "a unit above %.3f GHz needs an LO past %.2f GHz. The labs put HB100 "
+            "anywhere in %.1f-%.1f GHz, so a swapped source can go deaf with no "
+            "configuration change."
+            % (float(rx_freq_hz) / 1e9, reachable / 1e9, ceiling_hz / 1e9,
+               HB100_MIN_HZ / 1e9, hb100_max_hz / 1e9)
+        )
+
+    return out
