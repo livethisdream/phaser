@@ -500,6 +500,111 @@ def test_tracked_full_sequence_with_dead_bands():
     print("tracked full sequence: ok")
 
 
+
+
+# --- validate_sequence ------------------------------------------------------
+#
+# Both rules below are failures a kit ships with silently: nothing rejects the
+# sequence, the panel arms, and the only symptom is a player who cannot win.
+# Measured on hardware before these were written -- see the docstring on
+# validate_sequence.
+
+def test_accepts_a_sequence_that_revisits_a_sector():
+    """3 1 4 1 2 is the real shape: a repeat is fine, back-to-back is not."""
+    from phaser_ctf import validate_sequence
+    ok, reason = validate_sequence([3, 1, 4, 1, 2])
+    assert ok, reason
+
+
+def test_rejects_a_back_to_back_repeat():
+    """[3, 3] stops at progress 1 forever: the second entry never happens."""
+    from phaser_ctf import validate_sequence
+    ok, reason = validate_sequence([3, 3])
+    assert not ok
+    assert "back to back" in reason
+
+
+def test_a_back_to_back_repeat_really_is_unwinnable():
+    """Pins the reason the rule exists, so it cannot be relaxed by accident.
+
+    Holding the sector does not produce a second entry, and neither does
+    leaving and coming back -- the machine is still holding it on return.
+    """
+    held = CtfMode(target=[3, 3], flag="flag{x}")
+    held.reset()
+    for _ in range(8):
+        held.observe_tracked(0.0, signal_db=-5.0)
+    assert held.status()["data"]["progress"] == 1
+
+    returned = CtfMode(target=[3, 3], flag="flag{x}")
+    returned.reset()
+    for angle in (0.0, 20.0, 0.0):
+        for _ in range(4):
+            returned.observe_tracked(angle, signal_db=-5.0)
+    assert returned.status()["data"]["progress"] == 1
+    assert returned.status()["data"]["matched"] is False
+
+
+def test_rejects_an_unseparated_digit_string():
+    """"31412" parses as the single sector 31412, which nothing can return."""
+    from phaser_ctf import _parse_sequence, validate_sequence
+    parsed = _parse_sequence("31412")
+    assert parsed == [31412]
+    ok, reason = validate_sequence(parsed)
+    assert not ok
+    assert "separate them" in reason
+
+
+def test_rejects_sector_zero_and_negatives():
+    from phaser_ctf import validate_sequence
+    for bad in ([0, 1], [1, -2], [1, 6]):
+        ok, _ = validate_sequence(bad)
+        assert not ok, bad
+
+
+def test_rejects_empty_and_single_sector():
+    from phaser_ctf import validate_sequence
+    assert validate_sequence([])[0] is False
+    assert validate_sequence(None)[0] is False
+    assert validate_sequence([3])[0] is False
+
+
+def test_sector_count_is_taken_from_the_sector_list():
+    """A kit reconfigured to more sectors must accept the higher numbers."""
+    from phaser_ctf import validate_sequence
+    assert validate_sequence([1, 7], n_sectors=8)[0] is True
+    assert validate_sequence([1, 9], n_sectors=8)[0] is False
+
+
+def test_a_wrong_sector_resets_the_whole_run():
+    """Not a stall -- progress goes to 0, which is why transits matter.
+
+    Confirmed 3 then 1, then entered 2 while 4 was expected. At track_sweeps=3
+    and ~0.9 sweeps/s a player has roughly 3 s to cross a sector they are only
+    passing through before it is scored as a wrong entry.
+    """
+    m = CtfMode(target=[3, 1, 4, 1, 2], flag="flag{x}")
+    m.reset()
+    for angle in (0.0, -40.0):
+        for _ in range(4):
+            m.observe_tracked(angle, signal_db=-5.0)
+    assert m.status()["data"]["progress"] == 2
+    for _ in range(4):                       # sector 2, but 4 was expected
+        m.observe_tracked(-20.0, signal_db=-5.0)
+    assert m.status()["data"]["progress"] == 0
+
+
+def test_a_quick_transit_does_not_break_the_run():
+    """One or two sweeps in a crossed sector is under the confirm threshold."""
+    m = CtfMode(target=[3, 1, 4, 1, 2], flag="flag{x}")
+    m.reset()
+    plan = [(0.0, 4), (-40.0, 4), (-20.0, 1), (0.0, 1), (20.0, 4)]
+    for angle, sweeps in plan:
+        for _ in range(sweeps):
+            m.observe_tracked(angle, signal_db=-5.0)
+    assert m.status()["data"]["progress"] == 3
+
+
 if __name__ == "__main__":
     test_fit_ramp()
     test_sector_is_not_mirrored()
@@ -526,4 +631,13 @@ if __name__ == "__main__":
     test_stopped_sweep_keeps_earned_progress()
     test_commanded_source_ignores_the_sweep_flag()
     test_tracked_full_sequence_with_dead_bands()
+    test_accepts_a_sequence_that_revisits_a_sector()
+    test_rejects_a_back_to_back_repeat()
+    test_a_back_to_back_repeat_really_is_unwinnable()
+    test_rejects_an_unseparated_digit_string()
+    test_rejects_sector_zero_and_negatives()
+    test_rejects_empty_and_single_sector()
+    test_sector_count_is_taken_from_the_sector_list()
+    test_a_wrong_sector_resets_the_whole_run()
+    test_a_quick_transit_does_not_break_the_run()
     print("\nall ctf-mode tests passed")

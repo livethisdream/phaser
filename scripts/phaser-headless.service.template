@@ -22,10 +22,28 @@ User=@USER@
 WorkingDirectory=@INSTALL_DIR@
 Environment=PYTHONUNBUFFERED=1
 
-# CTF mode secrets (PHASER_CTF_FLAG, PHASER_CTF_SEQUENCE,
-# PHASER_CTF_ALLOW_SIM). The leading "-" makes the file optional, so a Pi that
-# is not running the CTF starts exactly as before -- phaser_ctf.py then falls
-# back to its demo sequence and placeholder flag.
+# CTF mode secrets and tuning. The leading "-" makes the file optional, so a
+# Pi that is not running the CTF starts exactly as before -- phaser_ctf.py then
+# falls back to its demo sequence and placeholder flag.
+#
+#   PHASER_CTF_FLAG            the flag string handed back on a full match
+#   PHASER_CTF_SEQUENCE        target sectors, e.g. "3 1 4 1 5"
+#   PHASER_CTF_SOURCE          "tracked" (default) or "commanded"
+#   PHASER_CTF_ALLOW_SIM       release the flag in sim mode at all
+#   PHASER_CTF_TOLERANCE_DEG   half-width of a sector (default 5)
+#   PHASER_CTF_DWELL_S         commanded: seconds held to confirm (default 2)
+#   PHASER_CTF_TRACK_SWEEPS    tracked: sweeps held to confirm (default 3)
+#   PHASER_CTF_SIGNAL_FLOOR_DB tracked: below this the peak is noise (-30)
+#
+# PHASER_CTF_SOURCE is the one to check first when the sequencer "does not
+# work". The two sources score different things and only one runs at a time:
+# "tracked" scores the measured peak angle, so the array holds still and the
+# player carries the HB100 from sector to sector -- steering the beam does
+# nothing, because the measured peak follows the source, not the steering.
+# "commanded" scores the operator's steered ramp instead, which is what a
+# table with a fixed, taped-down source needs. A kit set to "tracked" with an
+# immovable source sits at whatever sector the source occupies and never
+# advances, which looks identical to a hang.
 #
 # The file is NOT in this repo and install.sh cannot ship it: it is written
 # once on the Pi, root-owned and 0600, because a service Environment= line is
