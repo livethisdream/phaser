@@ -466,6 +466,63 @@ def _parse_sequence(text):
         return None
 
 
+def validate_sequence(sequence, n_sectors=None):
+    """(ok, reason) for a target sequence, before it reaches a table.
+
+    Lives here rather than in the provisioning script so CI covers it: a
+    sequence that cannot be completed is not discoverable by reading it, and
+    the place it gets discovered is a player failing to win.
+
+    Two failures are worth refusing rather than warning about:
+
+    `31412` as one token. `_parse_sequence` splits on whitespace and commas, so
+    an unseparated run of digits parses as the single sector 31412 -- a number
+    no sector_for_angle() can ever return. The machine then sits at progress 0
+    forever, looking exactly like a dead sequencer.
+
+    An adjacent repeat, e.g. `3 3`. Matching counts consecutive DISTINCT sector
+    entries, so the second 3 needs an entry into 3 that is not the one already
+    confirmed -- and leaving and returning does not produce one, because the
+    machine is still holding that sector when the player comes back. Measured:
+    [3, 3] stops at progress 1 whether the source is held or taken away and
+    brought back. A sequence can revisit a sector (3 1 4 1 2 is fine); it
+    cannot ask for it twice in a row.
+    """
+    if n_sectors is None:
+        n_sectors = len(DEFAULT_SECTOR_CENTRES_DEG)
+
+    if not sequence:
+        return False, "sequence is empty"
+
+    # Range before length, deliberately. An unseparated "31412" parses to the
+    # single sector 31412, so a length check first would answer "a sequence of
+    # one sector is not a challenge" -- true, but it buries the actual mistake
+    # under advice that sends you looking in the wrong place.
+    for value in sequence:
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False, "sector %r is not an integer" % (value,)
+        if not 1 <= value <= n_sectors:
+            return False, (
+                "sector %d is outside 1..%d -- if you meant a digit string "
+                "like \"31412\", separate them: \"3 1 4 1 2\""
+                % (value, n_sectors)
+            )
+
+    if len(sequence) < 2:
+        return False, "a sequence of one sector is not a challenge"
+
+    for index in range(len(sequence) - 1):
+        if sequence[index] == sequence[index + 1]:
+            return False, (
+                "sector %d is repeated back to back at positions %d and %d, "
+                "which can never be completed -- matching counts consecutive "
+                "distinct entries, so put another sector between them"
+                % (sequence[index], index + 1, index + 2)
+            )
+
+    return True, "ok"
+
+
 def _env_float(name, default):
     """Read a float from the environment, ignoring anything unparseable.
 
