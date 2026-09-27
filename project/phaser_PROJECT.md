@@ -23,6 +23,32 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
   lock and the array receives noise. The only symptom is an empty spectrum.
   `SDR_LO_init` now divides by 4 and verifies the readback — do not remove that
   check.
+- **The LO chain has a ceiling, and it is well above the number the /4 bug
+  suggested.** 12.625e9 in the trap above is an *undivided LO written into the
+  ADF4159 register* — four times too high — not evidence about the LO itself.
+  Measured 2026-09-24 on kit `phaser` with the HB100 at 10.446953 GHz, stepping
+  `Rx_freq` and reading the peak from a 30 MSPS capture:
+
+  | Rx_freq | LO | ADF4159 | peak dBFS | verdict |
+  |---|---|---|---|---|
+  | 2.15 | 12.597 | 3.1492 | −4.12 | clean |
+  | 2.20 | 12.647 | 3.1617 | −4.85 | clean |
+  | 2.35 | 12.797 | 3.1992 | −4.86 | clean |
+  | 2.40 | 12.847 | 3.2117 | −14.08 | degrading |
+  | 2.45 | 12.897 | 3.2242 | −74.77 | dead |
+  | 2.50 | 12.947 | 3.2367 | −74.65 | dead |
+
+  The readback matched the request on every row, including the dead ones, and
+  MUXOUT reads 0 at every LO — including one producing a 43 dB pattern — so it
+  is not lock detect on this board. There is nothing to interrogate at runtime;
+  the check has to be arithmetic, which is what `install.sh` step 6b now does.
+- **An IF that works on the bench can still be wrong for the kit.** `Rx_freq`
+  2.2 GHz is the repo default and measured *better* than 1.9 on this kit
+  (64.2 dB SNR vs 59.2). But the labs put an HB100 anywhere in 10.1–10.7 GHz,
+  and 10.7 + 2.2 = 12.9 GHz is past the ceiling above. At 2.2 a source above
+  ~10.60 GHz goes deaf with no configuration change to blame; at 1.9 the whole
+  range fits with margin. This is why the Pi's 1.9 is right and the earlier
+  reading of it as stale drift was wrong.
 - **Running `phaser_find_hb100_headless.py` directly on the Pi does NOT update
   the running service.** Only the UI path triggers `_reload_calibration`. Debug
   over ssh and the backend keeps its old frequency.
@@ -69,6 +95,7 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
   deleted.
 
 # Decisions
+- **2026-09-24** — `install.sh` prints the RF chain it will run (HB100, `Rx_freq`, LO, ADF4159 register) and warns when the LO is past what was measured receiving, or when the IF cannot reach the whole 10.1–10.7 GHz HB100 range. Reason: `config.py` is site-owned and never deployed over, so the numbers that decide the LO are the ones nobody reviews, and a bad LO is undetectable at runtime — the write is accepted, the readback agrees, and MUXOUT is not lock detect here. It warns rather than fails: the ceiling is one kit's measurement, and refusing an install over it would turn a survivable warning into a dead workshop. Thresholds live in `phaser_functions.lo_warnings` and are overridable per kit.
 - **2026-09-10** — GUI shutdown is installed **unconditionally** by `install.sh`; the `PHASER_ALLOW_GUI_SHUTDOWN` gate is gone. Reason: it is a standard feature of the kit, and the flag was never documented in the README, so in practice it only meant shutdown silently did not work on a fresh install. Accepted tradeoff: the backend is unauthenticated, so any reachable kit can be powered off by anyone. Revoke per kit by deleting `/etc/sudoers.d/phaser-shutdown` — the next `install.sh` writes it back.
 - **2026-09-04** — The UI arms the gesture only when `get_state` reports `shutdown_available`, probed with `sudo -l` (which answers permission without running anything). Reason: an affordance for something that can only return an error is worse than no affordance.
 - **2026-09-04** — Shutdown is a 2 s hold and red, against the CTF control's 1.2 s. Reason: this one cannot be undone from the browser — the machine it stops is the one serving the page.

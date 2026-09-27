@@ -276,6 +276,62 @@ fi
 CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" || echo 000)"
 [ "$CODE" = "200" ] || say "WARN: the UI returned HTTP $CODE (expected 200)"
 
+# ---- 6b. the RF chain this kit will actually run ---------------------------
+#
+# config.py is site-owned and never deployed over, so the numbers that decide
+# the LO are exactly the ones nobody reviews. Printing them is most of the
+# value: this kit turned out to be carrying Rx_gain = 1 and an IF 300 MHz off
+# the repo default, neither of which is visible anywhere else.
+#
+# A bad LO cannot be detected at runtime -- the write is accepted, the readback
+# agrees, and MUXOUT is not wired as lock detect on this board -- so arithmetic
+# before the kit reaches a table is the only check there is. Warn, never fail:
+# the ceiling is measured on one kit, and refusing an install over it would
+# turn a survivable warning into a dead workshop.
+step 6b "Checking the RF chain..."
+PYTHONPATH="$INSTALL_DIR" "$PYTHON_BIN" - "$INSTALL_DIR" <<'PY' || say "WARN: could not evaluate the RF chain"
+import os
+import sys
+
+sys.path.insert(0, sys.argv[1])
+os.chdir(sys.argv[1])
+
+try:
+    import config
+    from phaser_functions import lo_chain, lo_warnings, load_hb100_cal
+except Exception as exc:                      # noqa: BLE001 - report, never fail
+    print("  could not import the installed backend: %s" % exc)
+    raise SystemExit(0)
+
+rx_freq = float(getattr(config, "Rx_freq", 0) or 0)
+if not rx_freq:
+    print("  config.py has no Rx_freq; skipping")
+    raise SystemExit(0)
+
+try:
+    signal = load_hb100_cal()
+    source = "calibration.json"
+except Exception:
+    signal = float(getattr(config, "SignalFreq", 0) or 0)
+    source = "config.py default (no HB100 calibration yet)"
+
+if not signal:
+    print("  no signal frequency to work from; skipping")
+    raise SystemExit(0)
+
+chain = lo_chain(signal, rx_freq)
+print("  HB100      %.6f GHz   (%s)" % (signal / 1e9, source))
+print("  Rx_freq    %.3f GHz      (config.py, site-owned)" % (rx_freq / 1e9))
+print("  LO         %.3f GHz      = HB100 + Rx_freq" % (chain["lo_hz"] / 1e9))
+print("  ADF4159    %.4f GHz     = LO / 4" % (chain["adf4159_hz"] / 1e9))
+
+problems = lo_warnings(signal, rx_freq)
+for line in problems:
+    print("  WARN: %s" % line)
+if not problems:
+    print("  OK: inside the range measured receiving cleanly")
+PY
+
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '\n'; printf '=%.0s' {1..64}; printf '\n'
 say "Installed. Service is active and the UI answered HTTP $CODE."
