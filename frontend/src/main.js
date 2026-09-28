@@ -1288,6 +1288,13 @@ freqInput.addEventListener('change', (e) => updateSignalFreqFromInput(e.target.v
 
 function syncStateToBackend() {
     if (!isConnected) return;
+    // Until the backend's state has been read, `state` still holds this
+    // file's defaults (SignalFreq 10.0 GHz, Rx_gain 0). Sending them would
+    // retune the LO off the calibrated HB100 and silently empty the spectrum.
+    if (!backendStateLoaded) {
+        addRuntimeLog('warn', 'STATE', 'Backend state not loaded yet; change not sent');
+        return;
+    }
     // Send state update to backend
     transport.send({ cmd: 'set_state', data: { state } });
 }
@@ -1535,6 +1542,7 @@ async function loadStateFromServer() {
         const msg = await transport.getState();
         if (msg.status !== 'ok' || !msg.data) return;
 
+        backendStateLoaded = true;
         if (Number.isFinite(msg.data.SignalFreq)) state.SignalFreq = msg.data.SignalFreq;
         if (Number.isFinite(msg.data.Rx_freq)) state.Rx_freq = msg.data.Rx_freq;
         if (Number.isFinite(msg.data.Rx_gain)) state.Rx_gain = msg.data.Rx_gain;
@@ -1787,6 +1795,8 @@ updatePlotLimits();
 
 /* --- Transport Setup --- */
 let isConnected = false;
+// True once `state` holds the backend's values rather than this file's defaults.
+let backendStateLoaded = false;
 let sweepCounter = 0;
 
 const transport = createTransport({
@@ -1797,6 +1807,7 @@ const transport = createTransport({
                 backendProbeState.ready = true;
                 backendProbeState.probing = false;
                 const data = msg.state.data;
+                backendStateLoaded = true;
                 if (Number.isFinite(data.SignalFreq)) state.SignalFreq = data.SignalFreq;
                 if (Number.isFinite(data.Rx_freq)) state.Rx_freq = data.Rx_freq;
                 if (Number.isFinite(data.Rx_gain)) state.Rx_gain = data.Rx_gain;
@@ -1848,6 +1859,7 @@ const transport = createTransport({
     },
     onClose: () => {
         isConnected = false;
+        backendStateLoaded = false;
         backendProbeState.ready = false;
         backendProbeState.probing = false;
         document.getElementById('connection-dot').classList.replace('connected', 'disconnected');

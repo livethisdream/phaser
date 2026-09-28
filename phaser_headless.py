@@ -1079,7 +1079,9 @@ class PhaserHeadless:
                 self.set_rx_gain(state["Rx_gain"])
             if "Tx_gain" in state:
                 self.set_tx_gain(state["Tx_gain"])
-            if "SignalFreq" in state:
+            # Every set_state carries SignalFreq, so retuning unconditionally
+            # re-ran SDR_LO_init (a fresh ADF4159 context) on each slider drag.
+            if "SignalFreq" in state and float(state["SignalFreq"]) != self.SignalFreq:
                 self.set_signal_freq(state["SignalFreq"])
             if "gainList" in state:
                 self.set_taper(state["gainList"])

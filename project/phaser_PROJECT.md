@@ -172,8 +172,8 @@ Branches: `main` only, locally. `origin` carries `main`, a stale `radar-dev`
 - [ ] Add Manual / MVDR mode toggle in Digital Beam Forming
 - [ ] Add "2-Element Array Preset" button (`[0, 0, 0, 127, 127, 0, 0, 0]` taper)
 - [ ] Implement MVDR backend (Plan Phase 2)
-- [ ] Make `find_hb100` **refuse to save** on a bad result — its range and SNR checks are warnings only, so with no source present it wrote a bogus calibration twice
-- [ ] Gate `channel_calibration` on signal presence — it returned a 348 dB correction against noise, which is unusable by construction (`Rx_gain + ccal` far outside the driver's range)
+- [x] Make `find_hb100` **refuse to save** on a bad result — its range and SNR checks are warnings only, so with no source present it wrote a bogus calibration twice. *Done in #18: nothing is saved unless the spur-rejected SNR and a live LO-shift confirmation both pass.*
+- [x] Gate `channel_calibration` on signal presence — it returned a 348 dB correction against noise, which is unusable by construction (`Rx_gain + ccal` far outside the driver's range). *Done in #18: `phaser_cal_headless.py` aborts before any calibration step when all-on vs all-off array contrast is under 6 dB.*
 - [ ] Release the iio contexts on mode change — nothing ever closes them; four sockets stay open regardless of mode. Prerequisite for the sim toggle below, and it also fixes calibration's broken-pipe-on-first-attempt
 - [ ] Build sim start into the GUI as a live toggle so there is one way to launch (`--sim` becomes the initial value only). Needs the teardown above; capabilities differ by source (CW radar refuses in sim, interferer control is sim-only)
 - [ ] Add the Windows + Linux CI matrix — deferred; without it the Windows half of the test suite never runs, and the golden-tar test is meaningless as a single-platform check
