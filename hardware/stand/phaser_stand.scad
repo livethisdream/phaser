@@ -241,7 +241,8 @@ module mast() {
       translate([0, 0, mast_foot_t - 3]) cylinder(d = 8, h = 60, $fn = 32);
     }
     translate([mast_x, mast_y, 0]) {
-      // Stud: 1/4-20 x 5/8" hex bolt, head slid in from the rear.
+      // Stud: 1/4-20 x 3/4" hex bolt, head slid in from the rear. It mates with
+      // the female thread in the Phaser block; ~7 mm engages past the lock wheel.
       translate([0, 0, top_z - mast_skin - eps]) cylinder(d = qtr_clear, h = mast_skin + 2 * eps, $fn = 32);
       translate([0, 0, top_z - mast_skin - qtr_head_h]) {
         hex(qtr_head_af, qtr_head_h);

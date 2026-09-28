@@ -57,7 +57,7 @@ PETG or PLA. The race grooves print as overhangs; no supports needed at
 | 6 mm airsoft BBs (0.20 g, polished) | ~70 |
 | M8 × 30 hex bolt, M8 washer, M8 nyloc | 1 each |
 | M8 ball spring plunger, slotted, ~20 mm long | 1 |
-| 1/4-20 × 5/8" hex bolt (the stud) | 1 |
+| 1/4-20 × 3/4" hex bolt (the stud; ~15 mm protrudes, ~7 mm engages the block past the lock wheel) | 1 |
 | 1/4-20 hex nut (in the lock wheel) | 1 |
 | M4 × 12 screws (mast to platter) | 3 |
 | M3 × 10 countersunk screws (lid) | 4 |
