@@ -162,6 +162,8 @@ Tailscale SSH authenticates by tailnet identity — see Traps. HB100 reads
 **Next is beamforming Phase 1, untouched.** The per-element phase sliders still
 send `state.phaseList` and the backend still ignores it.
 
+**Signal Freq field retunes (2026-10-07):** committing a value (Enter, blur, spinner) now sends `set_state`, so the LO retunes; before, the field changed only browser state, and the L17 bench step that retunes by typing a frequency silently did nothing. Branch `claude/signal-freq-sync`.
+
 Branches: `main` only, locally. `origin` carries `main`, a stale `radar-dev`
 (an ancestor of `main`), and seven abandoned `claude/*` refs.
 
