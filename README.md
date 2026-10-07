@@ -398,17 +398,23 @@ script is not:
 - It assumes `/boot/config.txt`, which moved to `/boot/firmware/` in bookworm.
   We detect both.
 
-The steps, in order:
+The steps, numbered as the script prints them:
 
-1. **Clock**, first, because everything after it needs `apt` and TLS.
-2. **Base packages** -- an NTP client, `fake-hwclock`, `sshpass`, `git`.
-3. **Device tree overlay** merged into `config.txt` (`rpi-cn0566`, heartbeat
+1. **Sanity** -- right user, systemd present, boot partition found, one sudo
+   prompt up front (kept alive for the long pyadi-iio build).
+2. **Clock**, early, because everything after it needs `apt` and TLS.
+3. **Base packages** -- an NTP client, `fake-hwclock`, `sshpass`, `git`.
+4. **Device tree overlay** merged into `config.txt` (`rpi-cn0566`, heartbeat
    LED, GPIO shutdown pin).
-4. **Hostname**, plus the matching `/etc/hosts` line.
-5. **PlutoSDR plumbing** -- the udev rule and `iiod` template unit that let a
-   Pluto be connected after boot and reconnected freely.
-6. **pyadi-iio**, only if `adi.CN0566` does not already import.
-7. **`install.sh`**, for the backend and browser UI.
+5. **Hostname**, plus the matching `/etc/hosts` line.
+6. **PlutoSDR plumbing** -- the udev rule and `iiod` template unit that let a
+   Pluto be connected after boot and reconnected freely. This step also
+   installs the per-boot units: `phaser-clock` (see below) and
+   `phaser-netalias`, with a commented-out `<boot>/phaser-ip` to enable it.
+7. **pyadi-iio**, only if `adi.CN0566` does not already import.
+8. **`install.sh`**, for the backend and browser UI. It prints its own steps,
+   1 to 6, including 5b (the sudoers rule behind the GUI shutdown) and 6b (the
+   RF-chain check against the kit's `config.py`).
 
 A reboot is required at the end: the overlay and hostname only take effect at
 boot, so the Phaser board does not enumerate until you do.
@@ -904,7 +910,8 @@ Tooling:
 - `tools/gen_sim_constants.py` — regenerates the JS simulator constants
 - `.github/workflows/build-frontends.yml` — builds both frontends,
   verifies they're self-contained, commits `dist/` back
-- `.github/workflows/tests.yml` — pytest, plus the sim-parity guards
+- `.github/workflows/tests.yml` — pytest, shellcheck on the Pi scripts, and
+  guards that fail the job if the sim-parity or image-builder tests skip
 - `.github/workflows/deploy-pages.yml` — builds the sim-only Pages demo
 
 `scripts/`:
@@ -920,7 +927,8 @@ Tooling:
 - `build-installer.py` — legacy single-tarball packager, not used by the
   supported install path and not exercised by CI
 
-`scripts/pi/` — files copied verbatim onto the Pi by `provision.sh`; nothing
+`scripts/pi/` — files copied verbatim onto the Pi, by `provision.sh` or (for
+`firstrun.sh` and the netalias pair) onto the card by the card tools; nothing
 here is imported by the backend or served to the browser. See
 [`scripts/pi/README.md`](scripts/pi/README.md) for provenance.
 

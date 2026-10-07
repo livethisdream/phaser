@@ -4,8 +4,9 @@
 # partition by tools/prep_sdcard.py, which also adds
 #
 #     systemd.run=/boot/firstrun.sh systemd.run_success_action=reboot
+#     systemd.unit=kernel-command-line.target
 #
-# to cmdline.txt. That is the same mechanism Raspberry Pi Imager's own
+# to cmdline.txt (as one line; it is wrapped here for width). That is the same mechanism Raspberry Pi Imager's own
 # "Advanced options" use, so it is a well-travelled path rather than a trick.
 #
 # Its ONLY job is to make the kit reachable. Everything else -- overlay,

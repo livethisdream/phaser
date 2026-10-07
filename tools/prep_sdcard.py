@@ -177,8 +177,9 @@ def build_file_plan(hostname, cidr, autoprovision):
     if cidr:
         plan["phaser-ip"] = (
             "# Fixed IP for this kit, added alongside whatever DHCP assigns.\n"
-            "# One address per line, CIDR form. Edit freely -- it is read at\n"
-            "# every boot. Delete the line (or the file) for DHCP only.\n"
+            "# One address, CIDR form; only the first uncommented line is used.\n"
+            "# Edit freely -- it is read at every boot. Delete the line (or the\n"
+            "# file) for DHCP only.\n"
             f"{cidr}\n"
         )
         for name in ("phaser-netalias", "phaser-netalias.service"):

@@ -165,6 +165,12 @@ send `state.phaseList` and the backend still ignores it.
 Branches: `main` only, locally. `origin` carries `main`, a stale `radar-dev`
 (an ancestor of `main`), and seven abandoned `claude/*` refs.
 
+**Kit provisioning (2026-10-07):** `claude/phaser-setup-automation-pgwa3v`
+(`scripts/provision.sh`, `scripts/pi/`, `tools/prep_sdcard.py`,
+`tools/build_kit_image.py`, `docs/golden-image.md`) has `main` merged in and is
+up as a PR. Nothing in it has run on hardware yet: `bash -n`, shellcheck and
+`tests/test_provision_sh.py` are the only checks so far.
+
 # ToDo
 - [ ] **Set `Rx_gain = 30` in the Pi's `config.py`** — deliberately not changed for you. It now reads **10** (was 1), so the sweep is ~10 dB down rather than ~27
 - [ ] Wire per-element phase delays into `do_sweep` (Plan Phase 1 item 1)
@@ -180,3 +186,4 @@ Branches: `main` only, locally. `origin` carries `main`, a stale `radar-dev`
 - [ ] Audit Lab 1–9 presets against `docs/2025_Phaser_labs_Python.pdf`
 - [ ] Handle iiod / SDR connection failures gracefully (retry, restart, UI fallback)
 - [ ] Clarify plot-range configurability request
+- [ ] Provision one stock Kuiper card end to end with `provision.sh`, and boot one `build_kit_image.py --autoprovision` image, before relying on either at a workshop

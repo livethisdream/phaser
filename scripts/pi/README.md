@@ -1,7 +1,15 @@
-# Files installed onto the Pi by `scripts/provision.sh`
+# Files installed onto the Pi
 
-Everything here is copied verbatim onto a Phaser Pi. Nothing in this directory
-is imported by the backend or served to the browser.
+Everything here is copied verbatim onto a Phaser Pi, by one of two routes:
+
+- `scripts/provision.sh`, running on the Pi, installs the udev rule, the iiod
+  unit, `pluto_update_ad9361.sh`, the clock fix and the fixed-IP alias, and --
+  only with `--prepare-image` -- the first-boot identity reset.
+- `tools/prep_sdcard.py` and `tools/build_kit_image.py`, on a laptop, write
+  `firstrun.sh` and the fixed-IP alias onto the card's FAT boot partition;
+  `firstrun.sh` installs the alias from there on first boot.
+
+Nothing in this directory is imported by the backend or served to the browser.
 
 ## Provenance
 

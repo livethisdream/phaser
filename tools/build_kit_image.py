@@ -173,7 +173,8 @@ flashing -- you do not need a separate image per kit.
     ap.add_argument("--image", required=True, metavar="PATH",
                     help="stock ADI Kuiper .img or .img.xz that you downloaded")
     ap.add_argument("--out", metavar="PATH",
-                    help="output image (default: phaser-kit.img beside the source)")
+                    help="output image (default: <name>-phaser-kit.img beside "
+                         "the source)")
     ap.add_argument("--hostname", default="phaser",
                     help="default hostname baked in (default: phaser); "
                          "editable per card after flashing")

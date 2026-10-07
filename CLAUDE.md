@@ -22,9 +22,11 @@ project metadata.
 - `scripts/` — `provision.sh` (stock Kuiper card -> working kit, then chains
   into `install.sh`), the systemd unit template, and the legacy installer
   packager
-- `scripts/pi/` — files `provision.sh` copies verbatim onto the Pi: the clock
-  fix, the fixed-IP alias, the first-boot identity reset for cloned cards, the
-  `firstrun.sh` card bootstrap, and the vendored PlutoSDR udev rule and iiod unit
+- `scripts/pi/` — files copied verbatim onto the Pi: by `provision.sh`, the
+  clock fix, the fixed-IP alias, the vendored PlutoSDR udev rule and iiod unit,
+  and (with `--prepare-image`) the first-boot identity reset for cloned cards;
+  by the card tools, onto the FAT partition, the `firstrun.sh` card bootstrap
+  and the fixed-IP alias
 - `tools/build_kit_image.py`, `tools/prep_sdcard.py` — the laptop-side card
   tools, and a deliberate exception to the rule below. One bakes a flashable
   image from a stock Kuiper image, the other preps an already-flashed card;

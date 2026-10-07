@@ -113,8 +113,9 @@ phaser-ip           192.168.7.11/24
 ```
 
 That is the whole per-card step. On first boot each kit regenerates its host
-keys and machine-id, takes that hostname and address, reboots once, and comes
-up at `http://phaser-01.local:8080/` — and at `http://192.168.7.11:8080/`,
+keys and machine-id, takes that hostname and address, reboots once (twice if
+you used `prep_sdcard.py`, whose own `firstrun.sh` hook runs and reboots
+first), and comes up at `http://phaser-01.local:8080/` — and at `http://192.168.7.11:8080/`,
 which works even where mDNS does not.
 
 **Give each kit a different address.** Ten cards sharing one alias IP collide
