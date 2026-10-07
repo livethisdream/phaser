@@ -1,0 +1,182 @@
+---
+name: "#phasergui"
+dateCreated: 2026-08-06
+dateModified: 2026-09-10
+container: cdocker
+---
+# Overview
+
+Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headless, browser-accessible architecture for the CN0566 Phaser kit. The runtime lives on a Raspberry Pi (`phaser.local` / 192.168.86.20) exposing an HTTP server on port 8080 for the static frontend and a WebSocket server on 8765 for real-time sweep data and commands. Frontend is vanilla JS + Plotly.js bundled with Vite. The project spans two feature streams: digital beamforming (this note's focus) on `main`, and a radar app under `frontend-radar/` being built out CW-first, FMCW-second on `radar-dev`.
+
+# Special Instructions
+
+- Don't remove or delete anything without explicit approval.
+- Ask clarifying questions before making assumptions.
+- Plan before executing — expect back-and-forth before code changes land.
+- Verify each memory's file:line citations against current code before asserting as fact. The beamforming memories date from 2026-06-25 and the Tauri one from 2026-05-22; only the repo-hygiene notes are current.
+- **Branch hygiene:** resolved 2026-08-25. `browser-based` was renamed to `main` (now the default branch), and `radar-dev` was split off for radar work; CI builds `dist/` on both. Radar changes (`frontend-radar/`, `phaser_cw_radar.py`, FMCW, range-Doppler, CW radar UI) belong on `radar-dev`.
+
+# Traps
+
+- **The ADF4159 accepts an out-of-range LO write silently.** Writing 12.625e9 to
+  `synth.frequency` is accepted and reads straight back; the PLL simply cannot
+  lock and the array receives noise. The only symptom is an empty spectrum.
+  `SDR_LO_init` now divides by 4 and verifies the readback — do not remove that
+  check.
+- **The LO chain has a ceiling, and it is well above the number the /4 bug
+  suggested.** 12.625e9 in the trap above is an *undivided LO written into the
+  ADF4159 register* — four times too high — not evidence about the LO itself.
+  Measured 2026-09-24 on kit `phaser` with the HB100 at 10.446953 GHz, stepping
+  `Rx_freq` and reading the peak from a 30 MSPS capture:
+
+  | Rx_freq | LO | ADF4159 | peak dBFS | verdict |
+  |---|---|---|---|---|
+  | 2.15 | 12.597 | 3.1492 | −4.12 | clean |
+  | 2.20 | 12.647 | 3.1617 | −4.85 | clean |
+  | 2.35 | 12.797 | 3.1992 | −4.86 | clean |
+  | 2.40 | 12.847 | 3.2117 | −14.08 | degrading |
+  | 2.45 | 12.897 | 3.2242 | −74.77 | dead |
+  | 2.50 | 12.947 | 3.2367 | −74.65 | dead |
+
+  The readback matched the request on every row, including the dead ones, and
+  MUXOUT reads 0 at every LO — including one producing a 43 dB pattern — so it
+  is not lock detect on this board. There is nothing to interrogate at runtime;
+  the check has to be arithmetic, which is what `install.sh` step 6b now does.
+- **An IF that works on the bench can still be wrong for the kit.** `Rx_freq`
+  2.2 GHz is the repo default and measured *better* than 1.9 on this kit
+  (64.2 dB SNR vs 59.2). But the labs put an HB100 anywhere in 10.1–10.7 GHz,
+  and 10.7 + 2.2 = 12.9 GHz is past the ceiling above. At 2.2 a source above
+  ~10.60 GHz goes deaf with no configuration change to blame; at 1.9 the whole
+  range fits with margin. This is why the Pi's 1.9 is right and the earlier
+  reading of it as stale drift was wrong.
+- **Running `phaser_find_hb100_headless.py` directly on the Pi does NOT update
+  the running service.** Only the UI path triggers `_reload_calibration`. Debug
+  over ssh and the backend keeps its old frequency.
+- **`config.py` on the Pi is site-owned and never deployed over.** It drifts from
+  the repo: this Pi now carries `Rx_gain = 10` against a repo default of 30,
+  costing ~10 dB (it was 1, costing ~27). Check it before believing a weak
+  spectrum.
+- **A wrong clock breaks apt and HTTPS.** The Pi has no battery-backed RTC and
+  restores `fake-hwclock` time on boot; NTP is blocked on some networks. Symptom
+  is apt refusing repo metadata as "not valid yet". Fix with `date -u -s` then
+  `fake-hwclock save`, or it reverts on reboot.
+- **Tailscale SSH is not key-based.** With `--ssh`, port 22 on the tailnet
+  address is answered by tailscaled and authenticated by tailnet identity, so a
+  non-tailnet client (a container NATing through the host) cannot connect even
+  with an authorized key. HTTP over the tailnet is unaffected.
+- **pyadi-iio raises `AttributeError`, not `ImportError`, when libiio is missing
+  or ABI-mismatched.** `pytest.importorskip` does not catch it, and one unusable
+  module takes down collection for the whole suite.
+- **Calibration values are three different units.** `channel_cal` is dB (added to
+  `rx_hardwaregain`), `gain_cal` is a linear 0–1 ratio, `phase_cal` is degrees.
+- **The receiver runs near full scale and clips the mainlobe flat.** At -40 deg
+  the best eight sweep points spanned 8.3 deg inside 0.7 dB, two tied exactly, so
+  an argmax wanders 4.8 deg p-p on a *stationary* source — most of a sector
+  window. Use `peak_angle_centroid`; parabolic interpolation is worse still.
+- **With no source lit, the centroid wanders the full -90..+90.** There is no
+  mainlobe to weight, so `DEFAULT_SIGNAL_FLOOR_DB` is load-bearing rather than
+  defensive: without it a player who walks away is scored into whichever sector
+  the noise favoured.
+- **CTF tracking is fed by the sweep loop, not the poll.** A service restart
+  leaves the sweep stopped, which is where every install lands. The backend
+  reports `measuring:false` and nulls the live readouts rather than serving the
+  last angle — anything reading `ctf_status` must honour that flag or it draws
+  stale data as live.
+- **`install.sh`'s `BACKEND_FILES` is an allowlist.** A backend module missing
+  from it installs silently absent and the service crash-loops on the import —
+  which is why installing a branch needs *that branch's* `install.sh`.
+- **The backend cannot power the Pi off through logind.** It runs unprivileged
+  with no active session, so polkit refuses `org.freedesktop.login1.power-off`
+  with "authorization requires authentication" — a permission error that looks
+  nothing like one. The GUI path works only because of the sudoers drop-in;
+  without it, `sudo -n` fails and `shutdown_available` is false. `install.sh`
+  installs that drop-in on every run, so a kit that cannot power off is a kit
+  installed from a ref older than 2026-09-10, or one where the file was
+  deleted.
+
+# Decisions
+- **2026-09-24** — `install.sh` prints the RF chain it will run (HB100, `Rx_freq`, LO, ADF4159 register) and warns when the LO is past what was measured receiving, or when the IF cannot reach the whole 10.1–10.7 GHz HB100 range. Reason: `config.py` is site-owned and never deployed over, so the numbers that decide the LO are the ones nobody reviews, and a bad LO is undetectable at runtime — the write is accepted, the readback agrees, and MUXOUT is not lock detect here. It warns rather than fails: the ceiling is one kit's measurement, and refusing an install over it would turn a survivable warning into a dead workshop. Thresholds live in `phaser_functions.lo_warnings` and are overridable per kit.
+- **2026-09-10** — GUI shutdown is installed **unconditionally** by `install.sh`; the `PHASER_ALLOW_GUI_SHUTDOWN` gate is gone. Reason: it is a standard feature of the kit, and the flag was never documented in the README, so in practice it only meant shutdown silently did not work on a fresh install. Accepted tradeoff: the backend is unauthenticated, so any reachable kit can be powered off by anyone. Revoke per kit by deleting `/etc/sudoers.d/phaser-shutdown` — the next `install.sh` writes it back.
+- **2026-09-04** — The UI arms the gesture only when `get_state` reports `shutdown_available`, probed with `sudo -l` (which answers permission without running anything). Reason: an affordance for something that can only return an error is worse than no affordance.
+- **2026-09-04** — Shutdown is a 2 s hold and red, against the CTF control's 1.2 s. Reason: this one cannot be undone from the browser — the machine it stops is the one serving the page.
+- **2026-09-04** — CTF scores the **tracked** source by default: the sweep's measured peak, not a commanded beam. Reason: the table challenge is carrying an HB100 in front of the array; `commanded` stays behind `PHASER_CTF_SOURCE` as the fallback, and exactly one source scores at a time.
+- **2026-09-04** — Peak angle is a -3 dB power-weighted centroid, not an argmax. Reason: 0.53 deg p-p versus 4.80 deg for argmax on a stationary source — see Traps.
+- **2026-09-04** — Tracked confirmation counts 3 consecutive in-sector sweeps, not seconds. Reason: the sweep runs at ~0.9/s, so a 2 s dwell was ~2 observations; `status()` no longer advances the tracked machine, so polling faster cannot confirm sooner.
+- **2026-09-04** — `status()` takes `sweeping` and reports `measuring`, nulling the live readouts and dropping the in-flight sweep count when nothing observes. Reason: a stopped sweep looks on screen exactly like a challenge that refuses to score. The trail is kept — earned progress is still earned.
+- **2026-09-04** — The start gesture is a 1.2 s hold on the stat-row pill; the sidebar Start button was removed. Reason: `ctf_reset` discards a run and a tap did it silently — three taps in thirty seconds during testing threw away a scored sector.
+- **2026-08-27** — Installation runs **on the Pi**: `ssh` in, then `curl -fsSL .../install.sh | bash`. Reason: every deployment bug was client-side (cmd.exe globbing, PATHEXT, no ControlMaster on Windows, `ssh -t` vs sudo, a Store alias posing as `python`); the Pi is the one environment we control, and sudo works normally there.
+
+Older and superseded decisions: see `project/phaser_ARCHIVE.md`.
+
+# Plan
+
+**Phase 1 (current) — Digital Beamforming UI polish:**
+1. Wire per-element phase delays — plumb `state.phaseList` (8 zeros default) through `set_state` and apply inside `do_sweep` where `phaseList = [0.0] * 8` currently sits just before `ADAR_set_Phase`. Rename "Set All Phase to 0" button to just "Reset".
+2. Mode toggle (Manual / MVDR) inside the Digital Beam Forming sidebar section — radio-style. Manual = current sliders; MVDR = adaptive weights. Show only relevant controls per mode.
+3. "2-Element Array Preset" button in Digital Beam Forming — one-click applies `[0, 0, 0, 127, 127, 0, 0, 0]` taper via the existing `set_taper` command. Always visible regardless of mode.
+
+**Phase 2 — MVDR adaptive beamforming (backend):**
+- Runs in Python on the Pi. K snapshots of `[chan0, chan1]` IQ → `R̂ = (1/K) Σ x·xᴴ` → for each θ, `s(θ) = [1, exp(j·2π·d·sin(θ)/λ)]ᵀ`, `w_mvdr = R̂⁻¹s / (sᴴR̂⁻¹s)`, `y(θ) = w_mvdrᴴ X`.
+- Configurable params: K (snapshots, default 128), diagonal load (default 1e-3).
+- References: `docs/2025_Phaser_labs_Python.pdf` "Intro to Adaptive Beamforming"; pysdr.org/content/doa.html#mvdr-capon-beamformer.
+
+**Later:**
+- Audit Lab 1–9 presets in `frontend/src/main.js` and backend `get_lab_preset` against `docs/2025_Phaser_labs_Python.pdf` (2025 edition, tracked in the repo). Likely some are stale.
+- Plot-range configurability refinement — waiting on user clarification.
+- Handle SDR/iiod (port 50901) connection failures gracefully — retry with backoff, SSH-restart iiod option, UI dialog with Retry / Simulation Mode, or pre-check connectivity before init.
+- Radar Phase 1 (CW Doppler waterfall) and Phase 2 (FMCW range-Doppler) — separate stream; keep hooks in backend mode dispatcher without pretending range axis exists yet.
+
+# Status
+`main` is at `0921c6e`, clean and in sync with origin — 94 tests passing, 1
+skipped, all three workflows green. The Pi runs `main` and the service is
+active.
+
+Two features are shipped and verified on hardware: GRCon26 CTF tracking mode,
+and GUI shutdown (a 2 s hold on the connection pill). As of 2026-09-10 shutdown
+is granted on every install rather than per machine. Both are covered in
+Decisions; the hardware evidence is in the archive.
+
+**CTF knobs, for the table:** the flag and sequence live in
+`/etc/default/phaser-ctf` and are in no repo. Thresholds are env-tunable
+(`PHASER_CTF_SOURCE`, `_TOLERANCE_DEG`, `_DWELL_S`, `_TRACK_SWEEPS`,
+`_SIGNAL_FLOOR_DB`) so they can be loosened without a redeploy.
+
+**Turning GUI shutdown off on one kit:** it is granted on every install now, so
+removing it is a per-kit action that has to be repeated after each install:
+
+```bash
+sudo rm /etc/sudoers.d/phaser-shutdown
+sudo systemctl restart phaser-headless
+```
+
+The restart is not optional — `shutdown_permitted()` caches the `sudo -l` probe
+for the process lifetime, so without it the UI keeps offering a gesture that now
+errors. Afterwards `get_state` reports `shutdown_available: false` and the pill
+goes back to being a plain readout.
+
+**Reaching the Pi:** LAN `192.168.86.61` (the Overview's `.20` is stale), or
+Tailscale `100.81.68.73` / `phaser`. HTTP works over the tailnet from anywhere;
+Tailscale SSH authenticates by tailnet identity — see Traps. HB100 reads
+10.4245 GHz.
+
+**Next is beamforming Phase 1, untouched.** The per-element phase sliders still
+send `state.phaseList` and the backend still ignores it.
+
+Branches: `main` only, locally. `origin` carries `main`, a stale `radar-dev`
+(an ancestor of `main`), and seven abandoned `claude/*` refs.
+
+# ToDo
+- [ ] **Set `Rx_gain = 30` in the Pi's `config.py`** — deliberately not changed for you. It now reads **10** (was 1), so the sweep is ~10 dB down rather than ~27
+- [ ] Wire per-element phase delays into `do_sweep` (Plan Phase 1 item 1)
+- [ ] Rename "Set All Phase to 0" → "Reset"
+- [ ] Add Manual / MVDR mode toggle in Digital Beam Forming
+- [ ] Add "2-Element Array Preset" button (`[0, 0, 0, 127, 127, 0, 0, 0]` taper)
+- [ ] Implement MVDR backend (Plan Phase 2)
+- [x] Make `find_hb100` **refuse to save** on a bad result — its range and SNR checks are warnings only, so with no source present it wrote a bogus calibration twice. *Done in #18: nothing is saved unless the spur-rejected SNR and a live LO-shift confirmation both pass.*
+- [x] Gate `channel_calibration` on signal presence — it returned a 348 dB correction against noise, which is unusable by construction (`Rx_gain + ccal` far outside the driver's range). *Done in #18: `phaser_cal_headless.py` aborts before any calibration step when all-on vs all-off array contrast is under 6 dB.*
+- [ ] Release the iio contexts on mode change — nothing ever closes them; four sockets stay open regardless of mode. Prerequisite for the sim toggle below, and it also fixes calibration's broken-pipe-on-first-attempt
+- [ ] Build sim start into the GUI as a live toggle so there is one way to launch (`--sim` becomes the initial value only). Needs the teardown above; capabilities differ by source (CW radar refuses in sim, interferer control is sim-only)
+- [ ] Add the Windows + Linux CI matrix — deferred; without it the Windows half of the test suite never runs, and the golden-tar test is meaningless as a single-platform check
+- [ ] Audit Lab 1–9 presets against `docs/2025_Phaser_labs_Python.pdf`
+- [ ] Handle iiod / SDR connection failures gracefully (retry, restart, UI fallback)
+- [ ] Clarify plot-range configurability request

@@ -10,9 +10,11 @@ import sys
 import time
 
 from phaser_functions import (
+    MIN_ARRAY_CONTRAST_DB,
     channel_calibration,
     gain_calibration,
     load_hb100_cal,
+    measure_array_contrast,
     phase_calibration,
     save_channel_cal,
     save_gain_cal,
@@ -99,6 +101,45 @@ def do_calibration():
 
             print("\n=== Starting Calibration ===")
             print("Antenna should be at mechanical boresight in front of the array")
+
+            # Preflight: prove the array is actually receiving something before
+            # calibrating against it.
+            #
+            # Every calibration below is an argmax over measured power, and an
+            # argmax is meaningless if the power it measures does not depend on
+            # the thing being swept. That is exactly what happens when the
+            # loudest signal is a spur generated inside the receiver: phase cal
+            # returns noise, reruns disagree by hundreds of degrees, and
+            # channel_cal can come out negative. All of it saved silently, and
+            # the first sign of trouble is a flat beam pattern in the UI.
+            #
+            # Disabling every element cannot attenuate a spur produced after
+            # the mixer, so the on/off difference separates the two cases
+            # cleanly and costs two captures.
+            print("\n--- Signal Check ---")
+            contrast_db, on_dbfs, off_dbfs = measure_array_contrast(my_phaser)
+            print(
+                "All elements on: %.2f dBFS, all off: %.2f dBFS, contrast: %.2f dB"
+                % (on_dbfs, off_dbfs, contrast_db)
+            )
+            if contrast_db < MIN_ARRAY_CONTRAST_DB:
+                print()
+                print("CALIBRATION ABORTED: no signal is reaching the array.")
+                print(
+                    "Disabling all eight elements changed the received power by "
+                    "only %.2f dB (need %.2f dB), so what the receiver hears "
+                    "does not come through the antennas."
+                    % (contrast_db, MIN_ARRAY_CONTRAST_DB)
+                )
+                print("Nothing was saved; the previous calibration is intact.")
+                print()
+                print("Check, in this order:")
+                print("  1. the HB100 is powered and pointed at the array")
+                print("  2. the stored HB100 frequency is right -- re-run the")
+                print("     HB100 search (a frequency error of more than about")
+                print("     1.5 MHz puts the tone outside the analysis window)")
+                print("  3. the RF cables from the CN0566 to the Pluto Rx inputs")
+                return False
 
             # Channel calibration (same as phaser_examples.py)
             print("\n--- Channel Calibration ---")

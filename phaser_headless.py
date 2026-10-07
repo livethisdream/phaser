@@ -58,6 +58,24 @@ from phaser_functions import load_hb100_cal
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
+from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additive)
+
+
+# GUI shutdown. The physical button on the Phaser is a gpio-shutdown overlay
+# (GPIO21) that makes the kernel emit KEY_POWER, which logind turns into exactly
+# this command -- so triggering it from the browser is the same clean poweroff
+# rather than a second, parallel mechanism.
+#
+# The backend runs unprivileged and cannot do it alone: polkit refuses a process
+# with no active session, and there is no blanket NOPASSWD. install.sh therefore
+# installs a sudoers drop-in for this one command on every install -- shutting
+# the kit down from the page it is serving is a standard feature, not an opt-in.
+#
+# Note what that means: the backend is unauthenticated, so anyone who can reach
+# it can power the machine off. On a shared or public network that is a power
+# switch for the room. Revoking is deleting /etc/sudoers.d/phaser-shutdown, but
+# the next install.sh writes it back.
+SHUTDOWN_CMD = ["/usr/bin/systemctl", "poweroff"]
 
 
 class PhaserHeadless:
@@ -77,6 +95,7 @@ class PhaserHeadless:
         # _set_mode() keeps the two in sync.
         self.mode = "idle"
         self.sweeping = False
+        self._shutdown_permitted = None   # probed lazily, then cached
 
         # CW radar runtime state
         self.cw_params = {}                # effective config (after defaults)
@@ -287,6 +306,13 @@ class PhaserHeadless:
         self.ignore_res = True
         self.steer_min = -90
         self.steer_max = 90
+
+        # GRCon26 CTF sector-sequence mode. Passive: it only watches the
+        # commanded phaseList and answers ctf_status / ctf_reset, so it has no
+        # effect on the workshop app unless a browser asks for it. Flag and
+        # target sequence come from the environment or gitignored sidecar
+        # files — see phaser_ctf.py.
+        self.ctf = CtfMode()
 
         # Tx mode
         self.Tx_mode = "Transmit Disabled"
@@ -595,6 +621,10 @@ class PhaserHeadless:
             "max_gain": max_gain.tolist(),
             "xf": xf.tolist(),
             "peak_signal": float(max_signal),
+            # Where the SOURCE is, for CTF tracking mode. Computed here rather
+            # than in the browser because the flag is scored backend-side, and
+            # a client-computed sector would be trivially spoofable.
+            "peak_angle_deg": peak_angle_centroid(angles, gain),
         }
 
     # --- Mode dispatcher --------------------------------------------------
@@ -704,6 +734,25 @@ class PhaserHeadless:
             fft_window=cfg.get("fft_window", "blackman"),
         )
 
+    def shutdown_permitted(self):
+        """Whether sudo will run the poweroff command without a password.
+
+        `sudo -l <cmd>` answers that without running anything. Cached: the
+        answer only changes when the sudoers drop-in does, and install.sh
+        restarts the service whenever it writes one.
+        """
+        if self._shutdown_permitted is None:
+            try:
+                probe = subprocess.run(
+                    ["sudo", "-n", "-l"] + SHUTDOWN_CMD,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                self._shutdown_permitted = probe.returncode == 0
+            except Exception:
+                self._shutdown_permitted = False
+        return self._shutdown_permitted
+
     def get_state(self):
         """Return current configuration state"""
         return {
@@ -738,6 +787,8 @@ class PhaserHeadless:
                 "sim_interferer_power_db": self.sim_interferer_power_db,
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
+                # Lets the UI hide the affordance where it would only fail.
+                "shutdown_available": self.shutdown_permitted(),
             }
         }
 
@@ -1028,13 +1079,19 @@ class PhaserHeadless:
                 self.set_rx_gain(state["Rx_gain"])
             if "Tx_gain" in state:
                 self.set_tx_gain(state["Tx_gain"])
-            if "SignalFreq" in state:
+            # Every set_state carries SignalFreq, so retuning unconditionally
+            # re-ran SDR_LO_init (a fresh ADF4159 context) on each slider drag.
+            if "SignalFreq" in state and float(state["SignalFreq"]) != self.SignalFreq:
                 self.set_signal_freq(state["SignalFreq"])
             if "gainList" in state:
                 self.set_taper(state["gainList"])
             if "phaseList" in state:
                 incoming = list(state["phaseList"])[:8]
                 self.phaseList = [float(v) for v in (incoming + [0.0] * 8)[:8]]
+                # Where the operator deliberately pointed the beam. Hooked
+                # here rather than in do_sweep, which walks every steer angle
+                # in the range by design and would swamp the state machine.
+                self.ctf.observe(self.phaseList, self.ConvertPhaseToSteerAngle)
             if "Tx_mode" in state:
                 self.set_tx_mode(state["Tx_mode"])
             if "Averages" in state:
@@ -1100,6 +1157,24 @@ class PhaserHeadless:
                 self.ignore_res = bool(state["ignore_res"])
                 print(f"Ignore steering resolution: {self.ignore_res}")
             return {"status": "ok"}
+
+        elif cmd == "power_off":
+            if not self.shutdown_permitted():
+                return {"status": "error",
+                        "message": "Shutdown is not permitted on this host. "
+                                   "Re-run install.sh to install the sudoers "
+                                   "drop-in that grants it."}
+            # Popen, not run: the reply has to reach the browser before systemd
+            # starts tearing the machine down.
+            subprocess.Popen(["sudo", "-n"] + SHUTDOWN_CMD)
+            return {"status": "ok", "message": "Shutting down."}
+
+        elif cmd == "ctf_status":
+            return self.ctf.status(sim_mode=self.sim_mode, sweeping=self.sweeping)
+
+        elif cmd == "ctf_reset":
+            self.ctf.reset()
+            return self.ctf.status(sim_mode=self.sim_mode, sweeping=self.sweeping)
 
         elif cmd == "run_calibration":
             return self.run_calibration(data.get("task_name", "find_hb100"))
@@ -1170,6 +1245,16 @@ class PhaserHeadless:
             if self.mode == "sweep":
                 try:
                     sweep_data = self.do_sweep()
+
+                    # CTF tracking mode watches where the source is. Note this
+                    # is NOT what phaser_ctf's docstring warns against: that
+                    # warning is about hooking the sweep's commanded phases,
+                    # which step through every sector on every pass. One peak
+                    # angle per sweep is a single measurement.
+                    self.ctf.observe_tracked(
+                        sweep_data.get("peak_angle_deg"),
+                        sweep_data.get("peak_signal"),
+                    )
 
                     frame = {
                         "type": "sweep",

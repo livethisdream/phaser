@@ -103,6 +103,31 @@ hashed assets; and it never overwrites an existing `config.py`.
 `install.sh` refuses to run if the source has no `frontend/dist/index.html`
 at all, rather than installing a backend with no UI in front of it.
 
+### Shutting the kit down from the browser
+
+Hold the connection pill in the header for two seconds and the Pi powers off
+cleanly -- the same shutdown the push button on the Phaser performs, since that
+button is a `gpio-shutdown` overlay on GPIO21 and logind turns it into the same
+`systemctl poweroff`.
+
+The backend runs unprivileged, so `install.sh` installs a sudoers drop-in at
+`/etc/sudoers.d/phaser-shutdown` granting the service user that one command and
+nothing else. It is validated with `visudo -c` before install, so a malformed
+rule cannot break `sudo` on the kit.
+
+This is standard on every install. **The backend is unauthenticated**, so anyone
+who can reach port 8080 can power the machine off -- on a shared or public
+network, that is a power switch for the room. To revoke it on a particular kit:
+
+```bash
+sudo rm /etc/sudoers.d/phaser-shutdown
+sudo systemctl restart phaser-headless
+```
+
+The next `install.sh` on that kit writes it back. With the rule gone the backend
+reports `shutdown_available: false` and the UI leaves the pill an ordinary
+readout, so nothing in the page offers a gesture that would only fail.
+
 ### Environment variables
 
 | Variable | Effect |
@@ -673,6 +698,103 @@ simulator — so `?instructor=1` against the *real* Pi app shows nothing either.
 It works in the browser simulator too, including on the hosted demo:
 `?sim=1&instructor=1`, or just `?instructor=1` on the Pages site, which is
 already in simulation.
+
+The parameter *name* is matched case-insensitively (`?INSTRUCTOR=1` works),
+because a flag that is silently ignored looks exactly like a stale bundle. The
+value still has to be `1`. `?sim=` and `?backend=` are unchanged -- they are
+read by the transport, not by `main.js`, and are lowercase-only.
+
+### CTF mode
+
+`?ctf=1` reveals a **CTF Mode** panel for the GRCon26 signals CTF. A player
+steers the beam through a sector sequence, holding each sector briefly, and the
+backend hands back a flag when the sequence completes.
+
+```text
+http://phaser.local:8080/?ctf=1
+```
+
+The name is case-insensitive, so `?CTF=1` works too; the value must be `1`.
+
+Unlike instructor mode, the URL parameter is UI convenience, **not** a secret.
+`frontend/dist` is served to every browser that connects and a CTF player's
+whole job is to go looking, so the sequence check and the flag both live in
+`phaser_ctf.py` on the backend. The panel only renders what the backend
+reports.
+
+**Neither the flag nor the target sequence is in this repo.** Both are read
+from the environment, or from `ctf_flag.txt` / `ctf_sequence.txt` next to the
+backend. Both are gitignored, and `install.sh` cannot ship them: its
+`BACKEND_FILES` is an allowlist, so anything not named there stays on the Pi by
+construction. Without them the module falls back to a harmless demo sequence
+and a placeholder flag, so the panel is still developable.
+
+```bash
+export PHASER_CTF_SEQUENCE="3 1 4 1 2"
+export PHASER_CTF_FLAG="flag{...}"
+export PHASER_CTF_ALLOW_SIM=0        # optional: hardware-only flag issue
+python phaser_headless.py
+```
+
+**Under systemd, exporting in your shell is not enough.** The service starts
+from the unit, not from your login environment, so a backend run by
+`phaser-headless.service` would still be on the placeholder. The unit reads
+`/etc/default/phaser-ctf` if it exists (`EnvironmentFile=-`, so a Pi that is
+not running the CTF is unaffected). Write it once on the Pi, after installing:
+
+```bash
+sudo install -m 600 -o root -g root /dev/null /etc/default/phaser-ctf
+sudo tee /etc/default/phaser-ctf >/dev/null <<'EOF'
+PHASER_CTF_SEQUENCE=3 1 4 1 2
+PHASER_CTF_FLAG=flag{...}
+PHASER_CTF_ALLOW_SIM=0
+EOF
+sudo systemctl restart phaser-headless
+```
+
+Mode `0600` and root ownership matter: `systemctl show phaser-headless` prints
+every `Environment=` value to any user, whereas values loaded from an
+`EnvironmentFile` are read by PID 1 at start and never echoed back. Do not put
+the flag in the unit itself.
+
+No sudo on the machine? The sidecar files are the alternative, and need no
+privileges -- `ctf_flag.txt` and `ctf_sequence.txt` go in the install directory
+next to `phaser_ctf.py` (`/home/analog/pyadi-iio/examples/phaser/`), owned by
+the service user. The environment wins when both are present.
+
+Sectors default to five bins centred at -40/-20/0/+20/+40 degrees with +/-5
+degrees tolerance and a 2 s dwell; all of that is constructor arguments on
+`CtfMode`. The mode is passive -- it watches the commanded `phaseList` and
+answers `ctf_status` / `ctf_reset`, and does nothing at all unless a browser
+asks. `pytest tests/test_phaser_ctf.py` covers the state machine with no
+hardware and no backend.
+
+**Why the sectors stop at +/-45.** Past that an 8-element array's beamwidth
+broadens as 1/cos(theta), so the mainlobe no longer presents a clear peak and a
+player cannot see which sector they are in. Every window edge stays inside 45
+(sector 5 spans 35 to 45 and no further). Five sectors is not negotiable -- the
+sequence is a five-element value fixed by prior commitment -- so the limit is
+met by tightening the spacing, never by dropping a sector. A test asserts both
+properties.
+
+The +/-5 tolerance is looser than it looks: it applies to the *commanded*
+angle, recovered from the phase ramp with a worst-case round-trip error of
+0.022 degrees, so there is no measurement noise to absorb. The 10 degree dead
+bands between windows are the point -- they keep "between sectors" unambiguous.
+
+The panel itself carries the sector table, a **Show sector bands on plot**
+toggle, **Start**, and one status line. It deliberately has no live beam
+readout: the bands drawn on the beam pattern show the same thing where the
+player is already looking. Progress is a pill in the chart stat row beside
+**Est. Angle** (`CTF SEQUENCE  3 / 5`), for the same reason -- it belongs where
+the player is looking, not in the sidebar. It reads `-- / 5` before Start, and
+is hidden entirely when no Python backend answered. The status line speaks only
+for what neither can say: that the session is not started yet, and the flag.
+
+**It needs the Python backend.** The browser simulator has no CTF: putting the
+flag in a JS bundle would defeat the point of keeping it server-side, so
+`?ctf=1` under `?sim=1` (or on the hosted demo) shows the panel explaining it
+needs a real backend rather than a challenge you cannot win.
 
 ## Frontend development
 
