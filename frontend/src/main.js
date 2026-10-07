@@ -1277,14 +1277,22 @@ linkInterfererPair('sim-interferer-power', 'val-sim-interferer-power', 'sim_inte
 
 /* --- Base Config Events --- */
 const freqInput = document.getElementById('freq');
+// Whole Hz: 274 of the 4001 three-decimal GHz values from 8 to 12 GHz come
+// out of `ghz * 1e9` with float noise (8.001 -> 8000999999.999999), and the
+// backend retunes on any inequality, so send exactly what was typed.
 const updateSignalFreqFromInput = (rawVal) => {
     const ghz = parseFloat(rawVal);
-    if (Number.isFinite(ghz)) {
-        state.SignalFreq = ghz * 1e9;
-    }
+    if (!Number.isFinite(ghz)) return false;
+    state.SignalFreq = Math.round(ghz * 1e9);
+    return true;
 };
+// Keystrokes stay local; the LO retunes when the value is committed (Enter,
+// blur, or a spinner step). Without the sync the field updated only this
+// page's state and the hardware never moved.
 freqInput.addEventListener('input', (e) => updateSignalFreqFromInput(e.target.value));
-freqInput.addEventListener('change', (e) => updateSignalFreqFromInput(e.target.value));
+freqInput.addEventListener('change', (e) => {
+    if (updateSignalFreqFromInput(e.target.value)) syncStateToBackend();
+});
 
 function syncStateToBackend() {
     if (!isConnected) return;
