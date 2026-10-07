@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+#
+# Keep this board's clock plausible. Installed to /usr/local/sbin/phaser-clock
+# and run at every boot by phaser-clock.service.
+#
+# Why this exists at all: a Raspberry Pi has no RTC (`timedatectl` reports
+# "RTC time: n/a"), and stock Kuiper ships with *no NTP client installed* --
+# not systemd-timesyncd, not chrony, not ntp. So `timedatectl set-ntp true`
+# fails with "NTP not supported": there is nothing for systemd to enable. That
+# is why a fresh kit comes up with a wrong date and why the ADI setup guide
+# tells you to run `date -s` by hand.
+#
+# A wrong clock is not cosmetic. It breaks TLS certificate validation and makes
+# apt reject its own Release files as not-yet-valid, so the kit cannot download
+# the very packages that would fix the clock. Hence the ordering below: seed
+# from a source that cannot itself be broken by a wrong clock, *then* let the
+# real NTP client take over.
+#
+# Three layers, each best-effort. None is fatal -- a kit on a bench with no
+# network still boots and still runs the UI.
+#
+#   1. Floor.  The clock may not predate this file. Costs nothing, needs no
+#      network, and is the only layer that works fully offline.
+#   2. HTTP Date header, over *plain HTTP*. No TLS, so a wrong clock cannot
+#      break the fetch that fixes the wrong clock. Port 80 also traverses the
+#      firewalls and proxies that commonly drop NTP's UDP/123.
+#   3. Real NTP, if a client is installed and UDP/123 is open. This is the only
+#      layer that keeps the clock right over days; the other two just get it
+#      close enough to bootstrap.
+#
+# Layer 2 is not a fallback for layer 3. It is the bootstrap *for* it: without
+# it, apt cannot install an NTP client in the first place.
+
+set -uo pipefail   # deliberately not -e: every step here may fail harmlessly
+
+log() { printf 'phaser-clock: %s\n' "$*"; }
+
+# Hosts for layer 2. Plain http:// on purpose -- see above. deb.debian.org
+# leads because the kit already depends on reaching it for apt.
+HTTP_HOSTS=(
+    http://deb.debian.org/
+    http://archive.raspberrypi.org/
+    http://www.google.com/
+)
+
+now_epoch() { date -u +%s; }
+
+# ---- layer 1: floor --------------------------------------------------------
+# This script's own mtime is a lower bound on "now": the file cannot exist
+# before it was written. Survives a cold boot with no network, which is the
+# case fake-hwclock alone does not cover on a freshly imaged card.
+apply_floor() {
+    local floor now
+    floor="$(stat -c %Y "$0" 2>/dev/null)" || return 0
+    now="$(now_epoch)"
+    if [ "$now" -lt "$floor" ]; then
+        date -u -s "@$floor" >/dev/null 2>&1 \
+            && log "clock was before this script's mtime; floored to $(date -u -d "@$floor" '+%Y-%m-%d %H:%M:%S UTC')"
+    fi
+}
+
+# ---- layer 2: HTTP Date ----------------------------------------------------
+# Headers end CRLF. GNU date happens to parse the trailing carriage return
+# anyway, so the `tr -d` below is belt-and-braces rather than required -- kept
+# because it costs nothing and not every date(1) is as forgiving.
+#
+# The bounds check is the part that matters: a captive portal will cheerfully
+# serve its own idea of the date, and we would rather keep a wrong clock than
+# adopt a confidently wrong one.
+http_seed() {
+    local host hdr
+    for host in "${HTTP_HOSTS[@]}"; do
+        hdr="$(curl -sI --max-time 10 "$host" 2>/dev/null \
+               | sed -n 's/^[Dd]ate: *//p' | tr -d '\r' | head -n1)"
+        [ -n "$hdr" ] || continue
+        local secs
+        secs="$(date -u -d "$hdr" +%s 2>/dev/null)" || continue
+        # Sanity window, against fixed bounds rather than against the current
+        # clock -- the whole premise here is that the current clock is wrong,
+        # so it cannot be the reference. A captive portal that answers with a
+        # 1970 or 2999 date gets discarded instead of trusted.
+        [ "$secs" -ge 1704067200 ] || continue      # 2024-01-01
+        [ "$secs" -le 4102444800 ] || continue      # 2100-01-01
+        date -u -s "@$secs" >/dev/null 2>&1 || continue
+        log "seeded from $host -> $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        return 0
+    done
+    log "no HTTP time source reachable (offline is fine; keeping current clock)"
+    return 1
+}
+
+# ---- layer 3: hand off to a real NTP client --------------------------------
+# Only reports. Installing a client needs apt and therefore a network, which is
+# provision.sh's job at setup time, not this unit's job at every boot.
+report_ntp() {
+    command -v timedatectl >/dev/null 2>&1 || return 0
+    local sync svc
+    sync="$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+    svc="$(timedatectl show -p NTP --value 2>/dev/null)"
+    if [ "$sync" = "yes" ]; then
+        log "NTP synchronized"
+    elif [ "$svc" = "yes" ]; then
+        log "NTP client active but not yet synchronized (UDP/123 may be blocked)"
+    else
+        log "no NTP client active -- clock will drift; re-run provision.sh to install one"
+    fi
+}
+
+apply_floor
+http_seed || true
+report_ntp
+
+# Persist whatever we settled on, so the next cold boot starts from here rather
+# than from 1970. Harmless if fake-hwclock is not installed.
+command -v fake-hwclock >/dev/null 2>&1 && fake-hwclock save >/dev/null 2>&1
+
+log "clock is $(date '+%Y-%m-%d %H:%M:%S %Z')"
+exit 0

@@ -15,18 +15,45 @@ You do not need Node, npm, or an internet connection to deploy or run it
 
 ## Quickstart
 
-Two lines, from any operating system:
+**A kit that already runs Phaser** -- two lines, from any operating system:
 
 ```bash
 ssh analog@phaser.local
 curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/install.sh | bash
 ```
 
-Then open `http://phaser.local:8080`.
+Then open `http://phaser.local:8080`. That is install *and* update; re-running
+it is how you upgrade. The only thing needed on your own machine is `ssh`; on
+Windows that is Settings > Apps > Optional features > OpenSSH Client.
 
-That is the whole thing -- install, provision *and* update. The only thing
-needed on your own machine is `ssh`; on Windows that is
-Settings > Apps > Optional features > OpenSSH Client.
+**A brand-new kit** -- bake a Phaser image once from the Kuiper image you
+downloaded, then flash it to as many cards as you like:
+
+```bash
+python tools/build_kit_image.py --image ~/Downloads/kuiper.img.xz --autoprovision
+```
+
+Flash the result with Raspberry Pi Imager, put the card in the Pi, power up,
+walk away. It comes up at `192.168.7.2` (and `phaser.local`), provisions
+itself, and reboots into the UI -- no ssh, no mDNS, no DHCP lease hunting.
+
+Already flashed a card and just want to prep it in place? `prep_sdcard.py`
+does the same thing to a mounted card. Either way, see
+[Preparing SD cards](#preparing-sd-cards).
+
+**Already have a reachable kit that needs the Phaser setup** -- run
+`provision.sh` on it. Clock, device tree overlay, hostname, PlutoSDR plumbing,
+pyadi-iio, then `install.sh`:
+
+```bash
+ssh analog@analog.local          # stock Kuiper hostname, before provisioning
+curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/scripts/provision.sh | bash
+sudo reboot
+```
+
+See [Provisioning a new kit](#provisioning-a-new-kit). Setting up more than
+one or two kits? Provision one and clone the card --
+[docs/golden-image.md](docs/golden-image.md).
 
 **No Phaser attached?** Run sim mode locally instead:
 
@@ -36,10 +63,15 @@ python phaser_headless.py --sim   # then open http://localhost:8080
 
 ## Installing and updating
 
-`install.sh` is the only deployment path, and it runs **on the Pi**. There is
-no separate provisioning step and no laptop-side deploy tool: the script does
-dependencies, files, systemd unit and service start in one idempotent pass, on
-a Pi straight out of the box or on one that has been running for a year.
+`install.sh` is the only deployment path for the app itself, and it runs **on
+the Pi**. There is no laptop-side deploy tool: the script does dependencies,
+files, systemd unit and service start in one idempotent pass, on a Pi that has
+been provisioned once or one that has been running for a year.
+
+It assumes the OS underneath it is already set up -- overlay loaded, clock
+right, pyadi-iio present. On a stock Kuiper card that is not yet true, and
+`scripts/provision.sh` is what makes it true; it calls `install.sh` at the end,
+so a fresh kit still needs only one command.
 
 It installs only the Python packages that are actually missing, copies the
 payload into `/home/analog/pyadi-iio/examples/phaser/`, renders and installs
@@ -172,6 +204,277 @@ Deliberately: the Pi is the one machine whose environment we control, and every
 deployment bug this project has had came from the client side instead. The
 header comment in `install.sh` has the full account, and CLAUDE.md records that
 a laptop-side deploy tool is not to be reintroduced.
+
+## Preparing SD cards
+
+Two tools, same job, different moment. Both run on **your laptop**, both are
+standard library only, and both share their logic — `build_kit_image.py`
+imports `prep_sdcard.py`, so an image and a hand-prepped card cannot disagree
+about what a prepared kit looks like.
+
+### `build_kit_image.py` — bake an image once, flash it many times
+
+```bash
+python tools/build_kit_image.py --image ~/Downloads/kuiper.img.xz
+```
+
+Takes a stock Kuiper `.img` or `.img.xz` you have already downloaded and
+produces a copy with the first-boot bootstrap baked in. Flash that to ten
+cards and every kit comes up reachable.
+
+**No root, and no mounting.** It parses the MBR to find the FAT boot partition
+and writes into it with [mtools](https://www.gnu.org/software/mtools/), which
+edits a FAT filesystem inside a file directly. A loop mount would need `sudo`
+*and* a kernel with `vfat` — which rules out plenty of environments, including
+some WSL and container setups. Install with `sudo apt install mtools` (or
+`brew install mtools`).
+
+This is also the only option that works from WSL at all: **WSL2 cannot see a
+USB card reader**, so a script there can never write to a card — but it can
+build an image for one perfectly well.
+
+| Option | Effect |
+| --- | --- |
+| `--image PATH` | Stock Kuiper `.img` or `.img.xz` (required; nothing is downloaded) |
+| `--out PATH` | Output image (default: `<name>-phaser-kit.img` beside the source) |
+| `--hostname NAME` | Default hostname baked in (default `phaser`) |
+| `--ip ADDR` | Default fixed IP (default `192.168.7.2/24`; `none` to skip) |
+| `--autoprovision [REF]` | Bake in unattended provisioning |
+| `--boot-mount PATH` | Where the FAT partition mounts on the Pi |
+| `--force` | Overwrite an existing output image |
+
+It refuses to edit your stock image in place, and validates the MBR before
+copying anything — an `.img.xz` is checked by decompressing only its first
+512 bytes, so a wrong file fails instantly rather than after an 8 GB copy.
+
+### `prep_sdcard.py` — prep a card you have already flashed
+
+```bash
+python tools/prep_sdcard.py --hostname phaser-01 --ip 192.168.7.11
+```
+
+Same result, applied to a flashed card sitting in your reader. Useful for
+re-prepping one kit, or for giving a card from a batch its own identity.
+
+**It does not flash the card and refuses a blank one.** Writing the image is
+left to Raspberry Pi Imager, balenaEtcher or `dd`, which already do it with a
+verify pass and guardrails against picking the wrong disk.
+
+Standard library only, no root, no dependencies. It finds the card
+automatically; `--boot` says where if it cannot, and `--dry-run` shows what it
+would write.
+
+| Option | Effect |
+| --- | --- |
+| `--hostname NAME` | Hostname for this kit (default `phaser`) |
+| `--ip ADDR` | Fixed IP, added *alongside* DHCP (default `192.168.7.2/24`; `none` to skip) |
+| `--autoprovision [REF]` | Provision unattended on first boot, no ssh needed |
+| `--boot PATH` | Where the card is mounted (`E:\`, `/mnt/e`, `/Volumes/boot`) |
+| `--boot-mount PATH` | Where the FAT partition mounts **on the Pi**: `/boot` for Kuiper, `/boot/firmware` for bookworm |
+| `--dry-run` | Say what would be written, change nothing |
+
+### Why these laptop-side tools are allowed
+
+This project deliberately has no laptop-side deploy tool -- see
+[Why it runs on the Pi](#why-it-runs-on-the-pi). These are not that. They run
+no logic against the Pi, open no ssh connection, and touch a card or an image
+file that has never been in a Pi yet. Every client-side bug that motivated removing
+`deploy.py` came from *executing things remotely from Windows*; copying config
+onto a FAT filesystem has none of that surface. The line is: **config onto a
+card is fine, logic against a running Pi is not.**
+
+It also solves a problem that genuinely cannot be solved from the Pi. A kit is
+unreachable until you know its address, and you cannot ssh in to fix that.
+
+### The fixed IP is an alias, not a static configuration
+
+The kit answers on **two** addresses: whatever DHCP gives it, and the one in
+`<boot>/phaser-ip`. `phaser-netalias.service` adds the second with
+`ip addr add` at every boot.
+
+That matters because it works on **any** network stack -- dhcpcd on bullseye,
+NetworkManager on bookworm, systemd-networkd -- without parsing or rewriting
+any of their config files. Nothing here breaks when Kuiper changes stacks
+underneath us, and a kit on a normal DHCP LAN still behaves completely
+normally. The address file lives on the FAT partition so each card in a batch
+can be given its own with Notepad; delete the line and you are back to DHCP
+only.
+
+### First boot, step by step
+
+`prep_sdcard.py` adds `systemd.run=/boot/firstrun.sh` to `cmdline.txt` -- the
+same mechanism Raspberry Pi Imager's own "Advanced options" use. On first boot
+`firstrun.sh` sets the hostname, installs the IP alias, strips itself back out
+of `cmdline.txt`, and reboots once.
+
+Its **only** job is making the kit reachable. Everything else is `provision.sh`,
+over ssh, where you can watch it and it can fail loudly. If `firstrun.sh`
+breaks, the kit never appears on the network and there is nothing to ssh into
+to debug -- which is also why it logs to `firstrun.log` **on the boot
+partition**. If a kit does not show up, pull the card, put it in your laptop,
+and read the log.
+
+Two things it is careful about, both of which brick a card:
+
+- **`cmdline.txt` must stay exactly one line.** A stray newline makes the Pi
+  refuse to boot with no output at all. The tool backs the file up to
+  `cmdline.txt.phaser-orig` first, and a test asserts the round-trip.
+- **The hook must disarm itself**, or the Pi runs it on every boot forever.
+  `test_firstrun_disarm_restores_the_original_cmdline` applies `firstrun.sh`'s
+  own `sed` to what `prep_sdcard.py` wrote and checks it restores the original
+  exactly, so the two cannot drift apart.
+
+### Unattended provisioning
+
+`--autoprovision` goes the whole way: the kit installs everything on first
+boot with no ssh at all. Give it 20-40 minutes, most of it building pyadi-iio.
+
+It defers the work to a systemd unit that runs after `network-online` rather
+than doing it inside the first-boot hook, so it logs to the journal like
+anything else and a stall is visible:
+
+```bash
+sudo journalctl -u phaser-autoprovision -f
+```
+
+It needs passwordless sudo, since nobody is at a keyboard to answer the
+prompt. That grant is revoked in both `ExecStartPost` and `ExecStopPost` -- the
+latter fires even when provisioning fails, so a kit that dies partway does not
+sit on a workshop LAN with NOPASSWD sudo and the stock `analog`/`analog`
+password. **Change that password anyway** before any of this goes on a network
+you do not control.
+
+## Provisioning a new kit
+
+`scripts/provision.sh` takes a stock ADI Kuiper card to a working Phaser kit.
+It runs **on the Pi**, as the `analog` user, and it is idempotent -- re-running
+it is how you bring an already-provisioned kit up to date.
+
+```bash
+ssh analog@analog.local
+curl -fsSL https://raw.githubusercontent.com/livethisdream/phaser/main/scripts/provision.sh | bash
+sudo reboot
+```
+
+To pass options through the pipe, `bash` needs `-s --`, or it reads them as its
+own. This is the form to use when each kit gets its own name:
+
+```bash
+curl -fsSL .../scripts/provision.sh | bash -s -- --hostname phaser-01
+```
+
+| Option | Effect |
+| --- | --- |
+| `--hostname NAME` | Name for this kit (default `phaser`) |
+| `--timezone TZ` | IANA timezone (default `America/Denver`) |
+| `--skip-gui` | Stop after OS setup; do not run `install.sh` |
+| `--prepare-image` | Arm the first-boot identity reset and clean the card for imaging |
+| `--yes` / `--reboot` / `--no-reboot` | For unattended runs |
+
+`PHASER_SRC`, `PHASER_WHEELS`, `PHASER_REF` and `GH_TOKEN` work the same as in
+`install.sh`.
+
+**Give each kit its own hostname.** Ten kits called `phaser` collide on mDNS
+and you can only reach one of them.
+
+### What it does, and why not just use the ADI script
+
+The [ADI setup guide](https://analogdevicesinc.github.io/documentation/solutions/platforms/phaser/setup/rpi-setup/)
+has you `wget` and run [`phaser_sdcard_setup.sh`](https://github.com/thorenscientific/rpi_setup_stuff).
+`provision.sh` does the same jobs, but it is safe to run twice. The upstream
+script is not:
+
+- It does `sudo mv /boot/config.txt /boot/config_original.txt` (and the same
+  for `/etc/hosts` and `/etc/hostname`), so **a second run overwrites the
+  pristine backups with the already-modified files** and the originals are gone.
+- It replaces `/boot/config.txt` wholesale with a stock bullseye config,
+  silently reverting whatever the running Kuiper image shipped. We merge the
+  eight lines that actually matter into a delimited block instead, so there is
+  no snapshot to drift and site settings around it survive.
+- It `git clone`s pyadi-iio and rebuilds from the tip of `main` **every run** --
+  slow, needs a network, and moves a working workshop kit onto whatever landed
+  upstream that morning. We check whether `adi.CN0566` imports and only build
+  when it does not.
+- It assumes `/boot/config.txt`, which moved to `/boot/firmware/` in bookworm.
+  We detect both.
+
+The steps, numbered as the script prints them:
+
+1. **Sanity** -- right user, systemd present, boot partition found, one sudo
+   prompt up front (kept alive for the long pyadi-iio build).
+2. **Clock**, early, because everything after it needs `apt` and TLS.
+3. **Base packages** -- an NTP client, `fake-hwclock`, `sshpass`, `git`.
+4. **Device tree overlay** merged into `config.txt` (`rpi-cn0566`, heartbeat
+   LED, GPIO shutdown pin).
+5. **Hostname**, plus the matching `/etc/hosts` line.
+6. **PlutoSDR plumbing** -- the udev rule and `iiod` template unit that let a
+   Pluto be connected after boot and reconnected freely. This step also
+   installs the per-boot units: `phaser-clock` (see below) and
+   `phaser-netalias`, with a commented-out `<boot>/phaser-ip` to enable it.
+7. **pyadi-iio**, only if `adi.CN0566` does not already import.
+8. **`install.sh`**, for the backend and browser UI. It prints its own steps,
+   1 to 6, including 5b (the sudoers rule behind the GUI shutdown) and 6b (the
+   RF-chain check against the kit's `config.py`).
+
+A reboot is required at the end: the overlay and hostname only take effect at
+boot, so the Phaser board does not enumerate until you do.
+
+### The clock, specifically
+
+This is the one that bites everybody. A Raspberry Pi has **no RTC**, and stock
+Kuiper ships with **no NTP client installed at all** -- not `systemd-timesyncd`,
+not `chrony`, not `ntp`:
+
+```
+$ systemctl status systemd-timesyncd chrony ntp
+Unit systemd-timesyncd.service could not be found.
+Unit chrony.service could not be found.
+Unit ntp.service could not be found.
+```
+
+So `timedatectl set-ntp true` fails with `NTP not supported` -- there is
+nothing for systemd to enable. It is not a permissions problem.
+
+That matters more than a wrong timestamp in a log. A wrong clock **breaks TLS
+certificate validation and makes `apt` reject its own `Release` files as
+not-yet-valid**, so the kit cannot download the very package that would fix the
+clock. Hence the ordering: seed from a source that cannot itself be broken by a
+wrong clock, *then* install a client, *then* enable it.
+
+`phaser-clock.service` re-runs the check at every boot, in three layers, none
+of them fatal:
+
+1. **Floor.** The clock may not predate the script's own mtime. No network
+   needed -- this is the only layer that works on a fully offline bench.
+2. **HTTP `Date` header, over plain HTTP.** No TLS, so a wrong clock cannot
+   break the fetch that fixes the wrong clock. Port 80 also traverses the
+   firewalls that commonly drop NTP's UDP/123. This is the bootstrap, not a
+   fallback: without it `apt` cannot install an NTP client in the first place.
+3. **Real NTP**, if a client is installed and UDP/123 is open. The only layer
+   that keeps the clock right over days.
+
+If you just want to fix a kit by hand right now:
+
+```bash
+sudo date -s "$(curl -sI http://deb.debian.org/ | sed -n 's/^[Dd]ate: *//p')"
+sudo apt update && sudo apt install -y systemd-timesyncd
+sudo systemctl enable --now systemd-timesyncd
+sudo timedatectl set-ntp true
+```
+
+### Setting up more than one kit
+
+Provisioning takes tens of minutes, most of it building pyadi-iio on a Pi.
+Provision one kit, image the card, flash the rest --
+[docs/golden-image.md](docs/golden-image.md) is the runbook.
+
+Cloned cards need one extra thing, which `--prepare-image` arms: ten cards from
+one image share **SSH host keys** (so `known_hosts` cannot tell the kits apart)
+and share **`/etc/machine-id`** (so systemd-networkd derives the same DHCP DUID
+and two kits fight over one lease, which presents as *"the Pi randomly drops
+off the network"*). `phaser-firstboot.service` regenerates both on first boot,
+takes the hostname from a plain-text file on the FAT boot partition that
+Windows can edit in Notepad, then disables itself.
 
 ## No-build deployment
 
@@ -593,22 +896,58 @@ Frontend (`frontend/`):
 
 Tooling:
 
+- `tools/build_kit_image.py` — bakes a ready-to-flash Phaser image from a stock
+  Kuiper `.img`/`.img.xz`. Parses the MBR and writes the boot partition with
+  mtools, so no root and no loop mount. The only path that works from WSL,
+  which cannot see a USB card reader
+- `tools/prep_sdcard.py` — the same preparation applied to an already-flashed
+  card. Owns `build_file_plan()` and `patch_cmdline_text()`, which the image
+  builder imports, so a card and an image cannot disagree. Standard library
+  only. Runs no logic against the Pi — see
+  [Why these laptop-side tools are allowed](#why-these-laptop-side-tools-are-allowed)
 - `tools/vendor_plotly.mjs` — `prebuild` hook, vendors Plotly
 - `tools/fetch_fonts.py` — refetch the webfont subsets
 - `tools/gen_sim_constants.py` — regenerates the JS simulator constants
 - `.github/workflows/build-frontends.yml` — builds both frontends,
   verifies they're self-contained, commits `dist/` back
-- `.github/workflows/tests.yml` — pytest, plus the sim-parity guards
+- `.github/workflows/tests.yml` — pytest, shellcheck on the Pi scripts, and
+  guards that fail the job if the sim-parity or image-builder tests skip
 - `.github/workflows/deploy-pages.yml` — builds the sim-only Pages demo
 
 `scripts/`:
 
+- `provision.sh` — takes a stock Kuiper card to a working kit (clock, overlay,
+  hostname, Pluto plumbing, pyadi-iio), then chains into `install.sh`. Runs on
+  the Pi; idempotent. Replaces upstream's `phaser_sdcard_setup.sh`, which is
+  not safe to run twice
 - `phaser-headless.service.template` — the single definition of the systemd
   unit. `install.sh` renders the `@USER@` / `@INSTALL_DIR@` / `@PYTHON@`
   placeholders from its own constants, which is what keeps the unit's
   `WorkingDirectory` and the install destination from drifting apart
 - `build-installer.py` — legacy single-tarball packager, not used by the
   supported install path and not exercised by CI
+
+`scripts/pi/` — files copied verbatim onto the Pi, by `provision.sh` or (for
+`firstrun.sh` and the netalias pair) onto the card by the card tools; nothing
+here is imported by the backend or served to the browser. See
+[`scripts/pi/README.md`](scripts/pi/README.md) for provenance.
+
+- `phaser-clock`, `phaser-clock.service` — the clock fix. No RTC on this board
+  and no NTP client in stock Kuiper, so a fresh kit boots with a wrong date,
+  which breaks TLS and `apt` before anything can install a fix
+- `phaser-firstboot`, `phaser-firstboot.service` — per-kit SSH host keys,
+  machine-id and hostname for SD cards cloned from a golden image
+- `phaser-netalias`, `phaser-netalias.service` — a fixed IP added alongside
+  DHCP, read from `<boot>/phaser-ip`. An alias rather than a static config, so
+  it works on any network stack and survives Kuiper changing stacks
+- `firstrun.sh` — first-boot bootstrap for a stock card, placed on the FAT boot
+  partition by `tools/prep_sdcard.py`. Makes the kit reachable and nothing
+  else; logs to the boot partition so a failure is readable on your laptop
+- `89-pluto.rules`, `iiod-usb@.service` — vendored from
+  [thorenscientific/rpi_setup_stuff](https://github.com/thorenscientific/rpi_setup_stuff);
+  launch a second `iiod` bound to a PlutoSDR when one is plugged in
+- `pluto_update_ad9361.sh` — vendored convenience tool; reflashes an attached
+  Pluto to AD9361 2r2t mode. Run by hand, not part of provisioning
 
 `tests/` — pytest suite (`pythonpath = ["."]` in `pyproject.toml` lets it
 import the root modules).
@@ -621,6 +960,9 @@ served on port 8081.
 
 ## Reference
 
+- [`docs/golden-image.md`](docs/golden-image.md) — runbook for provisioning a
+  batch of kits by cloning one card, and why cloned cards need a first-boot
+  identity reset
 - `docs/2025_Phaser_labs_Python.pdf` — canonical workshop labs
   document, tracked in the repo (`.gitignore` excludes `docs/*.pdf` but
   allowlists this one). Lab presets in the sidebar are aligned to this

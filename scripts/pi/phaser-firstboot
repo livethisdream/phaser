@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# Give a freshly-cloned SD card its own identity, once, on first boot.
+# Installed to /usr/local/sbin/phaser-firstboot by `provision.sh --prepare-image`.
+#
+# Ten kits imaged from one golden card are ten machines that believe they are
+# the same machine. Two things about that are not cosmetic:
+#
+#   * Identical SSH host keys. Every kit presents the same fingerprint, so
+#     known_hosts cannot tell them apart -- and anyone who pulls the key off one
+#     kit can impersonate all ten.
+#   * Identical /etc/machine-id. systemd-networkd derives its DHCP DUID from
+#     it, so two kits on one LAN ask for the same lease and take turns losing
+#     it. This one presents as "the Pi randomly drops off the network", which
+#     is a miserable thing to debug at a workshop bench.
+#
+# So: regenerate both, take the hostname from a file a human can edit in
+# Notepad on the FAT boot partition, then disable this unit and reboot.
+#
+# Ordered Before=ssh.service, so the golden card's host keys are replaced
+# before sshd ever offers them to anyone.
+
+set -uo pipefail
+
+log() { printf 'phaser-firstboot: %s\n' "$*"; }
+
+MARKER=/var/lib/phaser/firstboot-done
+mkdir -p "$(dirname "$MARKER")"
+
+if [ -e "$MARKER" ]; then
+    log "already ran; nothing to do"
+    exit 0
+fi
+
+# The boot partition moved in bookworm. Check both; a kit that has neither is
+# not a Raspberry Pi image and we should not guess.
+BOOTDIR=""
+for d in /boot/firmware /boot; do
+    [ -d "$d" ] && [ -f "$d/config.txt" ] && { BOOTDIR="$d"; break; }
+done
+
+# ---- hostname --------------------------------------------------------------
+# A plain-text file on the FAT partition, because that is the one filesystem a
+# Windows or macOS laptop can write without any extra tooling: flash ten cards,
+# then edit one line on each. Absent or blank means keep whatever the image has.
+NEW_HOSTNAME=""
+if [ -n "$BOOTDIR" ] && [ -f "$BOOTDIR/phaser-hostname" ]; then
+    NEW_HOSTNAME="$(tr -d ' \t\r\n' < "$BOOTDIR/phaser-hostname")"
+fi
+
+if [ -n "$NEW_HOSTNAME" ]; then
+    # RFC 1123: letters, digits, hyphens; not leading/trailing hyphen. A bad
+    # value here would leave the kit unreachable by name, so refuse rather than
+    # apply it.
+    if printf '%s' "$NEW_HOSTNAME" | grep -Eq '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'; then
+        OLD="$(tr -d '\n' < /etc/hostname 2>/dev/null)"
+        printf '%s\n' "$NEW_HOSTNAME" > /etc/hostname
+        # hostnamectl needs dbus, which may not be up this early in boot.
+        # Writing the files directly is what actually takes effect after the
+        # reboot at the end of this script.
+        hostname "$NEW_HOSTNAME" 2>/dev/null || true
+        if grep -q '^127\.0\.1\.1' /etc/hosts 2>/dev/null; then
+            sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t$NEW_HOSTNAME/" /etc/hosts
+        else
+            printf '127.0.1.1\t%s\n' "$NEW_HOSTNAME" >> /etc/hosts
+        fi
+        log "hostname: $OLD -> $NEW_HOSTNAME"
+    else
+        log "REFUSED invalid hostname '$NEW_HOSTNAME' in $BOOTDIR/phaser-hostname; keeping current"
+    fi
+else
+    log "no hostname override; keeping $(cat /etc/hostname 2>/dev/null)"
+fi
+
+# ---- SSH host keys ---------------------------------------------------------
+# ssh-keygen -A generates only the types that are missing, so delete first.
+if [ -d /etc/ssh ]; then
+    rm -f /etc/ssh/ssh_host_*
+    ssh-keygen -A >/dev/null 2>&1 && log "regenerated SSH host keys" \
+        || log "WARNING: ssh-keygen -A failed; this kit still has the golden image's keys"
+fi
+
+# ---- machine-id ------------------------------------------------------------
+# Truncating rather than deleting is what systemd's own first-boot path does;
+# systemd-machine-id-setup then fills it in. /var/lib/dbus/machine-id is a
+# symlink on modern images but a real file on older ones, so handle both.
+: > /etc/machine-id
+systemd-machine-id-setup >/dev/null 2>&1 && log "regenerated machine-id" \
+    || log "WARNING: could not regenerate machine-id; DHCP leases may collide"
+if [ -f /var/lib/dbus/machine-id ] && [ ! -L /var/lib/dbus/machine-id ]; then
+    cp /etc/machine-id /var/lib/dbus/machine-id
+fi
+
+# Stale leases keyed to the golden image's DUID.
+rm -f /var/lib/dhcpcd/*.lease /var/lib/dhcp/*.leases 2>/dev/null || true
+
+# ---- done ------------------------------------------------------------------
+date -u '+%Y-%m-%dT%H:%M:%SZ' > "$MARKER"
+systemctl disable phaser-firstboot.service >/dev/null 2>&1 || true
+
+# machine-id is read by PID 1 at boot, so it is only really ours after a
+# restart. Everything above is cheap; the reboot costs ~20s and happens before
+# sshd comes up, so nobody is connected to be surprised by it.
+log "identity set; rebooting once to apply"
+systemctl reboot

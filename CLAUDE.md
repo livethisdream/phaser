@@ -19,7 +19,22 @@ resolve each other by bare import, so they cannot move), the `LTE*.ftr` filter
 configs that pyadi-iio loads by bare filename, `install.sh`, and the usual
 project metadata.
 
-- `scripts/` — setup/provisioning and the legacy installer packager
+- `scripts/` — `provision.sh` (stock Kuiper card -> working kit, then chains
+  into `install.sh`), the systemd unit template, and the legacy installer
+  packager
+- `scripts/pi/` — files copied verbatim onto the Pi: by `provision.sh`, the
+  clock fix, the fixed-IP alias, the vendored PlutoSDR udev rule and iiod unit,
+  and (with `--prepare-image`) the first-boot identity reset for cloned cards;
+  by the card tools, onto the FAT partition, the `firstrun.sh` card bootstrap
+  and the fixed-IP alias
+- `tools/build_kit_image.py`, `tools/prep_sdcard.py` — the laptop-side card
+  tools, and a deliberate exception to the rule below. One bakes a flashable
+  image from a stock Kuiper image, the other preps an already-flashed card;
+  both only write files a kit reads at first boot, run no logic against the Pi
+  and open no connection. That is what makes them different from the
+  `deploy.py` this project removed. `prep_sdcard.py` owns the shared
+  `build_file_plan()` / `patch_cmdline_text()`; the builder imports them rather
+  than carrying a second copy
 - `tests/` — pytest suite
 - `archive/` — superseded notes, nothing current
 - `docs/` — reference material
@@ -68,12 +83,19 @@ the UI answers 200. Idempotent — re-running it is how you update.
 `PHASER_SRC=/path/to/repo` installs from a local copy instead of downloading,
 which is how you test an unpushed branch. `PHASER_WHEELS` adds offline pip.
 
-There is deliberately no laptop-side deploy tool. `deploy.py` and
+There is deliberately no laptop-side *deploy* tool. `deploy.py` and
 `scripts/setup*.sh` used to be one, and every deployment bug this project had
 came from the client side — cmd.exe globbing, PATHEXT, no ControlMaster on
 Windows OpenSSH, `ssh -t` versus sudo, a Microsoft Store alias masquerading as
 `python`. Moving the logic onto the Pi means the client needs nothing but ssh.
 Do not reintroduce one.
+
+`tools/build_kit_image.py` and `tools/prep_sdcard.py` are not that, and are
+allowed: they write files onto a FAT partition (in an image file, or on a card)
+before it has ever been in a Pi, which is the one job that cannot be done from
+the Pi -- a kit is unreachable until you know its address. They run nothing
+remotely and need no ssh. Keep the line there -- config onto a card is fine,
+logic against a running Pi is not.
 
 `frontend/dist/` and `frontend-radar/dist/` are **committed** (built by
 `.github/workflows/build-frontends.yml`), so install.sh never needs Node.
