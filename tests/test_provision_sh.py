@@ -189,6 +189,47 @@ def test_hostname_is_validated():
         assert "a-zA-Z0-9-" in text, f"{path.name} does not validate the hostname"
 
 
+def _resolve_hostname(tmp_path, file_text=None, explicit=""):
+    """Run provision.sh's hostname-resolution block on its own and return the name.
+
+    The whole script cannot run off a Pi, but this block only needs BOOTDIR.
+    """
+    text = PROVISION.read_text(encoding="utf-8")
+    start = text.index("# No --hostname:")
+    end = text.index('HOSTNAME_NEW="${HOSTNAME_NEW:-phaser}"', start)
+    block = text[start:end] + 'HOSTNAME_NEW="${HOSTNAME_NEW:-phaser}"\n'
+    if file_text is not None:
+        (tmp_path / "phaser-hostname").write_text(file_text, encoding="utf-8")
+    script = (
+        "set -euo pipefail\n"
+        "say() { :; }\nwarn() { :; }\n"
+        f'BOOTDIR="{tmp_path}"\nHOSTNAME_NEW="{explicit}"\n'
+        + block + 'printf "%s" "$HOSTNAME_NEW"\n'
+    )
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+@pytest.mark.parametrize("file_text, explicit, expected", [
+    (None, "", "phaser"),                      # no file: the old default
+    ("phaser-01\n", "", "phaser-01"),          # named card keeps its name
+    ("phaser-02\r\n", "", "phaser-02"),        # edited in Notepad
+    ("# kit name\n\n  phaser-03 \n", "", "phaser-03"),
+    ("", "", "phaser"),                        # empty file
+    ("bad_name!\n", "", "phaser"),             # invalid: ignored, not fatal
+    ("phaser-01\n", "bench-7", "bench-7"),     # --hostname still wins
+])
+def test_hostname_defaults_to_the_boot_partition_file(tmp_path, file_text,
+                                                       explicit, expected):
+    """Without --hostname, a named card must keep its name.
+
+    --autoprovision and field re-runs call provision.sh with no --hostname; a
+    hard "phaser" default renamed every kit back to phaser.local.
+    """
+    assert _resolve_hostname(tmp_path, file_text, explicit) == expected
+
+
 def test_install_sh_is_reused_not_reimplemented():
     """provision.sh must chain into install.sh, not carry a second copy of it.
 
