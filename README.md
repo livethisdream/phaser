@@ -365,7 +365,7 @@ curl -fsSL .../scripts/provision.sh | bash -s -- --hostname phaser-01
 
 | Option | Effect |
 | --- | --- |
-| `--hostname NAME` | Name for this kit (default `phaser`) |
+| `--hostname NAME` | Name for this kit (default: `<boot>/phaser-hostname` if the card has one, else `phaser`) |
 | `--timezone TZ` | IANA timezone (default `America/Denver`) |
 | `--skip-gui` | Stop after OS setup; do not run `install.sh` |
 | `--prepare-image` | Arm the first-boot identity reset and clean the card for imaging |
