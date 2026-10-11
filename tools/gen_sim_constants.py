@@ -18,6 +18,7 @@ caught here. That is what tests/test_sim_parity.py is for.
 """
 
 import contextlib
+import inspect
 import io
 import pathlib
 import re
@@ -28,6 +29,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 import config                      # noqa: E402
+import phaser_ctf                  # noqa: E402
 import phaser_sim                  # noqa: E402
 
 OUT = REPO / "frontend" / "src" / "sim" / "constants.generated.js"
@@ -95,10 +97,22 @@ def headless_defaults():
     return h
 
 
+def centroid_drop_db():
+    """The mainlobe window of phaser_ctf.peak_angle_centroid().
+
+    do_sweep() calls it with the default, so the default is the value the JS
+    port must use. Read off the signature rather than transcribed.
+    """
+    return inspect.signature(
+        phaser_ctf.peak_angle_centroid
+    ).parameters["drop_db"].default
+
+
 def main():
     sdr = phaser_sim.SimSDR
     steer_pi = steering_pi()
     h = headless_defaults()
+    drop_db = centroid_drop_db()
 
     body = f"""// GENERATED FILE -- DO NOT EDIT BY HAND.
 //
@@ -152,6 +166,12 @@ export const B0_GAIN = {h.B0_Gain!r};
 export const B1_GAIN = {h.B1_Gain!r};
 export const BEAM0_PHASE_DEG = {h.Beam0_Phase!r};
 export const BEAM1_PHASE_DEG = {h.Beam1_Phase!r};
+
+// --- Peak angle ------------------------------------------------------------
+// peak_angle_deg is phaser_ctf.peak_angle_centroid() over the sweep: the
+// mainlobe is walked out from the argmax while samples stay within this many
+// dB of it, then power-weighted.
+export const CENTROID_DROP_DB = {drop_db!r};
 
 // --- Fixed point -----------------------------------------------------------
 // dBFS reference: the ADC's 2^11 full scale, as used by do_sweep().

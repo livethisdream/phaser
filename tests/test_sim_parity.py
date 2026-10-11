@@ -243,6 +243,14 @@ def test_sweep_matches_python(name, patch, sweep_params, tmp_path, _importable):
         f"{name}: the beam peaks at a different angle"
     )
 
+    # The centroid every sweep message carries, and the Centroid Angle readout
+    # shows. Without this field the sim's readout would sit at "--".
+    assert js.get("peak_angle_deg") is not None, f"{name}: JS sweep has no peak_angle_deg"
+    assert abs(py["peak_angle_deg"] - js["peak_angle_deg"]) < 1e-3, (
+        f"{name}: centroid peak angle diverged "
+        f"({py['peak_angle_deg']} vs {js['peak_angle_deg']})"
+    )
+
 
 def test_monopulse_phase_matches_without_wrapping(tmp_path, _importable):
     """No modulo. See the note in the module docstring.
@@ -416,3 +424,48 @@ process.stdout.write(JSON.stringify({{
     assert out["latchCount"] == 1, "steering phases were never latched"
     assert out["latched"] == out["shadow"], "latched beam state does not match the shadow"
     assert len(set(out["latched"])) > 1, "phases did not form a steering ramp"
+
+
+def test_peak_angle_centroid_matches_python(tmp_path):
+    """peakAngleCentroid() in engine.js against phaser_ctf.peak_angle_centroid().
+
+    The sweep matrix above only ever feeds it smooth, noiseless lobes. This
+    feeds it the real clipped lobe test_phaser_ctf keeps -- ragged top, one
+    spike -- plus a sidelobe outside the -3 dB walk, an exact tie at the peak
+    (Python's max() takes the first), and the degenerate inputs that must come
+    back None/null rather than a number.
+    """
+    from phaser_ctf import peak_angle_centroid
+    from test_phaser_ctf import REAL_LOBE_ANGLES, REAL_LOBE_GAINS
+
+    cases = [
+        (REAL_LOBE_ANGLES, REAL_LOBE_GAINS),
+        (REAL_LOBE_ANGLES + [30.0, 31.0, 32.0], REAL_LOBE_GAINS + [0.5, 0.6, 0.5]),
+        ([-2.0, -1.0, 0.0, 1.0, 2.0], [-9.0, -1.0, -1.0, -3.5, -20.0]),
+        ([10.0], [-40.0]),
+        ([], []),
+        ([1.0, 2.0], [1.0]),
+    ]
+
+    driver = tmp_path / "centroid.mjs"
+    sim_dir = (ROOT / "frontend" / "src" / "sim").as_posix()
+    driver.write_text(f"""
+import {{ peakAngleCentroid }} from '{sim_dir}/engine.js';
+const cases = JSON.parse(process.argv[2]);
+process.stdout.write(JSON.stringify(cases.map(([a, g]) => peakAngleCentroid(a, g))));
+""")
+    proc = subprocess.run(
+        [NODE, str(driver), json.dumps(cases)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    js = json.loads(proc.stdout)
+
+    for (angles, gain), got in zip(cases, js):
+        want = peak_angle_centroid(angles, gain)
+        if want is None:
+            assert got is None, f"JS returned {got} where Python returns None"
+        else:
+            assert got is not None and abs(want - got) < 1e-9, (
+                f"centroid diverged: Python {want}, JS {got}"
+            )

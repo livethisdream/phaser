@@ -51,6 +51,12 @@ export const B1_GAIN = 1.0;
 export const BEAM0_PHASE_DEG = 0.0;
 export const BEAM1_PHASE_DEG = 0.0;
 
+// --- Peak angle ------------------------------------------------------------
+// peak_angle_deg is phaser_ctf.peak_angle_centroid() over the sweep: the
+// mainlobe is walked out from the argmax while samples stay within this many
+// dB of it, then power-weighted.
+export const CENTROID_DROP_DB = 3.0;
+
 // --- Fixed point -----------------------------------------------------------
 // dBFS reference: the ADC's 2^11 full scale, as used by do_sweep().
 export const FULL_SCALE = 2048;
