@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-DMMAdJjZ.js"></script>
+  <script type="module" crossorigin src="./assets/index-C8_SmfMo.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-2mihS-Eq.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -473,6 +473,10 @@
               </div>
               <div class="header-actions">
 
+                <!-- Tracking tab only: the plotted history, as CSV, built in
+                     the browser. Shown/hidden by the tab handler. -->
+                <button class="btn btn-outline btn-small" id="btn-export-tracking" hidden
+                        title="Download the tracked sweeps (sweep, time, Est. Angle, Centroid Angle, peak gain) as CSV">Export CSV</button>
                 <button class="btn btn-outline btn-small btn-freeze" id="btn-memory" title="Click to freeze current trace (max 3). Hold to clear all.">
                   <span class="btn-freeze-fill"></span>
                   <span class="btn-freeze-label">Freeze</span>
@@ -513,6 +517,14 @@
             <div class="stat-box">
                 <span class="stat-label">Est. Angle</span>
                 <span class="stat-value" id="stat-angle">-- °</span>
+            </div>
+            <!-- The backend's peak_angle_deg: a power-weighted centroid of the
+                 mainlobe, not the argmax Est. Angle shows. On a peak clipped
+                 flat near full scale the argmax wanders between tied points;
+                 the centroid holds still, which is what a bearing wants. -->
+            <div class="stat-box" title="Power-weighted centroid of the mainlobe (within 3 dB of the peak). Steadier than Est. Angle when the peak is clipped flat.">
+                <span class="stat-label">Centroid Angle</span>
+                <span class="stat-value" id="stat-centroid">-- °</span>
             </div>
             <!-- CTF progress. It sits in the stat row rather than in the CTF
                  panel for the same reason the sector bands do: the player is
