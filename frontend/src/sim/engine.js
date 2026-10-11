@@ -20,6 +20,7 @@ import {
     BF_MODE,
     BUFFER_SIZE,
     BW_MHZ,
+    CENTROID_DROP_DB,
     C_M_PER_S,
     DEFAULT_GAIN_CAL,
     DEFAULT_PHASE_CAL,
@@ -46,6 +47,37 @@ import { blackman, fft, fftfreq, fftshift } from './fft.js';
 import { createSimSdr } from './sdr.js';
 
 const DEG = Math.PI / 180;
+
+/**
+ * Port of phaser_ctf.peak_angle_centroid(): the mainlobe peak as a
+ * power-weighted centroid rather than an argmax, which wanders across a peak
+ * clipped flat near full scale. Walks out from the (first) argmax while
+ * samples stay within dropDb, so a sidelobe cannot pull it. null when there
+ * is nothing to measure, as Python returns None.
+ */
+export function peakAngleCentroid(angles, gain, dropDb = CENTROID_DROP_DB) {
+    if (!angles || !gain || !angles.length || !gain.length
+        || angles.length !== gain.length) return null;
+
+    let imax = 0;
+    for (let k = 1; k < gain.length; k++) if (gain[k] > gain[imax]) imax = k;
+    const gmax = gain[imax];
+
+    let lo = imax;
+    while (lo > 0 && gain[lo - 1] >= gmax - dropDb) lo--;
+    let hi = imax;
+    while (hi < gain.length - 1 && gain[hi + 1] >= gmax - dropDb) hi++;
+
+    let total = 0;
+    let moment = 0;
+    for (let k = lo; k <= hi; k++) {
+        const w = 10 ** (gain[k] / 10);
+        total += w;
+        moment += angles[k] * w;
+    }
+    if (total <= 0) return angles[imax];
+    return moment / total;
+}
 
 export function createEngine(options = {}) {
     const array = createStubArray();
@@ -371,6 +403,8 @@ export function createEngine(options = {}) {
             max_gain: maxGain,
             xf,
             peak_signal: maxSignal,
+            // Same field, same function as do_sweep() -- see phaser_ctf.
+            peak_angle_deg: peakAngleCentroid(angles, gain),
         };
     }
 

@@ -83,9 +83,15 @@ const BACKEND_PROBE_TIMEOUT_MS = 2000;
 const BACKEND_PROBE_RETRY_MS = 2000;
 const MAX_BACKEND_PROBE_RETRIES = 6;
 
-// Internal tracking for history
+// Internal tracking for history. Parallel arrays, one entry per sweep, capped
+// at TRACK_HISTORY_MAX; the Tracking tab plots the first two and Export CSV
+// writes all of them.
+const TRACK_HISTORY_MAX = 100;
 let timeHistory = [];
 let angleHistory = [];
+let centroidHistory = [];   // backend peak_angle_deg; null when it sent none
+let peakGainHistory = [];   // peak array gain, dB
+let stampHistory = [];      // browser clock, ms since epoch
 let autoSweepInterval = null;
 const THEME_KEY = 'phaser_theme';
 const runtimeLogs = [];
@@ -481,6 +487,11 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         document.getElementById(targetId).classList.add('active');
 
         updateMemoryButtons();
+        const exportBtn = document.getElementById('btn-export-tracking');
+        if (exportBtn) {
+            exportBtn.hidden = targetId !== 'tab-tracking';
+            exportBtn.disabled = !timeHistory.length;
+        }
 
         // Defer resize until after the browser has painted the newly-visible tab,
         // preventing the one-frame layout jump that occurs when Plotly measures
@@ -2667,14 +2678,26 @@ function updateCharts(data) {
         // Time tracking - show steering angle vs sweep count
         sweepCounter++;
         const peakAngle = xData[peakIndex];
+        const centroid = Number.isFinite(data.peak_angle_deg) ? data.peak_angle_deg : null;
         timeHistory.push(sweepCounter);
         angleHistory.push(peakAngle);
-        if(timeHistory.length > 100) { timeHistory.shift(); angleHistory.shift(); }
+        centroidHistory.push(centroid);
+        peakGainHistory.push(peakValue);
+        stampHistory.push(Date.now());
+        if(timeHistory.length > TRACK_HISTORY_MAX) {
+            timeHistory.shift(); angleHistory.shift(); centroidHistory.shift();
+            peakGainHistory.shift(); stampHistory.shift();
+        }
         Plotly.update('chart-tracking', {x: [timeHistory], y: [angleHistory]}, {});
+        const exportBtn = document.getElementById('btn-export-tracking');
+        if (exportBtn) exportBtn.disabled = false;
         
         // Update Stats displays
         document.getElementById('stat-peak').innerText = peakValue.toFixed(2) + " dB";
         document.getElementById('stat-angle').innerText = xData[peakIndex].toFixed(1) + " °";
+        // `+ 0` turns -0 into 0, so a centroid a hair below zero reads 0.0.
+        document.getElementById('stat-centroid').innerText = centroid === null
+            ? "-- °" : (Number(centroid.toFixed(1)) + 0).toFixed(1) + " °";
     }
     
     // FFT data - apply same transforms as original Tkinter GUI (phaser_gui.py:2423)
@@ -2691,6 +2714,53 @@ function updateCharts(data) {
         Plotly.update('chart-fft', {x: [xfMHz], y: [data.max_gain]}, {});
     }
 }
+
+/* --- Tracking tab: Export CSV -----------------------------------------------
+ * Writes the history the tab keeps -- the last TRACK_HISTORY_MAX sweeps -- with
+ * no backend round trip, so it works the same against a Pi and in ?sim=1. The
+ * leading '#' lines record the settings in force at export time (not per row);
+ * most CSV readers take them as comments (pandas: comment='#').
+ */
+function trackingCsv() {
+    const fmt = (v, digits) => (Number.isFinite(v)
+        ? (Number(v.toFixed(digits)) + 0).toFixed(digits) : '');   // no "-0.000"
+    const steer = state.ignore_res
+        ? `phase step = 1 LSB = ${360 / 2 ** state.bits} deg (ignore_res)`
+        : `steer_res ${state.steer_res} deg`;
+    const lines = [
+        `# ADI Phaser tracking export, ${new Date().toISOString()}`,
+        `# signal_freq_hz=${state.SignalFreq} rx_freq_hz=${state.Rx_freq} mode=${state.mode}`
+            + ` | sweep ${steer} | bits=${state.bits} averages=${state.Averages}`
+            + ` | gainList=${state.gainList.join(' ')} phaseList=${state.phaseList.join(' ')}`,
+        'sweep,timestamp,est_angle_deg,centroid_angle_deg,peak_gain_db',
+    ];
+    for (let i = 0; i < timeHistory.length; i++) {
+        lines.push([
+            timeHistory[i],
+            new Date(stampHistory[i]).toISOString(),
+            fmt(angleHistory[i], 3),
+            fmt(centroidHistory[i], 3),
+            fmt(peakGainHistory[i], 2),
+        ].join(','));
+    }
+    return lines.join('\n') + '\n';
+}
+
+document.getElementById('btn-export-tracking')?.addEventListener('click', () => {
+    if (!timeHistory.length) {
+        addRuntimeLog('warn', 'ui', 'Export CSV: no sweeps recorded yet.');
+        return;
+    }
+    const blob = new Blob([trackingCsv()], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `phaser-tracking-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+});
 
 // Global UI interaction
 const sweepBtn = document.getElementById('btn-sweep');
