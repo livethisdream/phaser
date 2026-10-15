@@ -196,6 +196,8 @@ class PhaserHeadless:
         # are accepted and the patterns are noise -- so the source is printed.
         _if = rx_freq_source(config)
         self.Rx_freq = _if["rx_freq_hz"]
+        self.Rx_freq_source = _if["source"]
+        self.Rx_freq_warnings = list(_if["warnings"])
         print("IF: %.3f GHz, from %s" % (self.Rx_freq / 1e9, _if["source"]))
         for _line in _if["warnings"]:
             print("  WARNING: %s" % _line)
@@ -771,6 +773,11 @@ class PhaserHeadless:
             "data": {
                 "SignalFreq": self.SignalFreq,
                 "Rx_freq": self.Rx_freq,
+                # Where the IF came from, so the sidebar can say whether this
+                # kit has actually been measured. An unverified IF is the one
+                # fault that looks identical to a working kit on screen.
+                "Rx_freq_source": getattr(self, "Rx_freq_source", "unknown"),
+                "Rx_freq_warnings": list(getattr(self, "Rx_freq_warnings", [])),
                 "Tx_freq": self.Tx_freq,
                 "Rx_gain": self.Rx_gain,
                 "Tx_gain": self.Tx_gain,
@@ -904,6 +911,8 @@ class PhaserHeadless:
             script = os.path.join(script_dir, "phaser_find_hb100_headless.py")
         elif task_name == "phaser_cal":
             script = os.path.join(script_dir, "phaser_cal_headless.py")
+        elif task_name == "characterize":
+            script = os.path.join(script_dir, "phaser_characterize_headless.py")
         else:
             return {"status": "error", "message": f"Unknown calibration task: {task_name}"}
 

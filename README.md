@@ -873,6 +873,16 @@ python3 phaser_characterize_headless.py      # find the IF   <- once per kit
 python3 phaser_cal_headless.py               # channel, gain, phase
 ```
 
+The sidebar has the same three buttons in that order — **Find HB100**,
+**Characterize IF**, **Calibrate** — and shows which IF is in use and whether
+it was measured on this kit. Characterize confirms before running, since it
+takes about a minute and means nothing unless the HB100 is aimed at the array.
+
+It is not part of `provision.sh` on purpose: provisioning runs unattended at
+first boot, often before a kit is assembled, which is the one moment the
+measurement cannot be made. `install.sh` prints the three steps instead when
+a kit has no measurement yet.
+
 The measurement beats `config.Rx_freq`, which is site-owned and never
 deployed over. If a kit is deaf, calibration aborts with "no signal is
 reaching the array" and prints the chain it ran on —

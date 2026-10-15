@@ -5,7 +5,9 @@ import { autoBackendWsUrl, getBackendUrlOverride, setBackendUrlOverride } from '
 const state = {
     Tx_mode: "Transmit Disabled",
     SignalFreq: 10.0 * 1e9,
-    Rx_freq: 2.4e9, 
+    Rx_freq: 1.7e9,          // bootstrap only; the backend sends the measured value
+    Rx_freq_source: null,
+    Rx_freq_warnings: [],
     Rx_gain: 0,
     Tx_gain: -40,
     gainList: [100, 100, 100, 100, 100, 100, 100, 100],
@@ -1556,6 +1558,9 @@ async function loadStateFromServer() {
         backendStateLoaded = true;
         if (Number.isFinite(msg.data.SignalFreq)) state.SignalFreq = msg.data.SignalFreq;
         if (Number.isFinite(msg.data.Rx_freq)) state.Rx_freq = msg.data.Rx_freq;
+        if (msg.data.Rx_freq_source !== undefined) state.Rx_freq_source = msg.data.Rx_freq_source;
+        if (msg.data.Rx_freq_warnings !== undefined) state.Rx_freq_warnings = msg.data.Rx_freq_warnings;
+        updateIfStatus();
         if (Number.isFinite(msg.data.Rx_gain)) state.Rx_gain = msg.data.Rx_gain;
         if (Number.isFinite(msg.data.Tx_gain)) state.Tx_gain = msg.data.Tx_gain;
         if (Number.isFinite(msg.data.Averages)) state.Averages = msg.data.Averages;
@@ -1821,6 +1826,9 @@ const transport = createTransport({
                 backendStateLoaded = true;
                 if (Number.isFinite(data.SignalFreq)) state.SignalFreq = data.SignalFreq;
                 if (Number.isFinite(data.Rx_freq)) state.Rx_freq = data.Rx_freq;
+                if (data.Rx_freq_source !== undefined) state.Rx_freq_source = data.Rx_freq_source;
+                if (data.Rx_freq_warnings !== undefined) state.Rx_freq_warnings = data.Rx_freq_warnings;
+                updateIfStatus();
                 if (Number.isFinite(data.Rx_gain)) state.Rx_gain = data.Rx_gain;
                 if (Number.isFinite(data.Tx_gain)) state.Tx_gain = data.Tx_gain;
                 if (Number.isFinite(data.Averages)) state.Averages = data.Averages;
@@ -1953,32 +1961,42 @@ function formatCalibrationSummary(data) {
     return 'Cal: Idle';
 }
 
-function setCalibrationButtonsBusy(running, taskName = null) {
-    const btnCal = document.getElementById('btn-calibrate-phaser');
-    const btnHb100 = document.getElementById('btn-find-hb100');
-    console.log('[CAL] setCalibrationButtonsBusy:', { running, taskName, btnCal: !!btnCal, btnHb100: !!btnHb100 });
-    if (!btnCal || !btnHb100) {
-        console.warn('[CAL] Buttons not found!');
-        return;
-    }
+// Idle label and running label for each calibration button, keyed by the
+// task that owns it. Driving all three from one table means adding a fourth
+// cannot leave a button live while another task holds the hardware.
+const CAL_BUTTONS = [
+    { id: 'btn-find-hb100', task: 'find_hb100', idle: 'Find HB100', busy: 'Scanning...' },
+    { id: 'btn-characterize', task: 'characterize', idle: 'Characterize IF', busy: 'Sweeping IF...' },
+    { id: 'btn-calibrate-phaser', task: 'phaser_cal', idle: 'Calibrate Phaser', busy: 'Calibrating...' },
+];
 
+function setCalibrationButtonsBusy(running, taskName = null) {
     const isRunning = Boolean(running);
     const task = String(taskName || '');
-
-    btnCal.disabled = isRunning;
-    btnHb100.disabled = isRunning;
-
-    if (isRunning && task === 'phaser_cal') {
-        btnCal.innerText = 'Calibrating...';
-        btnHb100.innerText = 'Find HB100';
-    } else if (isRunning && task === 'find_hb100') {
-        btnCal.innerText = 'Calibrate Phaser';
-        btnHb100.innerText = 'Scanning...';
-    } else {
-        btnCal.innerText = 'Calibrate Phaser';
-        btnHb100.innerText = 'Find HB100';
+    for (const spec of CAL_BUTTONS) {
+        const el = document.getElementById(spec.id);
+        if (!el) continue;
+        el.disabled = isRunning;
+        el.innerText = (isRunning && task === spec.task) ? spec.busy : spec.idle;
     }
-    console.log('[CAL] Button states after update:', { calText: btnCal.innerText, hb100Text: btnHb100.innerText });
+}
+
+// Shown in the sidebar under the calibration buttons. Without it a kit
+// running on an unverified IF -- the failure that cost a day on phaser-00 --
+// looks exactly like a measured one.
+function updateIfStatus() {
+    const el = document.getElementById('if-status');
+    if (!el) return;
+    const ghz = Number(state.Rx_freq) / 1e9;
+    const source = state.Rx_freq_source || '';
+    const measured = /measured/i.test(source);
+    if (!Number.isFinite(ghz)) { el.innerText = ''; return; }
+
+    const label = measured ? 'measured on this kit'
+        : (/override/i.test(source) ? 'forced by config override' : 'not measured on this kit');
+    el.classList.toggle('unverified', !measured);
+    el.innerHTML = `IF <span class="if-value">${ghz.toFixed(3)} GHz</span> &middot; ${label}`;
+    if (!measured) el.innerHTML += '<br>Run <b>Characterize IF</b> once, with the HB100 aimed at the array.';
 }
 
 function updateCalibrationPill(data, fallbackText) {
@@ -2050,7 +2068,7 @@ async function refreshCalibrationStatus() {
             updateCalibrationModal(cal);
             trackCalibrationLogUpdates(cal);
             if (cal && !cal.running && cal.returncode === 0) {
-                const reloadableTasks = new Set(['find_hb100', 'phaser_cal']);
+                const reloadableTasks = new Set(['find_hb100', 'phaser_cal', 'characterize']);
                 if (reloadableTasks.has(cal.task)) {
                     const reloadKey = `${cal.task}:${cal.started_at}:${cal.returncode}`;
                     if (reloadKey !== calibrationLogState.lastReloadKey) {
@@ -2083,6 +2101,7 @@ function showCalibrationModal(taskName) {
 
     const taskLabels = {
         'find_hb100': 'Find HB100',
+        'characterize': 'Characterize IF',
         'phaser_cal': 'Calibrate Phaser',
     };
     if (titleEl) titleEl.innerText = taskLabels[taskName] || 'Calibration';
@@ -2212,6 +2231,28 @@ async function runCalibrationTask(taskName) {
 
 document.getElementById('btn-calibrate-phaser')?.addEventListener('click', () => runCalibrationTask('phaser_cal'));
 document.getElementById('btn-find-hb100')?.addEventListener('click', () => runCalibrationTask('find_hb100'));
+
+// Characterisation confirms first, unlike the other two. It is a once-per-kit
+// bench step rather than a routine one, it is worthless unless the HB100 is
+// actually set up, and it rewrites the IF the whole backend then runs at -- so
+// it is worth a sentence before a minute of sweeping.
+document.getElementById('btn-characterize')?.addEventListener('click', () => {
+    const ok = confirm(
+        'Measure this kit\'s usable IF range?\n\n'
+        + 'This sweeps the receiver from 1.2 to 2.6 GHz against the HB100, takes '
+        + 'about a minute, and stores the result for this kit only. You normally '
+        + 'do it once, when the kit is new.\n\n'
+        + 'Before continuing:\n'
+        + '  \u2022 the HB100 must be powered and aimed at the array, at boresight\n'
+        + '  \u2022 run Find HB100 first, so the stored source frequency is current\n\n'
+        + 'Nothing is saved if the sweep hears nothing, so a bad run is safe.'
+    );
+    if (!ok) {
+        addRuntimeLog('info', 'CAL', 'Characterize IF cancelled before starting');
+        return;
+    }
+    runCalibrationTask('characterize');
+});
 
 document.getElementById('btn-reboot-phaser')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-reboot-phaser');
