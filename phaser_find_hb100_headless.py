@@ -17,6 +17,7 @@ import numpy as np
 from phaser_functions import (
     MIN_SCAN_SNR_DB,
     find_scan_peak,
+    rx_freq_source,
     save_hb100_cal,
     scan_peak_is_trustworthy,
     spec_est,
@@ -24,6 +25,11 @@ from phaser_functions import (
 
 from adi import ad9361
 from adi.cn0566 import CN0566
+
+try:
+    import config as config_module
+except ImportError:
+    config_module = None
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2.0
@@ -141,7 +147,18 @@ def find_hb100():
             my_sdr.gain_control_mode_chan1 = "manual"
             my_sdr.rx_hardwaregain_chan0 = 0
             my_sdr.rx_hardwaregain_chan1 = 0
-            my_sdr.rx_lo = int(2.0e9)
+            # The IF is per-unit and measured; see
+            # phaser_characterize_headless.py. Before a unit has been
+            # characterised this falls back to the bootstrap default, which
+            # is what makes the search runnable on a kit that has never been
+            # measured -- it used to be a hardcoded 2.0 GHz, inside both kits
+            # measured so far but not guaranteed inside the next one.
+            chosen = rx_freq_source(config_module)
+            print("IF: %.3f GHz, from %s"
+                  % (chosen["rx_freq_hz"] / 1e9, chosen["source"]))
+            for line in chosen["warnings"]:
+                print("  WARNING: %s" % line)
+            my_sdr.rx_lo = int(chosen["rx_freq_hz"])
 
             # Load filter if available
             try:

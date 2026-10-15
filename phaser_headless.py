@@ -54,7 +54,7 @@ except ImportError:
     print("config.py not found")
     sys.exit(1)
 
-from phaser_functions import load_hb100_cal
+from phaser_functions import load_hb100_cal, rx_freq_source
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
@@ -186,8 +186,19 @@ class PhaserHeadless:
 
         print(f"Hostname: {my_hostname}, rpi: {self.rpi_ip}, sdr: {self.sdr_ip}")
 
-        # Load configuration
-        self.Rx_freq = config.Rx_freq
+        # Load configuration.
+        #
+        # The IF comes from rx_freq_source, not straight from config.py. It is
+        # a per-unit measurement (phaser_characterize_headless.py): the usable
+        # IF differs by ~200 MHz between kits, config.py is site-owned and
+        # never deployed over, and the value it ships is one a kit in this
+        # fleet cannot hear. Running at an unusable IF is silent -- the writes
+        # are accepted and the patterns are noise -- so the source is printed.
+        _if = rx_freq_source(config)
+        self.Rx_freq = _if["rx_freq_hz"]
+        print("IF: %.3f GHz, from %s" % (self.Rx_freq / 1e9, _if["source"]))
+        for _line in _if["warnings"]:
+            print("  WARNING: %s" % _line)
         self.Tx_freq = config.Tx_freq
         self.LO_freq = self.SignalFreq + self.Rx_freq
         self.SampleRate = config.SampleRate
