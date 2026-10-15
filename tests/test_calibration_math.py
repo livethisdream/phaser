@@ -36,8 +36,16 @@ class FakeArray:
 
     phase_step_size = 15
 
-    def __init__(self, true_gains, true_phases_deg, ch_imbalance_db=0.0, n=256):
+    def __init__(self, true_gains, true_phases_deg, ch_imbalance_db=0.0, n=256,
+                 noise=0.0, seed=1):
         self.sdr = FakeSDR(self)
+        # `noise` is complex Gaussian added to the captured samples, as a
+        # fraction of the per-element amplitude. Zero by default so every
+        # existing test is unaffected; the point of having it is that a
+        # noiseless bench cannot distinguish a good phase estimator from a
+        # bad one -- both land within a step.
+        self.noise = float(noise)
+        self.rng = np.random.default_rng(seed)
         self.true_gains = np.asarray(true_gains, dtype=float)
         self.true_phases = np.deg2rad(np.asarray(true_phases_deg, dtype=float))
         self.ch_imbalance = 10 ** (ch_imbalance_db / 20)
@@ -59,6 +67,10 @@ class FakeArray:
             1j * (self.true_phases - self.chan_phase))
         field = complex(np.sum(weights))
         sig = tone * field * 1024
+        if self.noise:
+            scale = self.noise * 1024
+            sig = sig + (self.rng.normal(0, scale, self.n)
+                         + 1j * self.rng.normal(0, scale, self.n))
         return np.array([sig, sig * self.ch_imbalance])
 
 
@@ -111,3 +123,44 @@ def test_calibration_survives_a_dead_channel():
     arr = FakeArray(gains, [0.0] * 8)
     gain_calibration(arr, averages=1)
     assert all(np.isfinite(g) for g in arr.gcal)
+
+
+def test_phase_calibration_holds_up_under_noise():
+    """The case that matters on a bench, and the one a noiseless fake hides.
+
+    Five real runs on kit phaser-00 scattered by 27.5 degrees averaged over
+    elements 2-8, reaching 104 degrees of spread on element 8 -- because the
+    old estimator took the argmax of a response whose peak is quadratic, and
+    each pair's error seeds the next. Here the same procedure runs eight
+    times on noisy captures and has to land on the true progression.
+    """
+    true = [0, 30, 60, 90, 120, 150, 180, 210]
+    recovered = []
+    for seed in range(8):
+        arr = FakeArray([1.0] * 8, true, noise=0.03, seed=seed)
+        phase_calibration(arr, averages=1)
+        recovered.append(list(arr.pcal))
+
+    recovered = np.array(recovered)
+    wrap = lambda d: (d + 180) % 360 - 180
+
+    def circ_mean(deg):
+        """An ordinary mean is wrong on angles: element 7 sits at 180 deg,
+        where +179 and -179 average to 0 rather than to 180."""
+        return np.degrees(np.angle(np.mean(np.exp(1j * np.radians(deg)))))
+
+    # Run-to-run scatter: the quantity that was 27.5 degrees on hardware.
+    scatter = np.array([
+        wrap(recovered[:, i] - circ_mean(recovered[:, i])).std(ddof=1)
+        for i in range(1, 8)
+    ]).mean()
+    assert scatter < 5.0, f"run-to-run scatter {scatter:.1f} deg"
+
+    # And it has to be scattered around the RIGHT answer, not just a
+    # consistent wrong one -- a stable estimator that is biased would pass
+    # the check above and still miscalibrate the array.
+    for i in range(1, 8):
+        err = abs(wrap(circ_mean(recovered[:, i]) - true[i]))
+        assert err < 8.0, (
+            f"element {i}: recovered {circ_mean(recovered[:, i]):.1f} deg, "
+            f"expected {wrap(true[i]):.1f}, off by {err:.1f}")
