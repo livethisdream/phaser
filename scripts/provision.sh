@@ -403,11 +403,22 @@ else
         [ -d "$PHASER_WHEELS" ] || die "PHASER_WHEELS=$PHASER_WHEELS is not a directory."
         PIP_SRC=(--no-index --find-links "$PHASER_WHEELS")
     fi
+    # pylibiio is a ctypes binding to the system libiio and must match its
+    # major version. pyadi-iio asks for `pylibiio >= 0.25`, which pip now
+    # resolves to pylibiio 1.0 (2026-10-05); that refuses to import against
+    # Kuiper's libiio 0.x ("libiio version 1.x required, found version 0"),
+    # so adi never imports. Pin the 0.x bindings unless libiio 1 is present.
+    # Pinning also repairs a kit a previous run left on pylibiio 1.0.
+    PIP_PIN=()
+    if ! sudo ldconfig -p 2>/dev/null | grep -q 'libiio\.so\.1'; then
+        PIP_PIN=("pylibiio<1")
+        say "system libiio is 0.x; pinning pylibiio<1"
+    fi
     # Remove a stale build first: the failure mode we are fixing is an older
     # pyadi-iio that imports but has no CN0566.
     sudo python3 -m pip uninstall -y pyadi-iio >/dev/null 2>&1 || true
-    sudo python3 -m pip install "${PIP_SRC[@]}" "$PYADI_DIR" \
-      || sudo python3 -m pip install --break-system-packages "${PIP_SRC[@]}" "$PYADI_DIR" \
+    sudo python3 -m pip install "${PIP_SRC[@]}" "$PYADI_DIR" "${PIP_PIN[@]}" \
+      || sudo python3 -m pip install --break-system-packages "${PIP_SRC[@]}" "$PYADI_DIR" "${PIP_PIN[@]}" \
       || die "pip failed to install pyadi-iio."
     sudo ldconfig || true
     python3 -c "import adi; adi.CN0566" >/dev/null 2>&1 \
