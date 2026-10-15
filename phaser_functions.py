@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import pickle
 import tempfile
@@ -223,8 +224,46 @@ def _rx_channels(phaser):
     return arr, arr
 
 
+def _flush_rx(sdr):
+    """Drop whatever was queued before the last retune.
+
+    Measured on this hardware (PR #29): without this a capture returns the
+    PREVIOUS tuning's data at any settle time, and discarding one or two reads
+    does not help -- which silently labels every sweep step with the next
+    step's frequency. Falls back to a discarded read for a receiver that has
+    no rx_destroy_buffer, which is what the fakes in the tests exercise.
+    """
+    try:
+        sdr.rx_destroy_buffer()
+        return
+    except AttributeError:
+        pass
+    except Exception:
+        return
+    try:
+        sdr.rx()
+    except Exception:
+        pass
+
+
 def _capture_peak_dbfs(phaser, averages=4):
-    """Mean peak of the summed-channel spectrum over `averages` captures."""
+    """Mean peak of the summed-channel spectrum over `averages` captures.
+
+    Flushed first, because every caller reads this immediately after changing
+    the array -- a gain, a phase, an element switched off -- and on this
+    hardware a capture otherwise returns the state BEFORE the change (PR #29
+    measured that at any settle time, and with one or two discarded reads).
+
+    Measured consequences on phaser-00, so nobody re-litigates this:
+    measure_array_contrast is unaffected either way (32.3-33.4 dB flushed and
+    unflushed -- it separates two states ~33 dB apart and a one-capture lag
+    cannot close that). Phase calibration's run-to-run scatter is ALSO
+    unchanged by it: five runs, up to 104 degrees apart on element 8, flushed
+    and unflushed alike. That scatter is the argmax in phase_calibration, not
+    staleness -- see the note there. The flush stays because reading the state
+    you just set is correct regardless, and it costs one buffer.
+    """
+    _flush_rx(phaser.sdr)
     peaks = []
     last_spectrum = None
     for _ in range(max(1, averages)):
@@ -301,6 +340,23 @@ def phase_calibration(phaser, verbose=False, averages=2):
     Walks pairs (0,1), (1,2) ... (6,7): hold the left element at its already
     solved offset, sweep the right one, keep the phase that peaks the summed
     response. Offsets therefore accumulate along the array from element 0.
+
+    KNOWN: this does not repeat. Five runs on phaser-00 (2026-10-15), on a
+    healthy bench at 85 dB SNR and 33 dB array contrast, returned element 8
+    offsets spanning 104 degrees: +8.4, +30.9, +50.6, +95.6, +112.5.
+
+    The cause is the estimator, not the measurement. Two elements summing give
+    P(phi) proportional to 2(1 + cos(phi - phi0)), whose peak is quadratic: 20
+    degrees off the true offset costs 0.26 dB. A couple of tenths of a dB of
+    noise therefore moves the argmax by tens of degrees, and since each pair
+    seeds the next, it accumulates along the array -- which is the shape
+    observed, element 2 scattering ~25 degrees and element 8 ~104.
+
+    Flushing the capture does not help; that was measured separately and the
+    scatter was identical. What would is using the whole curve instead of its
+    flattest point, e.g. phi0 = angle(sum(P_linear * exp(j*phi))), the first
+    Fourier coefficient of a known one-parameter family. Left alone here
+    because changing a calibration algorithm is a decision, not a cleanup.
     """
     phase_values = np.arange(-180, 180 + phaser.phase_step_size / 2, phaser.phase_step_size)
     plot_data = []
@@ -505,7 +561,7 @@ def measure_array_contrast(phaser, averages=4, max_gain=127):
     return float(on - off), float(on), float(off)
 
 
-# --- LO planning ------------------------------------------------------------
+# --- IF planning and per-unit characterisation ------------------------------
 #
 # LO = SignalFreq + Rx_freq, and the ADF4159 register takes a QUARTER of it
 # because the CN0566 divides by 4 ahead of the PLL's RFIN. Both halves have
@@ -513,40 +569,84 @@ def measure_array_contrast(phaser, averages=4, max_gain=127):
 #
 #   - writing the LO undivided (c9761c8) asked for four times the frequency,
 #     which the part accepted and read straight back while receiving nothing;
-#   - asking for an LO the chain cannot reach does exactly the same thing.
+#   - asking for an IF this unit's chain cannot pass does exactly the same.
 #
 # There is no lock-detect to consult. MUXOUT is not configured as one on this
 # board -- it reads 0 at every LO, including one demonstrably receiving a
-# 43 dB pattern -- so a bad LO is indistinguishable from a dead source until
-# someone measures. Hence arithmetic, checked before the kit reaches a table.
+# 43 dB pattern -- so a deaf configuration is indistinguishable from a dead
+# source until someone measures.
 #
-# Measured 2026-09-24 on kit "phaser" with the HB100 at 10.446953 GHz, by
-# stepping Rx_freq and reading the peak out of a 30 MSPS capture:
+# WHICH AXIS THE LIMIT IS ON
 #
-#     Rx_freq   LO (GHz)   ADF4159 (GHz)   peak dBFS   SNR
-#      2.15      12.597       3.1492         -4.12    63.9   clean
-#      2.20      12.647       3.1617         -4.85    64.2   clean
-#      2.35      12.797       3.1992         -4.86    64.1   clean
-#      2.40      12.847       3.2117        -14.08    77.3   degrading
-#      2.45      12.897       3.2242        -74.77    19.2   dead
-#      2.50      12.947       3.2367        -74.65    19.1   dead
+# An earlier sweep stepped Rx_freq, recorded where reception died, and called
+# the result an LO ceiling. It could not have told the two apart: the source
+# is fixed, so LO = SignalFreq + Rx_freq moves the LO and the IF together and
+# only their difference identifies the cause.
 #
-# The readback matched the request at every row, including the dead ones.
+# Measured on phaser-00, 2026-10-15, by parking the Pluto's rx_lo and moving
+# ONLY the CN0566 LO -- which walks the tone across baseband instead of
+# retuning the receiver, and so varies one axis at a time:
 #
-# One kit, one HB100. Treat the ceiling as "measured here", not as a datasheet
-# limit -- which is why crossing it warns rather than fails.
+#     rx_lo parked   LO swept over      tone tracked   peak
+#       2.0 GHz      12.398-12.408 GHz    11 of 11     -2.3 to -3.1 dBFS
+#       2.2 GHz      12.598-12.608 GHz     0 of 11     -75 dBFS, noise only
+#
+# The ADF4159 sat at 3.14691 GHz receiving cleanly and at 3.14950 GHz
+# receiving nothing -- 2.6 MHz apart, opposite outcomes, and the only other
+# difference is rx_lo. The limit is on the IF, not the LO.
+#
+# Re-read on that axis, both kits measured so far have an IF ceiling:
+#
+#     kit          IF clean to   IF dead by   (LO at those IFs)
+#     phaser          ~2.37         2.45       12.80 / 12.90 GHz
+#     phaser-00        2.18         2.20       12.59 / 12.61 GHz
+#
+# About 200 MHz apart on nominally identical hardware, which is the whole
+# argument for measuring the window per unit rather than hard-coding it: a
+# ceiling taken off one kit is what made this bug possible. config.py ships
+# Rx_freq = 2.2 GHz, which kit "phaser" could hear and phaser-00 could not.
+#
+# The LO was unconstrained everywhere a 10.4 GHz source can reach it -- 11.708
+# to 12.608 GHz, flat at 85-88 dB SNR. A higher LO limit may well exist; this
+# source cannot reach it, so nothing here claims one.
 
-# Thresholds sit just below the measurements they classify, so the measured
-# rows land on the right side of them: 12.797 was the last clean reading and
-# 12.897 the first dead one, so anything at or above 12.89 is "measured dead"
-# and 12.80 upward is "past what was measured clean".
-LO_USABLE_CEILING_HZ = 12.80e9
-LO_DEAD_HZ = 12.89e9
+# Bootstrap only: the IF to use before a unit has been characterised. It sits
+# ~480 MHz below the lower of the two ceilings measured so far, which is the
+# entire basis for the number. It is a safe place to start a measurement from,
+# not an answer -- phaser_characterize_headless.py replaces it with one.
+DEFAULT_RX_FREQ_HZ = 1.7e9
+
+# Used only when a unit has NOT been characterised: the lowest clean edge and
+# the lowest dead point seen on any kit, so an unmeasured unit is judged
+# against the worst case rather than the best.
+IF_UNMEASURED_CEILING_HZ = 2.18e9
+IF_UNMEASURED_DEAD_HZ = 2.20e9
 
 # What an HB100 can be. Not a tolerance -- the 2025 workshop labs say outright
 # that it "is not well controlled - it could be anywhere from 10.1 to 10.7 GHz".
 HB100_MIN_HZ = 10.1e9
 HB100_MAX_HZ = 10.7e9
+
+# The sweep characterisation runs. The range is part of the definition of the
+# answer, because choose_rx_freq returns the middle of the clean run: widening
+# or narrowing this moves the result. 1.2-2.6 GHz spans both kits measured so
+# far with room either side, and 25 MHz places a ~15 MHz skirt within a step.
+IF_SWEEP_START_HZ = 1.2e9
+IF_SWEEP_STOP_HZ = 2.6e9
+IF_SWEEP_STEP_HZ = 25e6
+
+# A step is clean if it comes within this of the best step in the sweep. The
+# skirt falls ~30 dB per 5 MHz, so every step on it lands far outside 6 dB and
+# no threshold in this neighbourhood changes which steps qualify.
+IF_CLEAN_TOLERANCE_DB = 6.0
+
+# Below this a "window" is measurement noise, not a window, and
+# characterisation fails rather than picking the middle of one.
+IF_MIN_USABLE_SPAN_HZ = 100e6
+
+# Chosen IFs are rounded to this, purely so the number people read and type is
+# a round one. Far finer than anything that changes reception.
+IF_ROUNDING_HZ = 5e6
 
 
 def lo_chain(signal_freq_hz, rx_freq_hz):
@@ -555,45 +655,275 @@ def lo_chain(signal_freq_hz, rx_freq_hz):
     return {"lo_hz": lo, "adf4159_hz": lo / 4.0}
 
 
-def lo_warnings(signal_freq_hz, rx_freq_hz,
-                hb100_max_hz=HB100_MAX_HZ,
-                ceiling_hz=LO_USABLE_CEILING_HZ,
-                dead_hz=LO_DEAD_HZ):
-    """Everything wrong with this IF choice, worst first, as plain sentences.
+def measure_if_window(phaser, sdr, signal_freq_hz,
+                      start_hz=IF_SWEEP_START_HZ,
+                      stop_hz=IF_SWEEP_STOP_HZ,
+                      step_hz=IF_SWEEP_STEP_HZ,
+                      averages=2, settle_s=0.2, progress=None):
+    """Step the IF across `start_hz`..`stop_hz` and report what is received.
 
-    Two separate questions, and the second is the one that bites a workshop:
-    whether THIS kit's HB100 is reachable, and whether the IF can reach every
-    HB100 the labs say a kit might be handed. An IF that works on the bench and
-    fails on a unit 200 MHz higher is a configuration that passes its own test
-    and then goes deaf at the table.
+    Both halves of the tuning move together on every step, because they have
+    to: the LO has to track the IF or the tone leaves the analysis window and
+    every step reads as deaf whether it is or not.
+
+    Returns a list of {"rx_freq_hz", "lo_hz", "peak_dbfs", "snr_db"}, in sweep
+    order. `progress` is called with each row as it is measured, so a CLI can
+    print a table while the sweep runs.
+    """
+    rows = []
+    rx_freq = float(start_hz)
+    while rx_freq <= float(stop_hz) + 1.0:
+        chain = lo_chain(signal_freq_hz, rx_freq)
+        _flush_rx(sdr)
+        sdr.rx_lo = int(rx_freq)
+        phaser.frequency = int(chain["adf4159_hz"])
+        time.sleep(settle_s)
+        _flush_rx(sdr)
+
+        peak, spectrum = _capture_peak_dbfs(phaser, averages=averages)
+        noise = float(np.median(spectrum)) if spectrum is not None else -200.0
+        row = {
+            "rx_freq_hz": float(rx_freq),
+            "lo_hz": float(chain["lo_hz"]),
+            "peak_dbfs": float(peak),
+            "snr_db": float(peak - noise),
+        }
+        rows.append(row)
+        if progress is not None:
+            progress(row)
+        rx_freq += float(step_hz)
+    return rows
+
+
+def choose_rx_freq(rows, tolerance_db=IF_CLEAN_TOLERANCE_DB,
+                   min_span_hz=IF_MIN_USABLE_SPAN_HZ,
+                   rounding_hz=IF_ROUNDING_HZ):
+    """Pick this unit's IF from a sweep: the middle of its longest clean run.
+
+    The middle, rather than a fixed back-off from the top edge, because the
+    top edge is exactly what varies between units -- 200 MHz between the only
+    two measured. Sitting in the middle of what this unit actually does is the
+    one choice that does not depend on a number borrowed from another kit.
+
+    Contiguity matters: a lone clean step the far side of a dead region is a
+    measurement artefact, not part of the window, and averaging it in would
+    drag the answer onto the skirt.
+
+    Returns a dict with `ok` and, when ok, `rx_freq_hz` plus the window it
+    came from. When not ok, `reason` says what to tell the operator.
+    """
+    usable = [r for r in rows if r.get("snr_db") is not None]
+    if not usable:
+        return {"ok": False, "reason": "the sweep produced no usable readings"}
+
+    best = max(float(r["snr_db"]) for r in usable)
+    cutoff = best - float(tolerance_db)
+
+    # Longest contiguous run of clean steps, in sweep order.
+    runs, current = [], []
+    for row in rows:
+        if float(row.get("snr_db", -1e9)) >= cutoff:
+            current.append(row)
+        else:
+            if current:
+                runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    if not runs:
+        return {"ok": False, "reason": "no step came within %.1f dB of the best"
+                                       % tolerance_db}
+
+    run = max(runs, key=len)
+    lo_edge = float(run[0]["rx_freq_hz"])
+    hi_edge = float(run[-1]["rx_freq_hz"])
+    span = hi_edge - lo_edge
+    window = {
+        "clean_min_hz": lo_edge,
+        "clean_max_hz": hi_edge,
+        "span_hz": span,
+        "best_snr_db": best,
+        "clean_steps": len(run),
+        "swept_steps": len(rows),
+    }
+
+    if span < float(min_span_hz):
+        window.update({
+            "ok": False,
+            "reason": ("the clean run is only %.0f MHz wide (need %.0f MHz); "
+                       "that is not a window, and usually means the HB100 was "
+                       "not illuminating the array"
+                       % (span / 1e6, float(min_span_hz) / 1e6)),
+        })
+        return window
+
+    middle = (lo_edge + hi_edge) / 2.0
+    chosen = math.floor(middle / rounding_hz + 0.5) * rounding_hz
+    window.update({"ok": True, "rx_freq_hz": float(chosen)})
+    return window
+
+
+def save_if_cal(window, signal_freq_hz=None, rows=None):
+    """Persist a characterisation. Stored under its own key, so re-running it
+    does not disturb the phase, gain or channel calibrations beside it."""
+    payload = {
+        "rx_freq_hz": float(window["rx_freq_hz"]),
+        "clean_min_hz": float(window["clean_min_hz"]),
+        "clean_max_hz": float(window["clean_max_hz"]),
+        "best_snr_db": float(window.get("best_snr_db", 0.0)),
+        "measured_at": time.time(),
+    }
+    if signal_freq_hz is not None:
+        payload["hb100_freq_hz"] = float(signal_freq_hz)
+    if rows:
+        # Kept so a later argument about where the edge is can be settled from
+        # the stored sweep instead of re-running it on a kit that has moved.
+        payload["sweep"] = [
+            {"rx_freq_hz": float(r["rx_freq_hz"]),
+             "peak_dbfs": round(float(r["peak_dbfs"]), 2),
+             "snr_db": round(float(r["snr_db"]), 1)}
+            for r in rows
+        ]
+    save_calibration(if_window=payload)
+    return payload
+
+
+def load_if_cal():
+    """The stored characterisation, or None if this unit has never had one."""
+    stored = load_calibration().get("if_window")
+    if not isinstance(stored, dict):
+        return None
+    try:
+        float(stored["rx_freq_hz"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return stored
+
+
+def rx_freq_source(config_module=None):
+    """Which IF to run at, where it came from, and anything wrong with it.
+
+    Precedence, measurement first. A measurement is the only value here taken
+    from THIS unit; config.py is site-owned, never deployed over, and ships a
+    value that is wrong on at least one kit in the field, so it does not get
+    to override one. `Rx_freq_override` exists so a bench can still force a
+    value deliberately -- it is a separate name precisely so that setting it
+    is a decision rather than a leftover.
+
+    Returns {"rx_freq_hz", "source", "warnings"}.
+    """
+    warnings = []
+    configured = None
+    override = None
+    if config_module is not None:
+        try:
+            override = float(getattr(config_module, "Rx_freq_override", None) or 0) or None
+        except (TypeError, ValueError):
+            override = None
+        try:
+            configured = float(getattr(config_module, "Rx_freq", None) or 0) or None
+        except (TypeError, ValueError):
+            configured = None
+
+    stored = load_if_cal()
+
+    if override is not None:
+        if stored is not None and abs(override - float(stored["rx_freq_hz"])) > 1e6:
+            warnings.append(
+                "config.Rx_freq_override = %.3f GHz is overriding this unit's "
+                "measured %.3f GHz. Remove the override to go back to the "
+                "measurement." % (override / 1e9, float(stored["rx_freq_hz"]) / 1e9)
+            )
+        return {"rx_freq_hz": override, "source": "config.Rx_freq_override",
+                "warnings": warnings}
+
+    if stored is not None:
+        value = float(stored["rx_freq_hz"])
+        if configured is not None and abs(configured - value) > 1e6:
+            warnings.append(
+                "config.Rx_freq = %.3f GHz disagrees with this unit's measured "
+                "%.3f GHz; using the measurement. config.py is not deployed "
+                "between kits, so its value is whatever this card happened to "
+                "ship with." % (configured / 1e9, value / 1e9)
+            )
+        return {"rx_freq_hz": value, "source": "calibration.json (measured)",
+                "warnings": warnings}
+
+    if configured is not None:
+        warnings.append(
+            "this unit has not been characterised, so config.Rx_freq = %.3f "
+            "GHz is being taken on trust. Run phaser_characterize_headless.py."
+            % (configured / 1e9)
+        )
+        return {"rx_freq_hz": configured, "source": "config.py (unverified)",
+                "warnings": warnings}
+
+    warnings.append(
+        "no measurement and no config.Rx_freq; falling back to the %.3f GHz "
+        "bootstrap default. Run phaser_characterize_headless.py."
+        % (DEFAULT_RX_FREQ_HZ / 1e9)
+    )
+    return {"rx_freq_hz": DEFAULT_RX_FREQ_HZ, "source": "built-in default",
+            "warnings": warnings}
+
+
+def resolve_rx_freq(config_module=None):
+    """The IF to run at, in Hz. See rx_freq_source for where it comes from."""
+    return rx_freq_source(config_module)["rx_freq_hz"]
+
+
+def rf_chain_warnings(signal_freq_hz, rx_freq_hz, window=None):
+    """Everything wrong with this IF on this unit, worst first, in sentences.
+
+    Judged against this unit's measured window when there is one. Without one
+    there is nothing to judge against but other kits, so the fallback uses the
+    LOWEST edge anyone has measured -- an unmeasured unit should be told it is
+    unverified, not reassured by another kit's headroom.
     """
     out = []
-    lo = lo_chain(signal_freq_hz, rx_freq_hz)["lo_hz"]
+    rx = float(rx_freq_hz)
+    if window is None:
+        window = load_if_cal()
 
-    if lo >= dead_hz:
-        out.append(
-            "LO %.3f GHz is at or past %.2f GHz, where this chain was measured "
-            "receiving nothing. The write will be accepted and read back "
-            "correctly; the only symptom is an empty spectrum."
-            % (lo / 1e9, dead_hz / 1e9)
-        )
-    elif lo > ceiling_hz:
-        out.append(
-            "LO %.3f GHz is above the highest frequency measured receiving "
-            "cleanly (%.2f GHz). It may work; it was not measured to."
-            % (lo / 1e9, ceiling_hz / 1e9)
-        )
+    if window is not None:
+        clean_min = float(window["clean_min_hz"])
+        clean_max = float(window["clean_max_hz"])
+        if rx > clean_max or rx < clean_min:
+            out.append(
+                "IF %.3f GHz is outside this unit's measured window "
+                "(%.3f-%.3f GHz). Outside it the write is still accepted and "
+                "reads back correctly; the only symptom is an empty spectrum."
+                % (rx / 1e9, clean_min / 1e9, clean_max / 1e9)
+            )
+        else:
+            edge = min(rx - clean_min, clean_max - rx)
+            if edge < 100e6:
+                out.append(
+                    "IF %.3f GHz is only %.0f MHz from the edge of this unit's "
+                    "measured window (%.3f-%.3f GHz)."
+                    % (rx / 1e9, edge / 1e6, clean_min / 1e9, clean_max / 1e9)
+                )
+        return out
 
-    worst_lo = float(hb100_max_hz) + float(rx_freq_hz)
-    if worst_lo > ceiling_hz:
-        reachable = ceiling_hz - float(rx_freq_hz)
+    if rx >= IF_UNMEASURED_DEAD_HZ:
         out.append(
-            "with Rx_freq %.2f GHz this kit cannot cover the whole HB100 range: "
-            "a unit above %.3f GHz needs an LO past %.2f GHz. The labs put HB100 "
-            "anywhere in %.1f-%.1f GHz, so a swapped source can go deaf with no "
-            "configuration change."
-            % (float(rx_freq_hz) / 1e9, reachable / 1e9, ceiling_hz / 1e9,
-               HB100_MIN_HZ / 1e9, hb100_max_hz / 1e9)
+            "IF %.3f GHz is at or above %.2f GHz, where a kit in this fleet "
+            "was measured receiving nothing, and this unit has never been "
+            "characterised. Run phaser_characterize_headless.py."
+            % (rx / 1e9, IF_UNMEASURED_DEAD_HZ / 1e9)
         )
-
+    elif rx > IF_UNMEASURED_CEILING_HZ:
+        out.append(
+            "IF %.3f GHz is above the highest a kit in this fleet was measured "
+            "receiving cleanly (%.2f GHz), and this unit has never been "
+            "characterised. It may work; it was not measured to."
+            % (rx / 1e9, IF_UNMEASURED_CEILING_HZ / 1e9)
+        )
+    else:
+        out.append(
+            "this unit has never been characterised; %.3f GHz is inside what "
+            "other kits manage, which is not the same as inside what this one "
+            "does. Run phaser_characterize_headless.py."
+            % (rx / 1e9)
+        )
     return out

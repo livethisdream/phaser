@@ -14,8 +14,11 @@ from phaser_functions import (
     channel_calibration,
     gain_calibration,
     load_hb100_cal,
+    lo_chain,
     measure_array_contrast,
     phase_calibration,
+    rf_chain_warnings,
+    rx_freq_source,
     save_channel_cal,
     save_gain_cal,
     save_phase_cal,
@@ -39,6 +42,15 @@ def do_calibration():
 
     my_phaser = None
     my_sdr = None
+
+    # The IF is per-unit and measured, not a constant: see
+    # phaser_characterize_headless.py. Resolved once, before any hardware is
+    # touched, so the figure printed is the figure used.
+    chosen = rx_freq_source(config)
+    rx_freq = chosen["rx_freq_hz"]
+    print("IF: %.3f GHz, from %s" % (rx_freq / 1e9, chosen["source"]))
+    for line in chosen["warnings"]:
+        print("  WARNING: %s" % line)
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -64,7 +76,7 @@ def do_calibration():
 
             # Configure device (same as phaser_examples.py)
             my_phaser.configure(device_mode="rx")
-            my_phaser.SDR_init(30000000, config.Tx_freq, config.Rx_freq, 6, -6, 1024)
+            my_phaser.SDR_init(30000000, config.Tx_freq, rx_freq, 6, -6, 1024)
 
             # Load existing channel cal
             my_phaser.load_channel_cal()
@@ -85,7 +97,7 @@ def do_calibration():
             my_sdr.tx_lo = int(1.0e9)
 
             # Configure PLL
-            my_phaser.frequency = (int(my_phaser.SignalFreq) + config.Rx_freq) // 4
+            my_phaser.frequency = (int(my_phaser.SignalFreq) + int(rx_freq)) // 4
             my_phaser.freq_dev_step = 5690
             my_phaser.freq_dev_range = 0
             my_phaser.freq_dev_time = 0
@@ -123,6 +135,7 @@ def do_calibration():
                 % (on_dbfs, off_dbfs, contrast_db)
             )
             if contrast_db < MIN_ARRAY_CONTRAST_DB:
+                chain = lo_chain(my_phaser.SignalFreq, rx_freq)
                 print()
                 print("CALIBRATION ABORTED: no signal is reaching the array.")
                 print(
@@ -133,12 +146,27 @@ def do_calibration():
                 )
                 print("Nothing was saved; the previous calibration is intact.")
                 print()
+                # The chain goes first because it is the only part of this
+                # list nobody can check by looking at the bench, and an IF
+                # the unit cannot hear produces exactly these numbers.
+                print("The chain this ran on:")
+                print("  HB100    %.6f GHz" % (my_phaser.SignalFreq / 1e9))
+                print("  IF       %.3f GHz      (%s)" % (rx_freq / 1e9, chosen["source"]))
+                print("  LO       %.3f GHz      = HB100 + IF" % (chain["lo_hz"] / 1e9))
+                print("  ADF4159  %.4f GHz     = LO / 4" % (chain["adf4159_hz"] / 1e9))
+                for line in rf_chain_warnings(my_phaser.SignalFreq, rx_freq):
+                    print("  WARNING: %s" % line)
+                print()
                 print("Check, in this order:")
-                print("  1. the HB100 is powered and pointed at the array")
-                print("  2. the stored HB100 frequency is right -- re-run the")
+                print("  1. whether this unit can hear at that IF at all. The")
+                print("     usable IF differs by ~200 MHz between kits, and an")
+                print("     IF outside it reads exactly like a dead source.")
+                print("     Run phaser_characterize_headless.py to measure it.")
+                print("  2. the HB100 is powered and pointed at the array")
+                print("  3. the stored HB100 frequency is right -- re-run the")
                 print("     HB100 search (a frequency error of more than about")
                 print("     1.5 MHz puts the tone outside the analysis window)")
-                print("  3. the RF cables from the CN0566 to the Pluto Rx inputs")
+                print("  4. the RF cables from the CN0566 to the Pluto Rx inputs")
                 return False
 
             # Channel calibration (same as phaser_examples.py)

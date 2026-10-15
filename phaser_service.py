@@ -12,7 +12,8 @@ import adi
 import numpy as np
 
 from ADAR_pyadi_functions import *
-from phaser_functions import load_channel_cal, load_gain_cal, load_hb100_cal, load_phase_cal
+from phaser_functions import (load_channel_cal, load_gain_cal, load_hb100_cal,
+                              load_phase_cal, resolve_rx_freq, rx_freq_source)
 from SDR_functions import *
 
 # Try local config first, then parent directory
@@ -89,7 +90,13 @@ class PhaserServer:
             print("No signal freq found, keeping at ", self.SignalFreq)
 
         self.Tx_freq = config.Tx_freq
-        self.Rx_freq = config.Rx_freq
+        # Measured per unit rather than read from config.py -- see
+        # phaser_characterize_headless.py and rx_freq_source.
+        _if = rx_freq_source(config)
+        self.Rx_freq = _if["rx_freq_hz"]
+        print("IF: %.3f GHz, from %s" % (self.Rx_freq / 1e9, _if["source"]))
+        for _line in _if["warnings"]:
+            print("  WARNING: %s" % _line)
         self.LO_freq = self.SignalFreq + self.Rx_freq
         self.SampleRate = config.SampleRate
         self.Rx_gain = config.Rx_gain
@@ -517,7 +524,7 @@ class PhaserServerSim:
         except Exception:
             print("No signal freq found, keeping at ", self.SignalFreq)
 
-        self.Rx_freq = getattr(config, "Rx_freq", 2.2e9)
+        self.Rx_freq = resolve_rx_freq(config)
         self.SampleRate = getattr(config, "SampleRate", 3e6)
         self.Rx_gain = getattr(config, "Rx_gain", 30)
         self.Tx_gain = getattr(config, "Tx_gain", -10)
@@ -779,7 +786,7 @@ class BackendService:
 
     def get_ui_state(self):
         signal_freq = getattr(config, "SignalFreq", 10.5e9)
-        rx_freq = getattr(config, "Rx_freq", 2.4e9)
+        rx_freq = resolve_rx_freq(config)
         rx_gain = getattr(config, "Rx_gain", 20)
         tx_gain = getattr(config, "Tx_gain", -40)
         averages = getattr(config, "Averages", 1)

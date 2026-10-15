@@ -48,6 +48,7 @@ HTTP_PORT=8080
 # only, the same treatment config.py gets below.
 BACKEND_FILES=(
   phaser_headless.py phaser_cal_headless.py phaser_find_hb100_headless.py
+  phaser_characterize_headless.py
   phaser_cw_radar.py ADAR_pyadi_functions.py SDR_functions.py phaser_functions.py
   phaser_ctf.py
   LTE5_MHz.ftr LTE10_MHz.ftr LTE20_MHz.ftr
@@ -279,15 +280,23 @@ CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" 
 # ---- 6b. the RF chain this kit will actually run ---------------------------
 #
 # config.py is site-owned and never deployed over, so the numbers that decide
-# the LO are exactly the ones nobody reviews. Printing them is most of the
-# value: this kit turned out to be carrying Rx_gain = 1 and an IF 300 MHz off
+# the chain are exactly the ones nobody reviews. Printing them is most of the
+# value: one kit turned out to be carrying Rx_gain = 1 and an IF 300 MHz off
 # the repo default, neither of which is visible anywhere else.
 #
-# A bad LO cannot be detected at runtime -- the write is accepted, the readback
-# agrees, and MUXOUT is not wired as lock detect on this board -- so arithmetic
-# before the kit reaches a table is the only check there is. Warn, never fail:
-# the ceiling is measured on one kit, and refusing an install over it would
-# turn a survivable warning into a dead workshop.
+# A deaf chain cannot be detected at runtime -- the write is accepted, the
+# readback agrees, and MUXOUT is not wired as lock detect on this board -- so
+# a check before the kit reaches a table is the only one there is.
+#
+# What that check compares against is now this unit's OWN measured IF window
+# where it has one (phaser_characterize_headless.py), not a constant. The
+# constant was the bug: the usable IF differs by ~200 MHz between kits, the
+# figure in the repo came off one of them, and the other was deaf at the
+# shipped config.Rx_freq with nothing anywhere saying so.
+#
+# Warn, never fail. An uncharacterised kit is the normal state of a fresh
+# install, and refusing to install over it would turn a warning into a dead
+# workshop.
 step 6b "Checking the RF chain..."
 PYTHONPATH="$INSTALL_DIR" "$PYTHON_BIN" - "$INSTALL_DIR" <<'PY' || say "WARN: could not evaluate the RF chain"
 import os
@@ -298,15 +307,14 @@ os.chdir(sys.argv[1])
 
 try:
     import config
-    from phaser_functions import lo_chain, lo_warnings, load_hb100_cal
+    from phaser_functions import (lo_chain, rf_chain_warnings, load_hb100_cal,
+                                  load_if_cal, rx_freq_source)
 except Exception as exc:                      # noqa: BLE001 - report, never fail
     print("  could not import the installed backend: %s" % exc)
     raise SystemExit(0)
 
-rx_freq = float(getattr(config, "Rx_freq", 0) or 0)
-if not rx_freq:
-    print("  config.py has no Rx_freq; skipping")
-    raise SystemExit(0)
+chosen = rx_freq_source(config)
+rx_freq = chosen["rx_freq_hz"]
 
 try:
     signal = load_hb100_cal()
@@ -320,16 +328,21 @@ if not signal:
     raise SystemExit(0)
 
 chain = lo_chain(signal, rx_freq)
+window = load_if_cal()
 print("  HB100      %.6f GHz   (%s)" % (signal / 1e9, source))
-print("  Rx_freq    %.3f GHz      (config.py, site-owned)" % (rx_freq / 1e9))
-print("  LO         %.3f GHz      = HB100 + Rx_freq" % (chain["lo_hz"] / 1e9))
+print("  IF         %.3f GHz      (%s)" % (rx_freq / 1e9, chosen["source"]))
+print("  LO         %.3f GHz      = HB100 + IF" % (chain["lo_hz"] / 1e9))
 print("  ADF4159    %.4f GHz     = LO / 4" % (chain["adf4159_hz"] / 1e9))
+if window is not None:
+    print("  IF window  %.3f - %.3f GHz   (measured on this unit)"
+          % (float(window["clean_min_hz"]) / 1e9,
+             float(window["clean_max_hz"]) / 1e9))
 
-problems = lo_warnings(signal, rx_freq)
+problems = list(chosen["warnings"]) + rf_chain_warnings(signal, rx_freq)
 for line in problems:
     print("  WARN: %s" % line)
 if not problems:
-    print("  OK: inside the range measured receiving cleanly")
+    print("  OK: inside the IF window measured on this unit")
 PY
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
