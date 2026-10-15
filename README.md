@@ -858,6 +858,27 @@ Sim mode uses the same loaders and reads whatever cal state is present
 locally, so tweaks made on the Pi during development can be scp'd back and
 reproduced in sim.
 
+### Characterise a new kit once
+
+`calibration.json` also holds this unit's usable **IF window**, measured by
+`phaser_characterize_headless.py`. The IF that works is a property of the
+individual kit — two measured so far differ by ~200 MHz — and the value
+`config.py` ships is one that at least one kit in this fleet cannot hear at
+all. So a new kit wants three steps, in order, on a bench with the HB100
+powered and aimed at the array:
+
+```
+python3 phaser_find_hb100_headless.py        # find the source
+python3 phaser_characterize_headless.py      # find the IF   <- once per kit
+python3 phaser_cal_headless.py               # channel, gain, phase
+```
+
+The measurement beats `config.Rx_freq`, which is site-owned and never
+deployed over. If a kit is deaf, calibration aborts with "no signal is
+reaching the array" and prints the chain it ran on —
+[`docs/calibration-bugs.md`](docs/calibration-bugs.md) explains how to read
+that, and documents the four silent failures behind it.
+
 ## Codebase map
 
 Top-level Python:
@@ -960,6 +981,10 @@ served on port 8081.
 
 ## Reference
 
+- [`docs/calibration-bugs.md`](docs/calibration-bugs.md) — the four silent
+  calibration failures on this hardware, three of them inherited from the
+  upstream ADI examples, with the measurements that separated them and how to
+  tell which one you are looking at
 - [`docs/golden-image.md`](docs/golden-image.md) — runbook for provisioning a
   batch of kits by cloning one card, and why cloned cards need a first-boot
   identity reset
