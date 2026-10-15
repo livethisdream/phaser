@@ -42,17 +42,32 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2.0
 
 
-def should_characterise(contrast_db, already_tried):
+def should_characterise(contrast_db, already_tried, signal_freq_measured):
     """Is a recovery sweep the right response to this failed contrast check?
 
-    Three conditions, and the middle one is the load-bearing one. A unit that
-    already has a measurement is NOT re-swept: there, a failed gate means
-    something else is wrong -- a dead source, a cable -- and sweeping under
-    those conditions would overwrite a good measurement with a bad one.
+    Four conditions, and two of them are the ones that matter.
+
+    A unit that already has an IF measurement is NOT re-swept: there a failed
+    gate means something else is wrong -- a dead source, a cable -- and
+    sweeping under those conditions would overwrite a good measurement with a
+    bad one.
+
+    A unit whose HB100 frequency has never been measured is not swept either,
+    and this is the case a brand-new kit lands in. The sweep tracks the LO
+    against the stored source frequency so the tone stays inside the analysis
+    window; against config.py's 10.525 GHz nominal, on a source that the labs
+    allow to be anywhere in 10.1-10.7 GHz, it is tracking the wrong frequency
+    and hears nothing at every IF. That looks exactly like a dead array and
+    would be reported as "the IF was not the problem" -- a confident answer
+    naming the wrong cause, which is the failure this whole area exists to
+    stop. Run the HB100 search first; there is nothing to sweep against until
+    then.
     """
     if contrast_db >= MIN_ARRAY_CONTRAST_DB:
         return False
     if already_tried:
+        return False
+    if not signal_freq_measured:
         return False
     return load_if_cal() is None
 
@@ -181,10 +196,16 @@ def do_calibration():
             # Load signal frequency
             try:
                 my_phaser.SignalFreq = load_hb100_cal()
+                signal_freq_measured = True
                 print(f"Found signal freq file: {my_phaser.SignalFreq}")
             except Exception:
                 my_phaser.SignalFreq = config.SignalFreq
+                signal_freq_measured = False
                 print(f"No signal freq found, using config: {my_phaser.SignalFreq}")
+                print("  WARNING: that is a nominal value, not this source. The"
+                      " labs put an")
+                print("  HB100 anywhere in 10.1-10.7 GHz. Run"
+                      " phaser_find_hb100_headless.py.")
 
             # Configure SDR TX (disabled for calibration with HB100)
             my_sdr.tx_hardwaregain_chan0 = int(-88)
@@ -233,7 +254,8 @@ def do_calibration():
             # worth recovering rather than reporting: the commonest cause is
             # an IF this kit cannot hear, and the bench is demonstrably set
             # up, because that is what the operator just did.
-            if should_characterise(contrast_db, characterisation_tried):
+            if should_characterise(contrast_db, characterisation_tried,
+                                   signal_freq_measured):
                 characterisation_tried = True
                 new_if = characterise_in_place(
                     my_phaser, my_sdr, my_phaser.SignalFreq)
@@ -274,6 +296,19 @@ def do_calibration():
                     print("  WARNING: %s" % line)
                 print()
                 print("Check, in this order:")
+                if not signal_freq_measured:
+                    # Nothing downstream can work without this, and nothing
+                    # else is worth checking until it does.
+                    print("  1. the HB100 frequency has never been measured on")
+                    print("     this kit. Everything below tunes against it,")
+                    print("     and the value in use is config.py's nominal")
+                    print("     %.3f GHz, not this source." % (my_phaser.SignalFreq / 1e9))
+                    print("     Run phaser_find_hb100_headless.py (or press Find")
+                    print("     HB100), then calibrate again.")
+                    print("  2. the HB100 is powered and pointed at the array")
+                    print("  3. the RF cables from the CN0566 to the Pluto Rx")
+                    print("     inputs")
+                    return False
                 if characterisation_tried:
                     # Already swept every IF and heard nothing anywhere, so
                     # the IF is ruled out and saying "characterise it" would

@@ -107,11 +107,11 @@ class FakePhaser:
 # --- the policy -------------------------------------------------------------
 
 def test_a_healthy_contrast_never_triggers_a_sweep(cal, store):
-    assert cal.should_characterise(33.0, already_tried=False) is False
+    assert cal.should_characterise(33.0, False, True) is False
 
 
 def test_a_failed_gate_on_a_fresh_unit_triggers_a_sweep(cal, store):
-    assert cal.should_characterise(0.93, already_tried=False) is True
+    assert cal.should_characterise(0.93, False, True) is True
 
 
 def test_a_unit_that_already_has_a_measurement_is_never_re_swept(cal, store):
@@ -120,11 +120,24 @@ def test_a_unit_that_already_has_a_measurement_is_never_re_swept(cal, store):
     with a bad one."""
     pf.save_if_cal({"rx_freq_hz": 1.69e9, "clean_min_hz": 1.2e9,
                     "clean_max_hz": 2.175e9, "best_snr_db": 86.0})
-    assert cal.should_characterise(0.93, already_tried=False) is False
+    assert cal.should_characterise(0.93, False, True) is False
 
 
 def test_it_is_attempted_at_most_once(cal, store):
-    assert cal.should_characterise(0.93, already_tried=True) is False
+    assert cal.should_characterise(0.93, True, True) is False
+
+
+def test_an_unmeasured_hb100_frequency_blocks_the_sweep(cal, store):
+    """The state a brand-new kit is in, and the one that would mislead.
+
+    The sweep tracks the LO against the stored source frequency to keep the
+    tone inside the analysis window. Against config.py's 10.525 GHz nominal
+    -- on a source the labs allow to sit anywhere in 10.1-10.7 GHz -- it
+    tracks the wrong frequency and hears nothing at EVERY IF, which reads as
+    "the IF was not the problem" when the IF was never tested. Run the HB100
+    search first; there is nothing to sweep against until then.
+    """
+    assert cal.should_characterise(0.93, False, False) is False
 
 
 # --- the recovery -----------------------------------------------------------
