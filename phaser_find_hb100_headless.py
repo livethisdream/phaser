@@ -48,9 +48,22 @@ def _capture(my_phaser, my_sdr, signal_freq):
     my_phaser.SignalFreq = signal_freq
     my_phaser.frequency = (int(signal_freq) + my_sdr.rx_lo) // 4
     sleep(0.05)
-    my_sdr.rx()  # discard the buffer that straddles the retune
+    # Destroy the RX buffer rather than discarding one read. Discarding one
+    # was not enough: on hardware every capture still held the PREVIOUS LO's
+    # data, whatever the settle time (0.05, 0.2 and 1.0 s measured the same),
+    # so each 10 MHz sweep step was labelled with the next step's frequency
+    # and the search landed ~8 MHz off the tone. Discarding two did no better.
+    # A fresh buffer measured within one bin from any jump (2026-10-15).
+    if hasattr(my_sdr, "rx_destroy_buffer"):
+        my_sdr.rx_destroy_buffer()
+    else:
+        my_sdr.rx()
     data = my_sdr.rx()
-    ampl, freqs = spec_est(data[0] + data[1], SAMPLE_RATE, ref=2 ** 12, plot=False)
+    # The rate the radio actually runs at, not SAMPLE_RATE: loading
+    # LTE20_MHz.ftr moves it to 30.72 MSPS, and a 30 MSPS axis puts every
+    # tone 2.4% too close to the LO.
+    ampl, freqs = spec_est(data[0] + data[1], int(my_sdr.sample_rate),
+                           ref=2 ** 12, plot=False)
     return np.flip(np.fft.fftshift(ampl)), np.fft.fftshift(freqs)
 
 
