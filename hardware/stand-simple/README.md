@@ -7,6 +7,8 @@ spring leaf clicks into a groove every 5°.
 
 ![assembly](preview.png)
 
+![tripod platter](preview_tripod.png)
+
 It keeps everything else from the original stand:
 
 - the array phase center on the rotation axis;
@@ -14,11 +16,38 @@ It keeps everything else from the original stand:
 - the 300-tooth GT2 rim and rear insert holes, so a stepper can be added
   later.
 
+## Two ways to hold the Phaser
+
+| Top | Print | Hardware | Notes |
+|---|---|---|---|
+| **Tripod** (`platter_tripod.stl`) | base, platter_tripod, retainer | 1 screw | The kit's tabletop tripod stands in three grooves. No mast to print |
+| **Mast** (`platter.stl`) | base, platter, retainer, mast, lock_wheel | 6 pieces | Stiffer and lower; no ball joint in the load path |
+
+### Tripod top
+
+The tripod platter has three ball-end grooves, 4 mm deep and about 12.6 mm
+wide, for the kit tripod's 11 mm rubber feet.
+
+- **Alignment:** the grooves meet at the thread position, not the platter
+  center. With the ball head pointing straight up, the array center sits on
+  the rotation axis, just as with the mast.
+- **Leg length:** the grooves run from short legs out to full extension,
+  where the feet are 5.5 in (139.7 mm) apart. Ticks every 10 mm help you put
+  all three feet at the same radius, which keeps the tripod centered.
+- **Leg orientation:** the legs are rotated 60° away from the offset
+  direction, so no groove end runs into the rim.
+- **Setup:**
+  1. Lock the ball head pointing straight up.
+  2. Set the feet in the grooves.
+  3. Turn the Phaser on the stud until the patch face lines up with the
+     pointer.
+
 ## Parts
 
 | STL | Print | Notes |
 |---|---|---|
 | `base.stl` | as-is | 240 mm Ø. 3 walls, 25% infill. More infill means more weight, which means less tip |
+| `platter_tripod.stl` | **upside down**, so the post and skirt point up | Tripod top. Same as `platter.stl`, with grooves instead of the mast pocket |
 | `platter.stl` | **upside down**, so the post and skirt point up | 191 mm Ø. 0.12–0.16 mm layers keep the GT2 teeth crisp |
 | `retainer.stl` | countersink down | |
 | `mast.stl` | foot down | 5 walls, 40% infill. It carries the Phaser |
@@ -71,7 +100,7 @@ recesses on the base underside, and a little dry PTFE lube on the ring.
 
 ```
 cd hardware/stand-simple
-for p in base platter retainer mast lock_wheel; do
+for p in base platter platter_tripod retainer mast lock_wheel; do
   openscad -D "part=\"$p\"" -o stl/$p.stl phaser_stand_simple.scad
 done
 ```

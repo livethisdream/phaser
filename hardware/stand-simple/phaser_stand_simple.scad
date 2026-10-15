@@ -9,9 +9,14 @@
 // when the pointer reads 0).
 //
 //   openscad -D 'part="base"' -o stl/base.stl phaser_stand_simple.scad
-// Parts: base, platter, retainer, mast, lock_wheel, assembly (preview).
+// Parts: base, platter, platter_tripod, retainer, mast, lock_wheel,
+// assembly (preview).
+//
+// Two tops: "mast" (printed mast + 1/4-20 stud) or "tripod" (the kit's own
+// tabletop tripod stands in three grooves on the platter; no mast).
 
 part = "assembly";
+top  = "tripod";  // assembly preview only
 
 // ---------------------------------------------------------------- measured
 board_w          = 113.19;
@@ -71,6 +76,18 @@ mast_pocket = 3;
 mast_h      = 80;
 mast_top    = 22;
 mast_skin   = 4;
+
+// Kit tripod: 11 mm rubber feet, 5.5 in (139.7 mm) apart at full extension,
+// i.e. on a 80.7 mm radius. Grooves meet at the thread position, so the
+// array center stays on the axis, and run from short legs to full extension.
+tripod_foot_d   = 11;
+tripod_r_max    = 139.7 / sqrt(3);
+tripod_r_range  = [35, tripod_r_max + 1.5];
+tripod_groove_r = 7;     // ball-end cutter: 4 mm deep, ~12.6 mm wide
+tripod_groove_depth = 4;
+// Rotate the legs 60 deg off the offset direction so no groove end runs
+// into the rim.
+tripod_leg0 = atan2(mast_y, mast_x) + 60;
 
 scale_r0 = platter_r + 2;
 engrave  = 0.6;
@@ -152,7 +169,17 @@ module mast_foot_2d(d) {
   intersection() { circle(d = d); translate([-d, -d / 2 + 4]) square([2 * d, 2 * d]); }
 }
 
-module platter() {
+module tripod_grooves() {
+  zc = platter_h + tripod_groove_r - tripod_groove_depth;
+  translate([mast_x, mast_y, 0]) for (i = [0 : 2]) rotate(tripod_leg0 + i * 120) {
+    hull() for (r = tripod_r_range) translate([r, 0, zc]) sphere(r = tripod_groove_r, $fn = 48);
+    // Ticks every 10 mm so all three feet go to the same radius.
+    for (r = [40 : 10 : tripod_r_max]) translate([r - 0.4, tripod_groove_r - 0.2, platter_h - engrave])
+      cube([0.8, 3, engrave + eps]);
+  }
+}
+
+module platter(top = "mast") {
   post_len = platter_z - (recess_h - fit);  // ends just above the retainer
   difference() {
     union() {
@@ -171,14 +198,18 @@ module platter() {
     for (a = [0 : detent_step : 359]) rotate(a) translate([0, skirt_r[0], -skirt_h - eps])
       rotate(45) translate([-groove_d * 0.71, -groove_d * 0.71, 0])
         cube([groove_d * 1.42, groove_d * 1.42, skirt_h + 2 * eps]);
-    // Mast pocket and screw pilots.
-    translate([0, 0, platter_h - mast_pocket]) linear_extrude(mast_pocket + eps) offset(0.2) mast_foot_2d(mast_foot_d);
-    for (a = mast_screw_a) rotate(a) translate([mast_screw_r, 0, platter_h - mast_pocket - 8])
-      cylinder(d = m4_pilot, h = 8 + eps, $fn = 24);
+    if (top == "tripod") tripod_grooves();
+    else {
+      // Mast pocket and screw pilots.
+      translate([0, 0, platter_h - mast_pocket]) linear_extrude(mast_pocket + eps) offset(0.2) mast_foot_2d(mast_foot_d);
+      for (a = mast_screw_a) rotate(a) translate([mast_screw_r, 0, platter_h - mast_pocket - 8])
+        cylinder(d = m4_pilot, h = 8 + eps, $fn = 24);
+    }
     // Belt anchor slot at the rear.
     translate([-1.5, -platter_r - eps, -eps]) cube([3, 10, belt_band + eps]);
-    // Lightening pockets.
-    for (a = [30 : 60 : 359]) rotate(a) translate([0, 72, platter_h - 6]) cylinder(d = 18, h = 6 + eps);
+    // Lightening pockets (mast platter only; the tripod grooves cross them).
+    if (top != "tripod")
+      for (a = [30 : 60 : 359]) rotate(a) translate([0, 72, platter_h - 6]) cylinder(d = 18, h = 6 + eps);
   }
 }
 
@@ -234,13 +265,15 @@ module lock_wheel() {
 // ---------------------------------------------------------------- output
 module assembly() {
   color("SteelBlue") base();
-  color("Gainsboro") translate([0, 0, platter_z]) platter();
+  color("Gainsboro") translate([0, 0, platter_z]) platter(top);
   color("SlateGray") translate([0, 0, recess_h - fit - retainer_t]) retainer();
-  color("Orange") translate([0, 0, platter_z + platter_h - mast_pocket]) mast();
+  if (top != "tripod")
+    color("Orange") translate([0, 0, platter_z + platter_h - mast_pocket]) mast();
 }
 
 if (part == "base") base();
-else if (part == "platter") platter();
+else if (part == "platter") platter("mast");
+else if (part == "platter_tripod") platter("tripod");
 else if (part == "retainer") retainer();
 else if (part == "mast") mast();
 else if (part == "lock_wheel") lock_wheel();
