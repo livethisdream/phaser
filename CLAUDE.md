@@ -9,6 +9,10 @@ The project moved here from the OneDrive-hosted copy on 2026-08-25; that copy is
 
 Reference materials:
 
+- `docs/calibration-bugs.md` — the four silent calibration failures on this
+  hardware and how to tell them apart. Three are inherited from the upstream
+  ADI `examples/phaser`, so they recur on any kit built from it. Read this
+  before debugging a deaf array or a flat beam pattern.
 - `docs/2025_Phaser_labs_Python.pdf` — canonical PHASER Phased Array Radar Workshop labs document (2025 edition). **Tracked in the repo**: `.gitignore` excludes `docs/*.pdf` but allowlists this one. Source of truth for the Lab 1–9 preset audit and for verifying what each lab's default state should be.
 
 ## Repo layout

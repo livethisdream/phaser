@@ -334,6 +334,61 @@ def gain_calibration(phaser, verbose=False, averages=4):
     return plot_data
 
 
+def _fit_pair_phase(phase_values_deg, response_db):
+    """The phase offset that peaks a two-element sum, from the WHOLE curve.
+
+    Replaces an argmax, which is the wrong estimator for this shape. Two
+    elements summing give a response proportional to |1 + exp(j*delta)|, so
+    the peak is quadratic: 20 degrees off costs 0.26 dB. A couple of tenths
+    of a dB of noise therefore moves an argmax by tens of degrees, and
+    phase_calibration feeds each pair's answer into the next, so that error
+    accumulates along the array. Measured on phaser-00: five runs, element 8
+    spanning 104 degrees, 27.5 degrees of scatter averaged over elements 2-8.
+
+    The curve is a known one-parameter family, so fit it. Every sample then
+    contributes, including the steep flanks and the null, which is where the
+    phase information actually is -- the peak is the least informative part
+    of the sweep.
+
+    The fit is the first Fourier coefficient: with f(phi) = g(phi - phi0) and
+    g non-negative, peaked at zero and having a positive first coefficient,
+    sum(f * exp(j*phi)) = exp(j*phi0) * (positive real), so its angle is
+    phi0. That holds whether the response is read as amplitude or as power --
+    both give a positive coefficient -- and it is immune to an additive
+    pedestal, because a constant is orthogonal to exp(j*phi). That last
+    property matters here: the measured peak never falls to zero, it falls to
+    the noise floor, and an estimator that cared would have to know where the
+    floor was.
+
+    Returns (offset_deg in [-180, 180), quality), where quality is
+    |c1| / |c0| -- about 0.33 for a clean two-element response and near zero
+    for a flat one. It is the only warning available that a pair's sweep
+    carried no phase information at all.
+    """
+    phi_deg = np.asarray(phase_values_deg, dtype=float)
+    response = np.asarray(response_db, dtype=float)
+    if phi_deg.size == 0:
+        return 0.0, 0.0
+
+    # The sweep is generated inclusive of both ends, so -180 and +180 are the
+    # same electrical phase measured twice. Harmless to an argmax, a small
+    # double-weighted term here.
+    if phi_deg.size > 1 and abs((phi_deg[-1] - phi_deg[0]) - 360.0) < 1e-6:
+        phi_deg = phi_deg[:-1]
+        response = response[:-1]
+
+    phi = np.radians(phi_deg)
+    linear = 10.0 ** (response / 20.0)
+    c1 = np.sum(linear * np.exp(1j * phi))
+    c0 = np.sum(linear)
+
+    offset = float(np.degrees(np.angle(c1)))
+    if offset >= 180.0:
+        offset -= 360.0
+    quality = float(np.abs(c1) / c0) if c0 > 0 else 0.0
+    return offset, quality
+
+
 def phase_calibration(phaser, verbose=False, averages=2):
     """Estimate per-element phase offsets by sweeping adjacent channel pairs.
 
@@ -378,14 +433,20 @@ def phase_calibration(phaser, verbose=False, averages=2):
             peak, _ = _capture_peak_dbfs(phaser, averages=averages)
             response.append(peak)
 
-        best_idx = int(np.argmax(response))
-        phaser.pcal[pair_idx + 1] = float(phase_values[best_idx])
+        offset, quality = _fit_pair_phase(phase_values, response)
+        phaser.pcal[pair_idx + 1] = offset
         plot_data.append(np.asarray(response))
 
         if verbose:
+            # The argmax is printed alongside because it is what this used to
+            # return; the gap between them is the error being removed, and it
+            # is worth being able to see it on a real bench.
+            argmax_deg = float(phase_values[int(np.argmax(response))])
+            flag = "" if quality >= MIN_PHASE_FIT_QUALITY else "  <- near-flat response"
             print(
                 f"Phase calibration pair {pair_idx + 1}->{pair_idx + 2}: "
-                f"best={phaser.pcal[pair_idx + 1]:.4f} deg"
+                f"fit={offset:8.3f} deg  (argmax={argmax_deg:8.3f}, "
+                f"quality={quality:.3f}){flag}"
             )
 
     for chan in range(8):
@@ -416,6 +477,13 @@ def phase_calibration(phaser, verbose=False, averages=2):
 # What separates the two is movement. A real tone holds its ABSOLUTE frequency
 # while the LO moves; a spur holds its BASEBAND offset. Everything below rests
 # on that one distinction.
+
+# A clean two-element sweep fits with |c1|/|c0| near 0.33 (the exact value for
+# a rectified-cosine response). Flat noise gives ~0. A third of the ideal is
+# comfortably clear of both, and only reports -- a pair that fits badly still
+# produces the best estimate available, and refusing to calibrate on it would
+# be worse than calibrating with a warning.
+MIN_PHASE_FIT_QUALITY = 0.11
 
 # A real HB100 at workshop range clears the floor by tens of dB; 10 dB is a
 # floor for "there is something here", not a target.
