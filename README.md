@@ -873,6 +873,12 @@ python3 phaser_characterize_headless.py      # find the IF   <- once per kit
 python3 phaser_cal_headless.py               # channel, gain, phase
 ```
 
+You do not have to remember step 2. If calibration fails its signal check on
+a kit that has never been characterised, it runs the sweep itself, stores the
+result and retries — once, and never on a kit that already has a measurement.
+Running the step deliberately is still better, because it tells you the window
+rather than just picking from it.
+
 The sidebar has the same three buttons in that order — **Find HB100**,
 **Characterize IF**, **Calibrate** — and shows which IF is in use and whether
 it was measured on this kit. Characterize confirms before running, since it

@@ -73,6 +73,17 @@ because it is worthless unless the HB100 is actually set up. The sidebar also
 shows the IF in use and whether it was measured on this kit — an unverified
 IF is otherwise indistinguishable on screen from a working one.
 
+**Calibration recovers from this on its own, once.** If the contrast gate
+fails on a unit that has never been characterised, cal runs the sweep itself,
+saves the result, retunes and retries — because the bench conditions a sweep
+needs are exactly the ones calibration needs, so anyone who got that far has
+already set them up. Two limits keep that safe: a unit that *already* has a
+measurement is never re-swept (there a failed gate means a dead source or a
+cable, and sweeping then would overwrite good data with bad), and a sweep that
+hears nothing saves nothing. If the recovery runs and still hears nothing at
+any IF, the abort says so and stops recommending characterisation, since it
+has just been ruled out.
+
 Characterisation is deliberately **not** part of `provision.sh`. Provisioning
 runs unattended at first boot (`scripts/pi/firstrun.sh` passes `--yes`), often
 before the kit is assembled and with no HB100 in front of it; a sweep then
@@ -267,7 +278,8 @@ The chain this ran on:
 
 | What you see | Look at |
 | --- | --- |
-| Cal aborts, contrast < 6 dB, IF source is `config.py` or a default | Bug 1 — run the characterisation |
+| Cal aborts, contrast < 6 dB, IF source is `config.py` or a default | Bug 1 — cal should have self-recovered; if it did not, check it reached the sweep |
+| Cal sweeps every IF and hears nothing at any of them | Not the IF. Dead source, or cables |
 | Cal aborts but the HB100 search works | Bug 2 — they are on different IFs |
 | Search reports the peak "moved with the LO" | Bug 3 — check the flush is present |
 | Cal completes, reruns disagree by tens of degrees | Bug 4 — check the fit quality line |
