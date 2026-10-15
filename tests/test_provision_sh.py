@@ -135,6 +135,21 @@ def test_pyadi_is_not_rebuilt_unconditionally():
     assert check < uninstall, "the import check must gate the uninstall, not follow it"
 
 
+def test_pylibiio_is_pinned_to_the_system_libiio():
+    """The pyadi-iio install must pin pylibiio<1 on a libiio 0.x system.
+
+    pyadi-iio asks for pylibiio >= 0.25, which pip resolves to pylibiio 1.0.
+    That binding refuses to import against Kuiper's libiio 0.x, so a fresh kit
+    fails step 7 after the whole pyadi-iio build. Found on a stock card,
+    2026-10-15.
+    """
+    text = PROVISION.read_text(encoding="utf-8")
+    assert '"pylibiio<1"' in text, "expected a pylibiio<1 pin"
+    assert "libiio\\.so\\.1" in text, "the pin must be conditional on the system libiio"
+    for line in text.splitlines():
+        if 'pip install' in line and '"$PYADI_DIR"' in line:
+            assert '"${PIP_PIN[@]}"' in line, f"pyadi-iio install without the pin: {line.strip()}"
+
 def test_clock_seeds_over_plain_http():
     """The clock bootstrap must not depend on TLS.
 
