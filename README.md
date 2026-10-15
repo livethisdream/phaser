@@ -876,6 +876,11 @@ python3 phaser_cal_headless.py               # channel, gain, phase
 You do not have to remember step 2. If calibration fails its signal check on
 a kit that has never been characterised, it runs the sweep itself, stores the
 result and retries — once, and never on a kit that already has a measurement.
+
+You **do** have to remember step 1. The sweep tunes against the stored HB100
+frequency, so on a kit that has never found its source there is nothing to
+sweep against; calibration says so and stops rather than reporting a result
+it cannot support.
 Running the step deliberately is still better, because it tells you the window
 rather than just picking from it.
 
