@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-C8_SmfMo.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-2mihS-Eq.css">
+  <script type="module" crossorigin src="./assets/index-C_3ZFtHG.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DzXPGDaq.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -122,10 +122,14 @@
                       <label style="margin-bottom:0; color: var(--text-main);">Calibration</label>
                     </div>
                     <div class="action-row" style="margin-top:0.5rem">
-                        <button class="btn btn-outline" id="btn-calibrate-phaser">Calibrate</button>
+                        <!-- Workflow order: find the source, measure the IF this
+                             kit can hear, then calibrate the array against it. -->
                         <button class="btn btn-outline" id="btn-find-hb100">Find HB100</button>
+                        <button class="btn btn-outline" id="btn-characterize" title="Measure this kit's usable IF range. Needed once per kit, with the HB100 powered and aimed at the array.">Characterize IF</button>
+                        <button class="btn btn-outline" id="btn-calibrate-phaser">Calibrate</button>
                         <button class="btn btn-outline" id="btn-reboot-phaser" title="Reboot Phaser hardware">Reboot</button>
                     </div>
+                    <div id="if-status" class="if-status" title="The IF this kit is running at, and whether it was measured on this unit"></div>
                     <hr class="divider" />
 
                     <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">

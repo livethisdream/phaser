@@ -343,11 +343,40 @@ for line in problems:
     print("  WARN: %s" % line)
 if not problems:
     print("  OK: inside the IF window measured on this unit")
+
+# A fresh kit has no measurement, and that is the normal state after an
+# install rather than an error. Leave a marker for the closing summary: the
+# three setup scripts have to run in order and nothing else says so.
+if window is None:
+    open("/tmp/.phaser-uncharacterised", "w").close()
 PY
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '\n'; printf '=%.0s' {1..64}; printf '\n'
 say "Installed. Service is active and the UI answered HTTP $CODE."
+
+# Deliberately NOT run from here, nor from provision.sh. Characterisation
+# needs a powered HB100 aimed at the array, and provisioning runs unattended
+# at first boot (scripts/pi/firstrun.sh passes --yes), often before the kit is
+# even assembled -- sweeping then would measure noise. Telling the operator is
+# the most an installer can honestly do.
+if [ -f /tmp/.phaser-uncharacterised ]; then
+    rm -f /tmp/.phaser-uncharacterised
+    say ""
+    say "This kit has NOT been characterised. The usable IF differs between"
+    say "kits by ~200 MHz, and the config default is one that some kits cannot"
+    say "hear at all -- a deaf kit looks exactly like a dead HB100."
+    say ""
+    say "With the HB100 powered and aimed at the array, run once:"
+    say ""
+    say "  cd $INSTALL_DIR"
+    say "  python3 phaser_find_hb100_headless.py       # find the source"
+    say "  python3 phaser_characterize_headless.py     # find the IF"
+    say "  python3 phaser_cal_headless.py              # calibrate the array"
+    say ""
+    say "Or press Find HB100 / Characterize IF / Calibrate in the UI, in that"
+    say "order. See docs/calibration-bugs.md."
+fi
 say ""
 say "  http://$(hostname).local:${HTTP_PORT}/"
 [ -n "$IP" ] && say "  http://${IP}:${HTTP_PORT}/"

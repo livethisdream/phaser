@@ -67,6 +67,19 @@ python3 phaser_characterize_headless.py      # 2. find the IF   ← once per kit
 python3 phaser_cal_headless.py               # 3. channel, gain, phase
 ```
 
+The sidebar has the same three as **Find HB100 / Characterize IF /
+Calibrate**, in that order, and Characterize asks for confirmation first
+because it is worthless unless the HB100 is actually set up. The sidebar also
+shows the IF in use and whether it was measured on this kit — an unverified
+IF is otherwise indistinguishable on screen from a working one.
+
+Characterisation is deliberately **not** part of `provision.sh`. Provisioning
+runs unattended at first boot (`scripts/pi/firstrun.sh` passes `--yes`), often
+before the kit is assembled and with no HB100 in front of it; a sweep then
+would measure noise. `install.sh` prints the three steps instead when it
+finds no measurement, and refusing to save a sweep that heard nothing means
+a mistaken run is safe rather than silently destructive.
+
 ### Why the chosen IF is the middle of the window
 
 The top edge is the thing that varies between units, so distance from it is
