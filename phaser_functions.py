@@ -712,6 +712,14 @@ IF_CLEAN_TOLERANCE_DB = 6.0
 # characterisation fails rather than picking the middle of one.
 IF_MIN_USABLE_SPAN_HZ = 100e6
 
+# A sweep whose best step is below this is not believed at all. choose_rx_freq
+# cannot reject a dead sweep on shape -- with nothing received, every step is
+# within tolerance of every other and the clean run looks perfect -- so the
+# absolute level is the only thing that gives it away. The whole array on a
+# live HB100 reads ~85 dB on both kits measured; 30 dB is far below that and
+# far above the ~15 dB a deaf configuration returns.
+MIN_BOOTSTRAP_SNR_DB = 30.0
+
 # Chosen IFs are rounded to this, purely so the number people read and type is
 # a round one. Far finer than anything that changes reception.
 IF_ROUNDING_HZ = 5e6

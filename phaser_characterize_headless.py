@@ -47,6 +47,7 @@ import time
 
 from phaser_functions import (
     IF_SWEEP_START_HZ,
+    MIN_BOOTSTRAP_SNR_DB,
     IF_SWEEP_STOP_HZ,
     IF_SWEEP_STEP_HZ,
     DEFAULT_RX_FREQ_HZ,
@@ -70,11 +71,6 @@ except ImportError:
 MAX_RETRIES = 3
 RETRY_DELAY = 2.0
 MAX_GAIN = 127
-
-# A sweep step has to clear this before the sweep is believed at all. The
-# whole array on a live HB100 reads 85 dB on both kits measured; 30 dB is far
-# below that and far above the ~15 dB a deaf configuration returns.
-MIN_BOOTSTRAP_SNR_DB = 30.0
 
 
 def connect():
