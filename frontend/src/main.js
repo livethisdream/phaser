@@ -1981,22 +1981,33 @@ function setCalibrationButtonsBusy(running, taskName = null) {
     }
 }
 
-// Shown in the sidebar under the calibration buttons. Without it a kit
-// running on an unverified IF -- the failure that cost a day on phaser-00 --
-// looks exactly like a measured one.
+// Pill next to the connection indicator. Without it a kit running on an
+// unverified IF -- the failure that cost a day on phaser-00 -- looks exactly
+// like a measured one. The pill stays short; the why goes in the tooltip.
 function updateIfStatus() {
-    const el = document.getElementById('if-status');
-    if (!el) return;
+    const pill = document.getElementById('if-pill');
+    if (!pill) return;
     const ghz = Number(state.Rx_freq) / 1e9;
     const source = state.Rx_freq_source || '';
-    const measured = /measured/i.test(source);
-    if (!Number.isFinite(ghz)) { el.innerText = ''; return; }
+    // Rx_freq has a bootstrap default, so wait for the backend to say where
+    // the value came from rather than showing a number nobody measured.
+    if (!source || !Number.isFinite(ghz)) { pill.style.display = 'none'; return; }
 
-    const label = measured ? 'measured on this kit'
-        : (/override/i.test(source) ? 'forced by config override' : 'not measured on this kit');
-    el.classList.toggle('unverified', !measured);
-    el.innerHTML = `IF <span class="if-value">${ghz.toFixed(3)} GHz</span> &middot; ${label}`;
-    if (!measured) el.innerHTML += '<br>Run <b>Characterize IF</b> once, with the HB100 aimed at the array.';
+    const simulated = /simulat/i.test(source);
+    const measured = simulated || /measured/i.test(source);
+    const label = simulated ? 'Simulated -- no kit to measure'
+        : /measured/i.test(source) ? 'Measured on this kit'
+        : (/override/i.test(source) ? 'Forced by config override' : 'Not measured on this kit');
+    document.getElementById('if-text').innerText = `IF ${ghz.toFixed(3)} GHz`;
+    const dot = document.getElementById('if-dot');
+    dot.classList.toggle('connected', measured);
+    dot.classList.toggle('warn', !measured);
+
+    const lines = [label, `Source: ${source}`];
+    for (const w of state.Rx_freq_warnings || []) lines.push(`Warning: ${w}`);
+    if (!measured) lines.push('Run Characterize IF once, with the HB100 aimed at the array.');
+    pill.title = lines.join('\n');
+    pill.style.display = '';
 }
 
 function updateCalibrationPill(data, fallbackText) {

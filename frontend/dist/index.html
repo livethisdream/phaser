@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-C_3ZFtHG.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-DzXPGDaq.css">
+  <script type="module" crossorigin src="./assets/index-BHcu59gC.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CnnoVwdZ.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -129,7 +129,6 @@
                         <button class="btn btn-outline" id="btn-calibrate-phaser">Calibrate</button>
                         <button class="btn btn-outline" id="btn-reboot-phaser" title="Reboot Phaser hardware">Reboot</button>
                     </div>
-                    <div id="if-status" class="if-status" title="The IF this kit is running at, and whether it was measured on this unit"></div>
                     <hr class="divider" />
 
                     <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
@@ -560,6 +559,13 @@
             </div>
             <div class="stats-spacer"></div>
             <span id="transport-badge" class="transport-badge" style="display:none;"></span>
+            <!-- The IF this kit runs at. Amber when it was not measured on this
+                 unit -- the failure that cost a day on phaser-00 looks exactly
+                 like a measured kit otherwise. Details live in the tooltip. -->
+            <div class="status-indicator if-pill" id="if-pill" style="display:none;">
+              <div class="dot" id="if-dot"></div>
+              <span id="if-text"></span>
+            </div>
             <!-- Also the power switch: hold to shut the Pi down cleanly. Same
                  effect as the push button on the Phaser itself, which is a
                  gpio-shutdown overlay on GPIO21 that logind turns into

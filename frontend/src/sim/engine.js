@@ -85,6 +85,8 @@ export function createEngine(options = {}) {
     const state = {
         SignalFreq: SIGNAL_FREQ_HZ,
         Rx_freq: RX_FREQ_HZ,
+        // There is no kit to measure; says so rather than read as unverified.
+        Rx_freq_source: 'simulator',
         Tx_freq: TX_FREQ_HZ,
         Rx_gain: RX_GAIN_DB,
         Tx_gain: TX_GAIN_DB,
