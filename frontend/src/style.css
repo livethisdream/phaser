@@ -1500,18 +1500,74 @@ input[type=number]::-webkit-outer-spin-button {
   margin-right: 0.75rem;
 }
 
-/* Status pills move as one group: right-aligned after the stat boxes, and when
-   they do not fit there the whole group drops to the next line, still right-
-   aligned. Left loose in the wrapping row, each pill broke off on its own. */
+/* The stat row is two matched groups: plot readouts on the left, hardware
+   status pills on the right. Both share one height and corner radius so they
+   read as a pair, and each wraps as a unit -- left loose in the wrapping row,
+   single boxes and pills broke off on their own. When the pills do not fit
+   beside the readouts the whole group drops to the next line, right-aligned. */
+.chart-stats {
+  --stat-row-h: 2.75rem;
+  --stat-row-radius: 10px;
+}
+.plot-stats,
 .status-pills {
   display: flex;
   align-items: center;
   gap: 0.55rem;
+}
+.plot-stats {
+  flex-wrap: wrap;
+}
+.status-pills {
   flex-wrap: nowrap;
   margin-left: auto;
 }
+.plot-stats .stat-box {
+  height: var(--stat-row-h);
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--stat-row-radius);
+  justify-content: center;
+  gap: 0.1rem;
+}
+.plot-stats .stat-label {
+  font-size: 0.66rem;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.plot-stats .stat-value {
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+.status-pills .status-indicator,
+.status-pills .transport-badge {
+  height: var(--stat-row-h);
+  padding: 0 0.75rem;
+  border-radius: var(--stat-row-radius);
+}
 .status-pills .transport-badge {
   margin-right: 0; /* the group's gap spaces it now */
+}
+
+/* Peak and centroid share one box; tapping switches. A real <button>, so it
+   needs the stat-box look restored and a fixed width so the row does not
+   shift when the label changes. */
+.stat-toggle {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-width: 8.2rem;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.stat-toggle:hover {
+  border-color: rgba(99, 102, 241, 0.55);
+}
+.stat-toggle:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.8);
+  outline-offset: 2px;
+}
+.stat-toggle-icon {
+  opacity: 0.6;
 }
 
 /* --- Narrow viewports -------------------------------------------------------
@@ -1658,21 +1714,29 @@ input[type=number]::-webkit-outer-spin-button {
    
    :has() is ignored by browsers that lack it, which just leaves the tab at
    the shared height -- the behaviour before this rule. */
-/* Phones: the pills get their own full-width line under the stat boxes, and
-   shrink a little so all three fit on one line at 360px. */
+/* Phones: readouts on one line, pills on the next, each spread evenly across
+   the full width so the two rows mirror each other. The pills shrink a little
+   so all three fit at 360px. */
 @media (max-width: 600px) {
+  .chart-stats {
+    --stat-row-h: 2.5rem;
+  }
+  .plot-stats,
   .status-pills {
     flex-basis: 100%;
-    justify-content: flex-end;
+    justify-content: space-evenly;
     gap: 0.4rem;
   }
+  .status-pills {
+    margin-left: 0;
+  }
   .status-pills .status-indicator {
-    padding: 0.22rem 0.45rem;
+    padding: 0 0.5rem;
     gap: 0.35rem;
     font-size: 0.74rem;
   }
   .status-pills .transport-badge {
-    padding: 0.2rem 0.45rem;
+    padding: 0 0.5rem;
     font-size: 0.66rem;
   }
   .status-pills .dot {

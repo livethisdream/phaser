@@ -511,49 +511,50 @@
         </div>
 
         <div class="chart-stats">
-            <div class="stat-box">
-                <span class="stat-label">Peak Array Gain</span>
-                <span class="stat-value" id="stat-peak">-- dB</span>
-            </div>
-            <div class="stat-box">
-                <span class="stat-label">Est. Angle</span>
-                <span class="stat-value" id="stat-angle">-- °</span>
-            </div>
-            <!-- The backend's peak_angle_deg: a power-weighted centroid of the
-                 mainlobe, not the argmax Est. Angle shows. On a peak clipped
-                 flat near full scale the argmax wanders between tied points;
-                 the centroid holds still, which is what a bearing wants. -->
-            <div class="stat-box" title="Power-weighted centroid of the mainlobe (within 3 dB of the peak). Steadier than Est. Angle when the peak is clipped flat.">
-                <span class="stat-label">Centroid Angle</span>
-                <span class="stat-value" id="stat-centroid">-- °</span>
-            </div>
-            <!-- CTF progress. It sits in the stat row rather than in the CTF
-                 panel for the same reason the sector bands do: the player is
-                 already looking at the plot and its readouts, not at the
-                 sidebar. Hidden unless ?ctf=1 AND a Python backend answered.
+            <!-- Plot readouts on the left, hardware status pills on the right:
+                 two groups of the same height that wrap as units. -->
+            <div class="plot-stats">
+              <div class="stat-box">
+                  <span class="stat-label">Peak Gain</span>
+                  <span class="stat-value" id="stat-peak">-- dB</span>
+              </div>
+              <!-- Peak and centroid share one box; tap to switch. Peak is the
+                   argmax of the pattern. Centroid is the backend's
+                   peak_angle_deg, a power-weighted centroid of the mainlobe: on
+                   a peak clipped flat near full scale the argmax wanders between
+                   tied points while the centroid holds still, which is what a
+                   bearing wants. -->
+              <button type="button" class="stat-box stat-toggle" id="stat-angle-box">
+                  <span class="stat-label"><span id="stat-angle-label">Angle · Peak</span> <span class="stat-toggle-icon" aria-hidden="true">⇄</span></span>
+                  <span class="stat-value" id="stat-angle">-- °</span>
+              </button>
+              <!-- CTF progress. It sits in the stat row rather than in the CTF
+                   panel for the same reason the sector bands do: the player is
+                   already looking at the plot and its readouts, not at the
+                   sidebar. Hidden unless ?ctf=1 AND a Python backend answered.
 
-                 Full size, not .compact, to match Peak Array Gain and Est.
-                 Angle. During a run this is the readout the player checks
-                 most, so it should not read as an afterthought next to them;
-                 the beam-squint boxes below stay compact because they are.
+                   Same size as Peak Gain and Angle. During a run this is the
+                   readout the player checks most, so it should not read as an
+                   afterthought next to them.
 
-                 It is also the control: hold it to start a run. Putting the
-                 reset on the readout the player is already watching beats a
-                 button in the sidebar they have to look away to find. -->
-            <div class="stat-box btn-hold" id="ctf-progress-box" style="display:none;"
-                 role="button" tabindex="0"
-                 title="Hold to start a new run. This clears any progress.">
-                <span class="btn-hold-fill"></span>
-                <span class="stat-label">CTF Sequence</span>
-                <span class="stat-value" id="ctf-progress-pill">— / —</span>
-            </div>
-            <div class="stat-box compact" id="beam-squint-info" style="display:none;">
-                <span class="stat-label">Calc (GHz)</span>
-                <span class="stat-value" id="beam-calc-freq">--</span>
-            </div>
-            <div class="stat-box compact" id="beam-squint-info2" style="display:none;">
-                <span class="stat-label">Meas (GHz)</span>
-                <span class="stat-value" id="beam-meas-freq">--</span>
+                   It is also the control: hold it to start a run. Putting the
+                   reset on the readout the player is already watching beats a
+                   button in the sidebar they have to look away to find. -->
+              <div class="stat-box btn-hold" id="ctf-progress-box" style="display:none;"
+                   role="button" tabindex="0"
+                   title="Hold to start a new run. This clears any progress.">
+                  <span class="btn-hold-fill"></span>
+                  <span class="stat-label">CTF Sequence</span>
+                  <span class="stat-value" id="ctf-progress-pill">— / —</span>
+              </div>
+              <div class="stat-box compact" id="beam-squint-info" style="display:none;">
+                  <span class="stat-label">Calc (GHz)</span>
+                  <span class="stat-value" id="beam-calc-freq">--</span>
+              </div>
+              <div class="stat-box compact" id="beam-squint-info2" style="display:none;">
+                  <span class="stat-label">Meas (GHz)</span>
+                  <span class="stat-value" id="beam-meas-freq">--</span>
+              </div>
             </div>
             <div class="stats-spacer"></div>
             <!-- One unit so the pills wrap together instead of scattering

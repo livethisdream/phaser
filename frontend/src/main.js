@@ -1381,6 +1381,38 @@ function updateBeamSquintDisplay() {
 
 document.getElementById('opt-show-squint')?.addEventListener('change', updateBeamSquintDisplay);
 
+/* --- Angle stat: one box, tap to switch between peak and centroid ---
+   Both values update every sweep so the switch is instant. The choice is a
+   per-viewer convenience, so it lives in localStorage and the box still works
+   when storage is blocked. */
+const ANGLE_MODE_KEY = 'phaser_angle_stat';
+const ANGLE_TITLES = {
+    peak: 'Peak: the angle of the strongest point in the pattern. Tap for Centroid.',
+    centroid: 'Centroid: power-weighted center of the mainlobe (within 3 dB of the peak). '
+        + 'Steadier than Peak when the peak is clipped flat. Tap for Peak.',
+};
+const angleStats = { peak: '-- °', centroid: '-- °' };
+let angleMode = 'peak';
+try {
+    if (localStorage.getItem(ANGLE_MODE_KEY) === 'centroid') angleMode = 'centroid';
+} catch { /* storage blocked: default to peak */ }
+
+function renderAngleStat() {
+    const box = document.getElementById('stat-angle-box');
+    if (!box) return;
+    document.getElementById('stat-angle-label').textContent =
+        angleMode === 'peak' ? 'Angle · Peak' : 'Angle · Centroid';
+    document.getElementById('stat-angle').innerText = angleStats[angleMode];
+    box.title = ANGLE_TITLES[angleMode];
+}
+
+document.getElementById('stat-angle-box')?.addEventListener('click', () => {
+    angleMode = angleMode === 'peak' ? 'centroid' : 'peak';
+    try { localStorage.setItem(ANGLE_MODE_KEY, angleMode); } catch { /* ignore */ }
+    renderAngleStat();
+});
+renderAngleStat();
+
 /* --- Show Logs Tab toggle --- */
 const LOGS_TAB_KEY = 'phaser_show_logs_tab';
 function applyLogsTabVisibility(show) {
@@ -2746,10 +2778,11 @@ function updateCharts(data) {
         
         // Update Stats displays
         document.getElementById('stat-peak').innerText = peakValue.toFixed(2) + " dB";
-        document.getElementById('stat-angle').innerText = xData[peakIndex].toFixed(1) + " °";
+        angleStats.peak = xData[peakIndex].toFixed(1) + " °";
         // `+ 0` turns -0 into 0, so a centroid a hair below zero reads 0.0.
-        document.getElementById('stat-centroid').innerText = centroid === null
+        angleStats.centroid = centroid === null
             ? "-- °" : (Number(centroid.toFixed(1)) + 0).toFixed(1) + " °";
+        renderAngleStat();
     }
     
     // FFT data - apply same transforms as original Tkinter GUI (phaser_gui.py:2423)
