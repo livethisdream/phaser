@@ -300,6 +300,16 @@ h1, h2, h3 {
   background: var(--error);
   box-shadow: 0 0 10px var(--error);
 }
+.dot.warn {
+  background: var(--warn, #e0a44c);
+  box-shadow: 0 0 10px var(--warn, #e0a44c);
+}
+
+.if-pill {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
+}
 
 /* Layout */
 .dashboard {
@@ -993,22 +1003,6 @@ input[type=number]::-webkit-outer-spin-button {
     flex-direction: column;
     gap: 0.6rem;
     margin-top: 0.5rem;
-}
-
-.if-status {
-    margin-top: 0.5rem;
-    font-size: 0.78rem;
-    line-height: 1.35;
-    color: var(--text-dim, #8b93a7);
-}
-
-.if-status.unverified {
-    color: var(--warn, #e0a44c);
-}
-
-.if-status .if-value {
-    font-variant-numeric: tabular-nums;
-    color: var(--text-main);
 }
 
 .calibration-feedback {
