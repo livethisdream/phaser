@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-BHcu59gC.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-CnnoVwdZ.css">
+  <script type="module" crossorigin src="./assets/index-B7SVgW-Y.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CSl3bFU-.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -558,25 +558,29 @@
                 <span class="stat-value" id="beam-meas-freq">--</span>
             </div>
             <div class="stats-spacer"></div>
-            <span id="transport-badge" class="transport-badge" style="display:none;"></span>
-            <!-- The IF this kit runs at. Amber when it was not measured on this
-                 unit -- the failure that cost a day on phaser-00 looks exactly
-                 like a measured kit otherwise. Details live in the tooltip. -->
-            <div class="status-indicator if-pill" id="if-pill" style="display:none;">
-              <div class="dot" id="if-dot"></div>
-              <span id="if-text"></span>
-            </div>
-            <!-- Also the power switch: hold to shut the Pi down cleanly. Same
-                 effect as the push button on the Phaser itself, which is a
-                 gpio-shutdown overlay on GPIO21 that logind turns into
-                 `systemctl poweroff`. Standard on any current install; the hold
-                 is still armed only when the backend reports
-                 shutdown_available, so an older Pi or the simulator never
-                 offers something that would only fail. -->
-            <div class="status-indicator" id="connection-pill">
-              <span class="btn-hold-fill"></span>
-              <div class="dot disconnected" id="connection-dot"></div>
-              <span id="connection-text">Disconnected</span>
+            <!-- One unit so the pills wrap together instead of scattering
+                 between the stat boxes when the row runs out of width. -->
+            <div class="status-pills">
+              <span id="transport-badge" class="transport-badge" style="display:none;"></span>
+              <!-- The IF this kit runs at. Amber when it was not measured on this
+                   unit -- the failure that cost a day on phaser-00 looks exactly
+                   like a measured kit otherwise. Details live in the tooltip. -->
+              <div class="status-indicator if-pill" id="if-pill" style="display:none;">
+                <div class="dot" id="if-dot"></div>
+                <span id="if-text"></span>
+              </div>
+              <!-- Also the power switch: hold to shut the Pi down cleanly. Same
+                   effect as the push button on the Phaser itself, which is a
+                   gpio-shutdown overlay on GPIO21 that logind turns into
+                   `systemctl poweroff`. Standard on any current install; the hold
+                   is still armed only when the backend reports
+                   shutdown_available, so an older Pi or the simulator never
+                   offers something that would only fail. -->
+              <div class="status-indicator" id="connection-pill">
+                <span class="btn-hold-fill"></span>
+                <div class="dot disconnected" id="connection-dot"></div>
+                <span id="connection-text">Disconnected</span>
+              </div>
             </div>
         </div>
       </section>
