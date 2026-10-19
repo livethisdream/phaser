@@ -1521,6 +1521,9 @@ input[type=number]::-webkit-outer-spin-button {
 .status-pills {
   flex-wrap: nowrap;
   margin-left: auto;
+  /* Stretch so the SIMULATION badge, whose uppercase text is set smaller,
+     still matches IF and Connected in height. */
+  align-items: stretch;
 }
 .plot-stats .stat-box {
   height: var(--stat-row-h);
