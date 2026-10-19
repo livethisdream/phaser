@@ -2286,23 +2286,84 @@ async function runCalibrationTask(taskName) {
 document.getElementById('btn-calibrate-phaser')?.addEventListener('click', () => runCalibrationTask('phaser_cal'));
 document.getElementById('btn-find-hb100')?.addEventListener('click', () => runCalibrationTask('find_hb100'));
 
-// Characterisation confirms first, unlike the other two. It is a once-per-kit
+// An in-app confirmation instead of the browser's confirm(). The native dialog
+// carries the browser's own chrome and the page's address ("phaser-00.local:8080
+// says"), which reads as a security warning rather than as part of the app.
+// Resolves true on Continue, false on Cancel, Escape, or a click outside.
+function confirmInApp({ title, paragraphs = [], bullets = [], note = '', confirmLabel = 'Continue' }) {
+    const overlay = document.getElementById('confirm-modal');
+    const body = document.getElementById('confirm-modal-body');
+    const okBtn = document.getElementById('btn-confirm-ok');
+    const cancelBtn = document.getElementById('btn-confirm-cancel');
+    if (!overlay || !body || !okBtn || !cancelBtn) return Promise.resolve(window.confirm(title));
+
+    document.getElementById('confirm-modal-title').textContent = title;
+    body.replaceChildren();
+    for (const text of paragraphs) {
+        const p = document.createElement('p');
+        p.textContent = text;
+        body.appendChild(p);
+    }
+    if (bullets.length) {
+        const ul = document.createElement('ul');
+        for (const text of bullets) {
+            const li = document.createElement('li');
+            li.textContent = text;
+            ul.appendChild(li);
+        }
+        body.appendChild(ul);
+    }
+    if (note) {
+        const p = document.createElement('p');
+        p.className = 'confirm-note';
+        p.textContent = note;
+        body.appendChild(p);
+    }
+    okBtn.textContent = confirmLabel;
+    overlay.hidden = false;
+    okBtn.focus();
+
+    return new Promise((resolve) => {
+        const finish = (answer) => {
+            overlay.hidden = true;
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            overlay.removeEventListener('click', onOverlay);
+            document.removeEventListener('keydown', onKey);
+            resolve(answer);
+        };
+        const onOk = () => finish(true);
+        const onCancel = () => finish(false);
+        const onOverlay = (e) => { if (e.target === overlay) finish(false); };
+        const onKey = (e) => { if (e.key === 'Escape') finish(false); };
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        overlay.addEventListener('click', onOverlay);
+        document.addEventListener('keydown', onKey);
+    });
+}
+
+// Characterization confirms first, unlike the other two. It is a once-per-kit
 // bench step rather than a routine one, it is worthless unless the HB100 is
 // actually set up, and it rewrites the IF the whole backend then runs at -- so
 // it is worth a sentence before a minute of sweeping.
-document.getElementById('btn-characterize')?.addEventListener('click', () => {
-    const ok = confirm(
-        'Measure this kit\'s usable IF range?\n\n'
-        + 'This sweeps the receiver from 1.2 to 2.6 GHz against the HB100, takes '
-        + 'about a minute, and stores the result for this kit only. You normally '
-        + 'do it once, when the kit is new.\n\n'
-        + 'Before continuing:\n'
-        + '  \u2022 the HB100 must be powered and aimed at the array, at boresight\n'
-        + '  \u2022 run Find HB100 first, so the stored source frequency is current\n\n'
-        + 'Nothing is saved if the sweep hears nothing, so a bad run is safe.'
-    );
+document.getElementById('btn-characterize')?.addEventListener('click', async () => {
+    const ok = await confirmInApp({
+        title: 'Characterize IF',
+        paragraphs: [
+            'Measure this kit\'s usable IF range. The sweep runs the receiver from '
+            + '1.2 to 2.6 GHz against the HB100, takes about a minute, and stores '
+            + 'the result for this kit only. You normally do it once, when the kit is new.',
+        ],
+        bullets: [
+            'The HB100 is powered and aimed at the array, at boresight.',
+            'Find HB100 has run first, so the stored source frequency is current.',
+        ],
+        note: 'Nothing is saved if the sweep hears nothing, so a bad run is safe.',
+        confirmLabel: 'Start',
+    });
     if (!ok) {
-        addRuntimeLog('info', 'CAL', 'Characterize IF cancelled before starting');
+        addRuntimeLog('info', 'CAL', 'Characterize IF canceled before starting');
         return;
     }
     runCalibrationTask('characterize');
@@ -2310,7 +2371,12 @@ document.getElementById('btn-characterize')?.addEventListener('click', () => {
 
 document.getElementById('btn-reboot-phaser')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-reboot-phaser');
-    if (!confirm('Reboot the Phaser hardware? This will take about 30 seconds.')) return;
+    const ok = await confirmInApp({
+        title: 'Reboot the Phaser',
+        paragraphs: ['The Pi restarts and the page reconnects on its own in about 30 seconds.'],
+        confirmLabel: 'Reboot',
+    });
+    if (!ok) return;
     btn.disabled = true;
     btn.textContent = 'Rebooting...';
     addRuntimeLog('info', 'SYS', 'Sending reboot command to Phaser...');

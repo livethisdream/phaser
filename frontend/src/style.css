@@ -1367,6 +1367,24 @@ input[type=number]::-webkit-outer-spin-button {
   z-index: 1000;
 }
 
+.confirm-body p {
+  margin: 0 0 0.75rem;
+  line-height: 1.45;
+  color: var(--text-main);
+}
+
+.confirm-body ul {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+  line-height: 1.45;
+  color: var(--text-main);
+}
+
+.confirm-body .confirm-note {
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
 .modal-overlay[hidden] {
   display: none;
 }
