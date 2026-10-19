@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-DpMbHl1D.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-_q2eGjdM.css">
+  <script type="module" crossorigin src="./assets/index-DCQUBOsV.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DM5Q3qCm.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -606,6 +606,20 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-danger" id="btn-cal-action">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- In-app confirmation (replaces the browser's confirm()) -->
+  <div class="modal-overlay" id="confirm-modal" hidden>
+    <div class="modal glass-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="confirm-modal-title">Confirm</h3>
+      </div>
+      <div class="modal-body confirm-body" id="confirm-modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btn-confirm-cancel">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-ok">Continue</button>
       </div>
     </div>
   </div>
