@@ -560,7 +560,6 @@
             <!-- One unit so the pills wrap together instead of scattering
                  between the stat boxes when the row runs out of width. -->
             <div class="status-pills">
-              <span id="transport-badge" class="transport-badge" style="display:none;"></span>
               <!-- The IF this kit runs at. Amber when it was not measured on this
                    unit -- the failure that cost a day on phaser-00 looks exactly
                    like a measured kit otherwise. Details live in the tooltip. -->
@@ -568,7 +567,12 @@
                 <div class="dot" id="if-dot"></div>
                 <span id="if-text"></span>
               </div>
-              <!-- Also the power switch: hold to shut the Pi down cleanly. Same
+              <!-- What the data is coming from: green Connected for real
+                   hardware, amber Simulated for either simulator (in the
+                   browser, or the Pi's --sim backend), red when the link is
+                   down. The tooltip says which simulator.
+
+                   Also the power switch: hold to shut the Pi down cleanly. Same
                    effect as the push button on the Phaser itself, which is a
                    gpio-shutdown overlay on GPIO21 that logind turns into
                    `systemctl poweroff`. Standard on any current install; the hold

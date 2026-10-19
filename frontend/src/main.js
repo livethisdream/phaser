@@ -1543,7 +1543,8 @@ function armShutdownIfPermitted(available) {
     pill.classList.add('btn-hold');
     pill.setAttribute('role', 'button');
     pill.setAttribute('tabindex', '0');
-    pill.title = 'Hold to shut the Phaser down cleanly.';
+    shutdownArmed = true;
+    pill.title = connectionPillTitle();
 
     wireHoldToCommit(pill, SHUTDOWN_HOLD_MS, async () => {
         try {
@@ -1563,22 +1564,48 @@ function armShutdownIfPermitted(available) {
         }
         return false;
     });
-    shutdownArmed = true;
 }
 
-function updateHardwareConnectionStatus(connected) {
+/* One pill says what the data is coming from. Real hardware reads Connected
+   (green); either simulator reads Simulated (amber), so simulated data never
+   looks like a live kit -- the Pi's --sim backend used to show a plain green
+   Connected. The tooltip tells the two simulators apart. */
+const CONNECTION_DOT = { ok: 'connected', sim: 'warn', down: 'disconnected' };
+let backendSimMode = false;
+let connectionInfo = '';
+
+function connectionPillTitle() {
+    const hold = shutdownArmed ? 'Hold to shut the Phaser down cleanly.' : '';
+    return [connectionInfo, hold].filter(Boolean).join('\n');
+}
+
+function setConnectionPill(text, tone, title) {
     const dot = document.getElementById('connection-dot');
-    const text = document.getElementById('connection-text');
+    const label = document.getElementById('connection-text');
+    if (dot) {
+        dot.classList.remove('connected', 'warn', 'disconnected');
+        dot.classList.add(CONNECTION_DOT[tone]);
+    }
+    if (label) label.innerText = text;
+    connectionInfo = title || '';
+    const pill = document.getElementById('connection-pill');
+    if (pill) pill.title = connectionPillTitle();
+}
+
+function updateHardwareConnectionStatus(connected, simMode) {
+    if (simMode !== undefined) backendSimMode = !!simMode;
     console.log('[HW] updateHardwareConnectionStatus:', connected);
     addRuntimeLog('info', 'HW', `Hardware connected: ${connected}`);
-    if (connected) {
-        dot?.classList.remove('disconnected');
-        dot?.classList.add('connected');
-        if (text) text.innerText = 'Connected';
+    if (!connected) {
+        setConnectionPill('Hardware Offline', 'down', 'The backend is up but cannot reach the Phaser.');
+    } else if (resolveTransportMode() === 'sim') {
+        setConnectionPill('Simulated', 'sim',
+            'Simulated data from the in-browser simulator. No Phaser hardware is connected.');
+    } else if (backendSimMode) {
+        setConnectionPill('Simulated', 'sim',
+            "Simulated data from the Pi's simulator (--sim). No Phaser hardware is connected.");
     } else {
-        dot?.classList.remove('connected');
-        dot?.classList.add('disconnected');
-        if (text) text.innerText = 'Hardware Offline';
+        setConnectionPill('Connected', 'ok', 'Connected to the Phaser hardware.');
     }
 }
 
@@ -1600,7 +1627,7 @@ async function loadStateFromServer() {
         if (Number.isFinite(msg.data.BW)) state.BW = msg.data.BW;
 
         // Update hardware connection indicator
-        updateHardwareConnectionStatus(msg.data.hardware_connected ?? false);
+        updateHardwareConnectionStatus(msg.data.hardware_connected ?? false, msg.data.sim_mode);
         armShutdownIfPermitted(msg.data.shutdown_available === true);
 
         // Reveal the instructor-only interferer panel iff (a) URL has
@@ -1866,7 +1893,7 @@ const transport = createTransport({
                 if (Number.isFinite(data.Averages)) state.Averages = data.Averages;
                 if (Number.isFinite(data.d)) state.d = data.d;
                 if (Number.isFinite(data.BW)) state.BW = data.BW;
-                updateHardwareConnectionStatus(data.hardware_connected ?? false);
+                updateHardwareConnectionStatus(data.hardware_connected ?? false, data.sim_mode);
                 armShutdownIfPermitted(data.shutdown_available === true);
                 applyInitialStateToControls();
                 setBackendStatus('ready', 'Backend: Ready');
@@ -1891,18 +1918,15 @@ const transport = createTransport({
     onConnectionStatus: (status) => {
         // Connection status update
         if (status.connected) {
-            document.getElementById('connection-dot')?.classList.replace('disconnected', 'connected');
-            document.getElementById('connection-text').innerText = 'Connected';
+            updateHardwareConnectionStatus(true);
         } else {
-            document.getElementById('connection-dot')?.classList.replace('connected', 'disconnected');
-            document.getElementById('connection-text').innerText = 'Disconnected';
+            setConnectionPill('Disconnected', 'down', 'Lost the link to the backend.');
         }
     },
     onOpen: () => {
         isConnected = true;
         // Don't set "Connected" here - let loadStateFromServer check hardware status
-        document.getElementById('connection-dot')?.classList.replace('connected', 'disconnected');
-        document.getElementById('connection-text').innerText = 'Checking...';
+        setConnectionPill('Checking...', 'down', 'Backend connected, checking the hardware.');
         addRuntimeLog('info', 'WS', 'Backend connected, checking hardware...');
         setBackendStatus('starting', 'Backend: Probing...');
         updateSweepAvailability();
@@ -1913,8 +1937,7 @@ const transport = createTransport({
         backendStateLoaded = false;
         backendProbeState.ready = false;
         backendProbeState.probing = false;
-        document.getElementById('connection-dot').classList.replace('connected', 'disconnected');
-        document.getElementById('connection-text').innerText = 'Disconnected - Retrying...';
+        setConnectionPill('Disconnected - Retrying...', 'down', 'Lost the link to the backend. Retrying every 2 s.');
         setBackendStatus('error', 'Backend: Offline');
         updateSweepAvailability();
         addRuntimeLog('warn', 'WS', 'Disconnected, retrying in 2s');
@@ -1929,8 +1952,8 @@ const transport = createTransport({
 });
 transport.connect();
 
-/* --- Transport Self-Check & Badge --- */
-(function initTransportBadge() {
+/* --- Transport Self-Check --- */
+(function logTransportMode() {
     // Ask the transport layer which mode it picked rather than re-deriving it
     // here. The old copy of this logic tested for an IPC bridge that no longer
     // exists, so it could only ever report "web".
@@ -1938,18 +1961,6 @@ transport.connect();
     addRuntimeLog('info', 'TRANSPORT', mode === 'sim'
         ? 'mode=sim  (in-browser simulator, no hardware)'
         : 'mode=web  (WebSocket + REST)');
-
-    // The badge is for non-default transports; plain web mode leaves it hidden.
-    const badgeEl = document.getElementById('transport-badge');
-    if (!badgeEl) return;
-    if (mode === 'sim') {
-        badgeEl.textContent = 'SIMULATION';
-        badgeEl.style.display = 'inline-flex';
-        badgeEl.title = 'Simulated data — no Phaser hardware is connected';
-        badgeEl.style.setProperty('--transport-badge-bg', 'rgba(245,158,11,0.15)');
-        badgeEl.style.setProperty('--transport-badge-color', '#f59e0b');
-        badgeEl.style.setProperty('--transport-badge-border', 'rgba(245,158,11,0.45)');
-    }
 })();
 
 function formatCalibrationStatus(data) {
