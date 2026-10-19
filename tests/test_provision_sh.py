@@ -204,6 +204,32 @@ def test_hostname_is_validated():
         assert "a-zA-Z0-9-" in text, f"{path.name} does not validate the hostname"
 
 
+def test_install_sh_reports_a_failed_ui_check_honestly():
+    """A UI that does not answer must not be reported as installed and fine.
+
+    `curl -w '%{http_code}' ... || echo 000` printed "HTTP 000000" (curl's own
+    000 plus the echo) inside "Service is active and the UI answered", on a
+    kit whose backend could not start until the reboot. Found 2026-10-19.
+    """
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "|| echo 000)" not in text, "curl already prints 000; the echo doubles it"
+    assert 'the UI answered HTTP $CODE' not in text, \
+        "the success line must not print an arbitrary code"
+    assert "not answering yet" in text, "expected an honest line for a UI that is down"
+
+
+def test_time_sync_is_verified_not_assumed():
+    """provision.sh must report the time client it found running.
+
+    `timedatectl show -p NTP` read "no" on a provisioned kit with no warning,
+    because enabling a masked systemd-timesyncd fails silently. Found 2026-10-19.
+    """
+    text = PROVISION.read_text(encoding="utf-8")
+    assert "unmask systemd-timesyncd" in text
+    assert "time_client" in text
+    assert "NTP: $(timedatectl show -p NTP" not in text, \
+        "the summary must report the running client, not the NTP property"
+
 def test_install_sh_is_reused_not_reimplemented():
     """provision.sh must chain into install.sh, not carry a second copy of it.
 

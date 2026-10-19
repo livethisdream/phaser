@@ -274,7 +274,16 @@ if ! systemctl is-active --quiet "$SERVICE"; then
     sudo journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true
     exit 1
 fi
-CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" || echo 000)"
+# curl prints 000 itself when nothing answers and then exits non-zero, so an
+# `|| echo 000` here appended a second one ("HTTP 000000"). Retry briefly: the
+# backend starts the hardware before its web server.
+CODE=000
+for _ in 1 2 3 4 5 6 7 8; do
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" 2>/dev/null || true)"
+    CODE="${CODE:-000}"
+    [ "$CODE" = "200" ] && break
+    sleep 2
+done
 [ "$CODE" = "200" ] || say "WARN: the UI returned HTTP $CODE (expected 200)"
 
 # ---- 6b. the RF chain this kit will actually run ---------------------------
@@ -353,7 +362,16 @@ PY
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '\n'; printf '=%.0s' {1..64}; printf '\n'
-say "Installed. Service is active and the UI answered HTTP $CODE."
+if [ "$CODE" = "200" ]; then
+    say "Installed. Service is active and the UI answered HTTP 200."
+else
+    # Not a failure on a freshly provisioned kit: the board's device-tree
+    # overlay only loads at boot, so the backend cannot start the hardware
+    # until the reboot provision.sh asks for. Say so instead of "success".
+    say "Installed, but the UI is not answering yet (HTTP $CODE)."
+    say "  On a kit just provisioned, reboot first; the board appears at boot."
+    say "  Otherwise:  sudo journalctl -u ${SERVICE} -n 30   ('No device found' = the Pluto's USB cable)"
+fi
 
 # Deliberately NOT run from here, nor from provision.sh. Characterisation
 # needs a powered HB100 aimed at the array, and provisioning runs unattended
