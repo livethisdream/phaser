@@ -2,7 +2,7 @@
 
 Found on a kit on 2026-10-15. `_capture` discarded one RX buffer after each
 retune, but every capture still held the previous LO's data, whatever the
-settle time, so each 10 MHz sweep step was labelled with the next step's
+settle time, so each 10 MHz sweep step was labeled with the next step's
 frequency and the search landed ~8 MHz off a real 74 dB tone. Separately,
 loading LTE20_MHz.ftr moves the radio to 30.72 MSPS while the frequency axis
 assumed 30 MSPS. Destroying the buffer and using the radio's own sample rate
@@ -48,15 +48,15 @@ class FakeSdr:
 
     def __init__(self, phaser):
         self.phaser = phaser
-        self.buffer_centre = None
+        self.buffer_center = None
 
     def rx_destroy_buffer(self):
-        self.buffer_centre = None
+        self.buffer_center = None
 
     def rx(self):
-        if self.buffer_centre is None:
-            self.buffer_centre = self.phaser.centre_hz()
-        offset = TONE_HZ - self.buffer_centre
+        if self.buffer_center is None:
+            self.buffer_center = self.phaser.center_hz()
+        offset = TONE_HZ - self.buffer_center
         # _capture flips the spectrum (high-side LO), so the tone arrives
         # mirrored at baseband.
         t = np.arange(NBUF) / FS
@@ -68,13 +68,13 @@ class FakePhaser:
     SignalFreq = 0.0
     frequency = 0
 
-    def centre_hz(self):
+    def center_hz(self):
         return self.frequency * 4 - self.sdr.rx_lo
 
 
-def absolute_peak(mod, phaser, sdr, centre_hz):
-    ampl, bb = mod._capture(phaser, sdr, centre_hz)
-    return centre_hz + bb[int(np.argmax(ampl))]
+def absolute_peak(mod, phaser, sdr, center_hz):
+    ampl, bb = mod._capture(phaser, sdr, center_hz)
+    return center_hz + bb[int(np.argmax(ampl))]
 
 
 @pytest.mark.parametrize("jump_mhz", [-300, -10, +10, +300])

@@ -294,7 +294,7 @@ CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" 
 # figure in the repo came off one of them, and the other was deaf at the
 # shipped config.Rx_freq with nothing anywhere saying so.
 #
-# Warn, never fail. An uncharacterised kit is the normal state of a fresh
+# Warn, never fail. An uncharacterized kit is the normal state of a fresh
 # install, and refusing to install over it would turn a warning into a dead
 # workshop.
 step 6b "Checking the RF chain..."
@@ -348,22 +348,22 @@ if not problems:
 # install rather than an error. Leave a marker for the closing summary: the
 # three setup scripts have to run in order and nothing else says so.
 if window is None:
-    open("/tmp/.phaser-uncharacterised", "w").close()
+    open("/tmp/.phaser-uncharacterized", "w").close()
 PY
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '\n'; printf '=%.0s' {1..64}; printf '\n'
 say "Installed. Service is active and the UI answered HTTP $CODE."
 
-# Deliberately NOT run from here, nor from provision.sh. Characterisation
+# Deliberately NOT run from here, nor from provision.sh. Characterization
 # needs a powered HB100 aimed at the array, and provisioning runs unattended
 # at first boot (scripts/pi/firstrun.sh passes --yes), often before the kit is
 # even assembled -- sweeping then would measure noise. Telling the operator is
 # the most an installer can honestly do.
-if [ -f /tmp/.phaser-uncharacterised ]; then
-    rm -f /tmp/.phaser-uncharacterised
+if [ -f /tmp/.phaser-uncharacterized ]; then
+    rm -f /tmp/.phaser-uncharacterized
     say ""
-    say "This kit has NOT been characterised. The usable IF differs between"
+    say "This kit has NOT been characterized. The usable IF differs between"
     say "kits by ~200 MHz, and the config default is one that some kits cannot"
     say "hear at all -- a deaf kit looks exactly like a dead HB100."
     say ""

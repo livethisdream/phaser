@@ -74,7 +74,7 @@ shows the IF in use and whether it was measured on this kit — an unverified
 IF is otherwise indistinguishable on screen from a working one.
 
 **Calibration recovers from this on its own, once.** If the contrast gate
-fails on a unit that has never been characterised, cal runs the sweep itself,
+fails on a unit that has never been characterized, cal runs the sweep itself,
 saves the result, retunes and retries — because the bench conditions a sweep
 needs are exactly the ones calibration needs, so anyone who got that far has
 already set them up. Three limits keep that safe. A unit that *already* has a
@@ -87,10 +87,10 @@ source frequency to keep the tone in the analysis window, so against
 nothing at every IF. That would read as "the IF was not the problem" when the
 IF was never tested. **Run the HB100 search first** — which is why the order
 is an order. If the recovery runs and still hears nothing at
-any IF, the abort says so and stops recommending characterisation, since it
+any IF, the abort says so and stops recommending characterization, since it
 has just been ruled out.
 
-Characterisation is deliberately **not** part of `provision.sh`. Provisioning
+Characterization is deliberately **not** part of `provision.sh`. Provisioning
 runs unattended at first boot (`scripts/pi/firstrun.sh` passes `--yes`), often
 before the kit is assembled and with no HB100 in front of it; a sweep then
 would measure noise. `install.sh` prints the three steps instead when it
@@ -106,7 +106,7 @@ the only margin not borrowed from another kit. phaser-00 measured clean over
 That number has independent corroboration. ADI's own production test —
 [`phaser_prod_tst.py:98`](https://github.com/analogdevicesinc/pyadi-iio/blob/main/examples/phaser/phaser_prod_tst.py),
 the script that decides whether a board passes — runs `rx_lo = 1.9e9` against
-`SignalFreq = 10.2e9`, an **LO of 12.1 GHz**. The characterisation picked
+`SignalFreq = 10.2e9`, an **LO of 12.1 GHz**. The characterization picked
 1.690 GHz against a 10.40769 GHz source: **LO 12.098 GHz**, within 2 MHz of
 the factory acceptance point, arrived at from a blind sweep with no knowledge
 of that file. Two unrelated methods landing together is good evidence that
@@ -148,7 +148,7 @@ phaser_find_hb100.py:154       data = my_sdr.rx()                       single
 phaser_minimal_example.py:159  data = my_sdr.rx()                       single
 ```
 
-In the HB100 search, every 10 MHz step was therefore labelled with the *next*
+In the HB100 search, every 10 MHz step was therefore labeled with the *next*
 step's frequency, putting the candidate ~8 MHz above a real 74 dB tone — which
 the search's own LO-shift check then correctly rejected, reporting failure on
 a perfectly good source.
@@ -309,6 +309,6 @@ The chain this ran on:
 - **Whether the IF edge is the AD9361 or the CN0566's IF path** is untested.
   It does not change the fix — both are per-kit — but it would say whether
   swapping a Pluto moves the window.
-- **Only two kits have been characterised.** The ~200 MHz spread between them
+- **Only two kits have been characterized.** The ~200 MHz spread between them
   is the entire evidence base for treating the ceiling as per-unit. A third
   measurement would be worth more than any further reasoning here.

@@ -52,7 +52,7 @@ HB100_00 = 10.407630e9       # kit "phaser-00"
 
 
 @pytest.fixture
-def uncharacterised(monkeypatch, tmp_path):
+def uncharacterized(monkeypatch, tmp_path):
     """No stored measurement, so the fleet-wide fallback is what answers."""
     monkeypatch.setattr(pf, "REPO_DIR", str(tmp_path))
     return tmp_path
@@ -84,23 +84,23 @@ def test_the_ifs_that_received_cleanly_are_below_the_fleet_ceiling():
     assert pf.IF_UNMEASURED_DEAD_HZ == 2.20e9
 
 
-def test_an_uncharacterised_unit_is_warned_even_at_a_good_if(uncharacterised):
+def test_an_uncharacterized_unit_is_warned_even_at_a_good_if(uncharacterized):
     """1.7 GHz works on both kits -- and is still not a measurement of THIS one.
 
     The whole failure being defended against is a number that was right
     somewhere else, so "inside what other kits manage" must not read as OK.
     """
     problems = pf.rf_chain_warnings(HB100_00, 1.7e9)
-    assert any("never been characterised" in p for p in problems)
+    assert any("never been characterized" in p for p in problems)
 
 
-def test_the_shipped_config_value_warns_on_an_uncharacterised_unit(uncharacterised):
+def test_the_shipped_config_value_warns_on_an_uncharacterized_unit(uncharacterized):
     """config.py ships 2.2 GHz. phaser-00 is deaf there and said nothing."""
     problems = pf.rf_chain_warnings(HB100_00, 2.2e9)
     assert any("receiving nothing" in p for p in problems), problems
 
 
-def test_an_if_just_over_the_fleet_ceiling_is_hedged_not_condemned(uncharacterised):
+def test_an_if_just_over_the_fleet_ceiling_is_hedged_not_condemned(uncharacterized):
     """2.19 GHz: past phaser-00's clean edge, inside kit "phaser"'s. Unknown."""
     problems = pf.rf_chain_warnings(HB100_00, 2.19e9)
     assert any("was not measured to" in p for p in problems), problems
@@ -109,21 +109,21 @@ def test_an_if_just_over_the_fleet_ceiling_is_hedged_not_condemned(uncharacteris
 
 # --- with a measurement, the unit's own window is what counts ---------------
 
-def test_a_measured_window_replaces_the_fleet_fallback(uncharacterised):
+def test_a_measured_window_replaces_the_fleet_fallback(uncharacterized):
     """phaser-00's real window. 2.0 GHz is fine here and warns without it."""
     window = {"clean_min_hz": 1.2e9, "clean_max_hz": 2.175e9,
               "rx_freq_hz": 1.69e9, "best_snr_db": 86.0}
     assert pf.rf_chain_warnings(HB100_00, 1.69e9, window=window) == []
 
 
-def test_a_measured_window_condemns_what_it_actually_excludes(uncharacterised):
+def test_a_measured_window_condemns_what_it_actually_excludes(uncharacterized):
     window = {"clean_min_hz": 1.2e9, "clean_max_hz": 2.175e9,
               "rx_freq_hz": 1.69e9, "best_snr_db": 86.0}
     problems = pf.rf_chain_warnings(HB100_00, 2.2e9, window=window)
     assert any("outside this unit's measured window" in p for p in problems)
 
 
-def test_sitting_near_a_measured_edge_is_called_out(uncharacterised):
+def test_sitting_near_a_measured_edge_is_called_out(uncharacterized):
     """Inside, but only just. The edge is where unit variation lives."""
     window = {"clean_min_hz": 1.2e9, "clean_max_hz": 2.175e9,
               "rx_freq_hz": 1.69e9, "best_snr_db": 86.0}

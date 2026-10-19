@@ -158,7 +158,7 @@ def test_phase_bits_do_not_coarsen_the_sweep():
 
     They were the same attribute, so dropping to a 3-bit phase shifter (a
     45 deg LSB) also dropped the sweep to 45 deg steps -- five points across
-    the whole scan, which plots as nothing recognisable.
+    the whole scan, which plots as nothing recognizable.
     """
     h = _headless()
     h.handle_command({"cmd": "set_state", "state": {

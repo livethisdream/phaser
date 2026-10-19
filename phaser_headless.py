@@ -379,7 +379,7 @@ class PhaserHeadless:
         anything -- the single reason a swept array here would not form a
         clean main lobe. pcal is what makes the eight elements add coherently;
         without it each element sits at its own uncorrected phase error and
-        the pattern smears out into something with no recognisable beam.
+        the pattern smears out into something with no recognizable beam.
 
         Legacy adds pcal[i] inside ADAR_set_Phase itself. This repo moved cal
         application out to the caller (phaser_service does the same thing with
@@ -1022,9 +1022,9 @@ class PhaserHeadless:
         task = self.cal_task
         self.cal_process = None
         self.cal_task = None
-        self.cal_log.append("Calibration cancelled by user")
-        print(f"Calibration {task} cancelled")
-        return {"status": "ok", "message": f"Cancelled {task}"}
+        self.cal_log.append("Calibration canceled by user")
+        print(f"Calibration {task} canceled")
+        return {"status": "ok", "message": f"Canceled {task}"}
 
     def _reload_calibration(self, task_name):
         """Re-initialize hardware after calibration script completes.

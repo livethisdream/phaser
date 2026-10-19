@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from phaser_ctf import (
     CtfMode, fit_ramp, peak_angle_centroid, PLACEHOLDER_FLAG,
-    DEFAULT_SECTOR_CENTRES_DEG, DEFAULT_TOLERANCE_DEG,
+    DEFAULT_SECTOR_CENTERS_DEG, DEFAULT_TOLERANCE_DEG,
 )
 
 # One real sweep excerpt off the array (HB100 lit, Rx_gain 10, 10.42 GHz):
@@ -85,30 +85,30 @@ def see(ctf, angle_deg, sweeps=1, signal_db=0.0):
 
 
 def angle_of(sector):
-    """Centre angle of a 1-based sector, read from the module under test.
+    """Center angle of a 1-based sector, read from the module under test.
 
     Tests say "sector 4", not "+20 degrees". Geometry has already moved once
-    (from +/-60 centres at +/-12 tolerance to +/-40 at +/-5, to keep every
+    (from +/-60 centers at +/-12 tolerance to +/-40 at +/-5, to keep every
     window inside the +/-45 where the beam still shows a clear peak), and
     hardcoded angles would have silently retargeted a different sector rather
     than failing.
     """
-    return DEFAULT_SECTOR_CENTRES_DEG[sector - 1]
+    return DEFAULT_SECTOR_CENTERS_DEG[sector - 1]
 
 
 def between_sectors(low, high):
     """An angle in the dead band between two adjacent sectors."""
-    return (DEFAULT_SECTOR_CENTRES_DEG[low - 1] + DEFAULT_SECTOR_CENTRES_DEG[high - 1]) / 2
+    return (DEFAULT_SECTOR_CENTERS_DEG[low - 1] + DEFAULT_SECTOR_CENTERS_DEG[high - 1]) / 2
 
 
 def dead_band_beside(sector):
     """A genuine no-sector angle next to `sector`.
 
     between_sectors() only lands in a dead band for ADJACENT sectors. The
-    midpoint of 1 and 3 is -20, which is the dead CENTRE of sector 2 -- using
+    midpoint of 1 and 3 is -20, which is the dead CENTER of sector 2 -- using
     it as a "crossing" silently scores sector 2 and corrupts the trail.
     """
-    n = len(DEFAULT_SECTOR_CENTRES_DEG)
+    n = len(DEFAULT_SECTOR_CENTERS_DEG)
     other = sector + 1 if sector < n else sector - 1
     return between_sectors(min(sector, other), max(sector, other))
 
@@ -158,7 +158,7 @@ boresight: a positive steer reads negative, sector 4 becomes sector 2,
     and the whole thing still looks plausible.
     """
     ctf = armed()
-    for expected in range(1, len(DEFAULT_SECTOR_CENTRES_DEG) + 1):
+    for expected in range(1, len(DEFAULT_SECTOR_CENTERS_DEG) + 1):
         steer(ctf, angle_of(expected), now=0.0)
         got = ctf.status(now=0.0)["data"]["current_sector"]
         assert got == expected, f"steer {theta} deg -> sector {got}, expected {expected}"
@@ -179,7 +179,7 @@ def test_sweep_does_not_satisfy_sequence():
     ctf = armed(target=[3, 1, 4, 1, 2])
     now = 0.0
     for _ in range(4):  # four full sweeps, every sector properly dwelt in
-        for theta in DEFAULT_SECTOR_CENTRES_DEG:
+        for theta in DEFAULT_SECTOR_CENTERS_DEG:
             now = hold(ctf, theta, now)
     assert not ctf.status(now=now)["data"]["matched"], "a sweep should never match"
     print("sweep immunity: ok")
@@ -230,7 +230,7 @@ def test_between_sectors_is_no_sector():
     steer(ctf, probe, now=0.0)
     assert ctf.status(now=0.0)["data"]["current_sector"] is None
     # The dead band has to be real, not a rounding artefact: the probe must sit
-    # outside both neighbouring windows by a clear margin.
+    # outside both neighboring windows by a clear margin.
     gap = abs(probe - angle_of(1)) - DEFAULT_TOLERANCE_DEG
     assert gap > 1.0, f"only {gap:.1f} deg outside sector 1 -- widen the dead band"
     print("between sectors: ok")
@@ -248,20 +248,20 @@ def test_sector_geometry_stays_inside_the_usable_steer_range():
     another challenge's payload, so five sectors is fixed by prior commitment --
     a future squeeze has to come out of spacing, never out of a sector.
     """
-    centres = DEFAULT_SECTOR_CENTRES_DEG
+    centers = DEFAULT_SECTOR_CENTERS_DEG
     tol = DEFAULT_TOLERANCE_DEG
 
-    assert len(centres) == 5, "the shipped sequence needs exactly five sectors"
+    assert len(centers) == 5, "the shipped sequence needs exactly five sectors"
 
-    for i, centre in enumerate(centres):
-        assert abs(centre) + tol <= 45.0, \
-            f"sector {i + 1} reaches {abs(centre) + tol:.1f} deg, past the usable range"
+    for i, center in enumerate(centers):
+        assert abs(center) + tol <= 45.0, \
+            f"sector {i + 1} reaches {abs(center) + tol:.1f} deg, past the usable range"
 
     # Adjacent windows must not touch, or sector_for_angle -- which returns the
-    # FIRST match -- would silently resolve the overlap in favour of the lower
+    # FIRST match -- would silently resolve the overlap in favor of the lower
     # sector instead of reporting "between sectors".
-    for i in range(len(centres) - 1):
-        gap = (centres[i + 1] - tol) - (centres[i] + tol)
+    for i in range(len(centers) - 1):
+        gap = (centers[i + 1] - tol) - (centers[i] + tol)
         assert gap > 0, f"sectors {i + 1} and {i + 2} overlap by {-gap:.1f} deg"
 
     print("geometry: ok (5 sectors, all windows inside +/-45, no overlap)")
@@ -319,7 +319,7 @@ def test_centroid_beats_argmax_on_a_real_clipped_lobe():
     """The measurement the whole tracked challenge is scored on.
 
     On this real lobe the argmax lands on -1.84 deg purely because one sample
-    spiked to 0.69 dB while its neighbours sat near -0.3. The centroid weighs
+    spiked to 0.69 dB while its neighbors sat near -0.3. The centroid weighs
     the whole mainlobe instead and lands near -0.6.
     """
     imax = max(range(len(REAL_LOBE_GAINS)), key=lambda k: REAL_LOBE_GAINS[k])

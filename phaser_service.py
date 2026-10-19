@@ -871,8 +871,8 @@ class BackendService:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
-        self._append_cal_line(f"[CANCELLED] {task_name} was cancelled by user")
-        return {"status": "ok", "message": f"Cancelled {task_name}"}
+        self._append_cal_line(f"[CANCELED] {task_name} was canceled by user")
+        return {"status": "ok", "message": f"Canceled {task_name}"}
 
     def reboot_phaser(self):
         """SSH into Phaser and reboot it."""

@@ -69,16 +69,16 @@ RAMP_RESIDUAL_TOLERANCE_DEG = 6.0
 # +/-45 is a physical limit, not a preference. Past it an 8-element array's
 # beamwidth broadens as 1/cos(theta) and the mainlobe stops presenting a clear
 # peak, so a player cannot see which sector they are in. Every window edge
-# therefore stays inside 45: centre 40 with tolerance 5 reaches exactly 45 and
+# therefore stays inside 45: center 40 with tolerance 5 reaches exactly 45 and
 # no further.
 #
 # Tolerance is generous despite looking tight. It is applied to the COMMANDED
 # angle, recovered from the phase ramp with a worst-case round-trip error of
 # 0.022 deg across the range -- there is no measurement noise to absorb, so
-# +/-5 is purely "did the operator aim within 5 degrees of the centre", which
+# +/-5 is purely "did the operator aim within 5 degrees of the center", which
 # a 1-degree steer control makes easy. The 10 deg dead bands between windows
 # are the real reason not to widen it: they keep "between sectors" unambiguous.
-DEFAULT_SECTOR_CENTRES_DEG = [-40.0, -20.0, 0.0, 20.0, 40.0]
+DEFAULT_SECTOR_CENTERS_DEG = [-40.0, -20.0, 0.0, 20.0, 40.0]
 DEFAULT_TOLERANCE_DEG = 5.0
 DEFAULT_DWELL_S = 2.0
 
@@ -101,7 +101,7 @@ DEFAULT_TRACK_SWEEPS = 3
 # The floor is not a nicety. With no source lit the centroid wanders the full
 # -90..+90 of the sweep, because there is no mainlobe to weight; without a
 # floor a player who walked away would be scored into whichever sector the
-# noise last favoured.
+# noise last favored.
 DEFAULT_SIGNAL_FLOOR_DB = -30.0
 
 # "tracked" scores the measured peak, "commanded" scores the steered ramp.
@@ -207,12 +207,12 @@ class CtfMode:
     without any further commands being sent.
     """
 
-    def __init__(self, sector_centres_deg=None, tolerance_deg=DEFAULT_TOLERANCE_DEG,
+    def __init__(self, sector_centers_deg=None, tolerance_deg=DEFAULT_TOLERANCE_DEG,
                  dwell_s=DEFAULT_DWELL_S, target=None, flag=None,
                  show_progress=True, allow_sim=True, source=None,
                  track_sweeps=DEFAULT_TRACK_SWEEPS,
                  signal_floor_db=DEFAULT_SIGNAL_FLOOR_DB):
-        self.sector_centres_deg = list(sector_centres_deg or DEFAULT_SECTOR_CENTRES_DEG)
+        self.sector_centers_deg = list(sector_centers_deg or DEFAULT_SECTOR_CENTERS_DEG)
 
         # Every threshold here is env-tunable, because these are the knobs
         # worth turning at the table and the challenge exists to be enjoyable.
@@ -277,8 +277,8 @@ class CtfMode:
         """Which sector an angle falls in, or None if it's between sectors."""
         if angle_deg is None:
             return None
-        for index, centre in enumerate(self.sector_centres_deg):
-            if abs(angle_deg - centre) <= self.tolerance_deg:
+        for index, center in enumerate(self.sector_centers_deg):
+            if abs(angle_deg - center) <= self.tolerance_deg:
                 return index + 1  # sectors are 1-based, left to right
         return None
 
@@ -327,7 +327,7 @@ class CtfMode:
                 and signal_db < self.signal_floor_db):
             # Too weak to be the source. None keeps a player who has walked
             # out of the beam "between sectors" rather than parking them in
-            # whatever sector the noise floor happened to favour.
+            # whatever sector the noise floor happened to favor.
             angle_deg = None
 
         sector = self.sector_for_angle(angle_deg)
@@ -401,7 +401,7 @@ class CtfMode:
         advances on sweeps arriving in `observe_tracked` instead.
 
         `sweeping` is whether the backend is actually measuring. It defaults
-        True so that every existing caller keeps its behaviour; only the
+        True so that every existing caller keeps its behavior; only the
         tracked source cares, since the commanded source is fed by set_state
         and not by the sweep loop.
         """
@@ -432,7 +432,7 @@ class CtfMode:
                 "armed": self._armed,
                 "sectors": [
                     {"sector": i + 1, "centre_deg": c, "tolerance_deg": self.tolerance_deg}
-                    for i, c in enumerate(self.sector_centres_deg)
+                    for i, c in enumerate(self.sector_centers_deg)
                 ],
                 "source": self.source,
                 "measuring": measuring,

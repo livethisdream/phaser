@@ -1625,7 +1625,7 @@ input[type=number]::-webkit-outer-spin-button {
   .controls-panel.collapsed #sidebar-content { display: flex; }
   .controls-panel.collapsed .panel-title { display: block; }
   .controls-panel.collapsed { padding: 0.9rem; }
-  /* The desktop collapsed state centres its header over a 74px rail. Here the
+  /* The desktop collapsed state centers its header over a 74px rail. Here the
      header is full width, so keep the expanded layout -- title left, toggle
      right -- and the bar looks the same open or shut. */
   .controls-panel.collapsed .panel-header-row { justify-content: space-between; }
@@ -1671,7 +1671,7 @@ input[type=number]::-webkit-outer-spin-button {
    shift, while an iPad was already at 0.57 and would shift 204px for it.
    
    :has() is ignored by browsers that lack it, which just leaves the tab at
-   the shared height -- the behaviour before this rule. */
+   the shared height -- the behavior before this rule. */
 /* Phones: readouts on one line, pills on the next, each spread evenly across
    the full width so the two rows mirror each other. The pills shrink a little
    so all three fit at 360px. */

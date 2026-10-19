@@ -359,7 +359,7 @@ sudo systemctl enable phaser-clock.service >/dev/null 2>&1 || true
 # Fixed-IP alias. A kit prepped by tools/prep_sdcard.py already has this, but a
 # kit provisioned the plain way over ssh should get it too -- it is what makes
 # the address predictable next time, and it is how a golden image carries the
-# behaviour to every card cloned from it.
+# behavior to every card cloned from it.
 install_if_changed "$SRC/scripts/pi/phaser-netalias" /usr/local/sbin/phaser-netalias 755 \
     "netalias script" || true
 if install_if_changed "$SRC/scripts/pi/phaser-netalias.service" \

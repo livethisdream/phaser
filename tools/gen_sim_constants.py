@@ -13,7 +13,7 @@ Run after changing any sim constant:
 CI regenerates and fails on `git diff --exit-code`, so a Python-side change that
 is not reflected in the committed JS breaks the build.
 
-Behavioural drift -- an algorithm change rather than a constant change -- is not
+Behavioral drift -- an algorithm change rather than a constant change -- is not
 caught here. That is what tests/test_sim_parity.py is for.
 """
 
