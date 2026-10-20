@@ -17,6 +17,7 @@ import numpy as np
 from phaser_functions import (
     MIN_SCAN_SNR_DB,
     find_scan_peak,
+    DEFAULT_RX_FREQ_HZ,
     rx_freq_source,
     save_hb100_cal,
     scan_peak_is_trustworthy,
@@ -100,6 +101,31 @@ def confirm_with_lo_shift(my_phaser, my_sdr, candidate_hz):
     return True, "ok"
 
 
+def search_if(config_module):
+    """The IF to search at: this unit's measurement, else the bootstrap default.
+
+    The search is what a fresh kit runs first, so it must not trust
+    config.Rx_freq. That ships at 2.2 GHz, and kit phaser-00 hears nothing
+    there: on a freshly flashed card (2026-10-19) the search ran at 2.2 GHz,
+    found only a receiver spur at 10.68 GHz, and failed -- leaving no stored
+    HB100 frequency for Characterize IF to start from. The bootstrap default
+    sits inside every kit's measured window so far. A deliberate
+    Rx_freq_override still wins.
+    """
+    chosen = rx_freq_source(config_module)
+    if chosen["source"] != "config.py (unverified)":
+        return chosen
+    return {
+        "rx_freq_hz": float(DEFAULT_RX_FREQ_HZ),
+        "source": "the bootstrap default (unit not characterised yet)",
+        "warnings": [
+            "config.Rx_freq = %.3f GHz is not used for the search on an "
+            "uncharacterised unit. Run Characterize IF after this."
+            % (chosen["rx_freq_hz"] / 1e9)
+        ],
+    }
+
+
 def find_hb100():
     """Find HB100 frequency and save calibration. Returns True on success."""
 
@@ -153,7 +179,7 @@ def find_hb100():
             # is what makes the search runnable on a kit that has never been
             # measured -- it used to be a hardcoded 2.0 GHz, inside both kits
             # measured so far but not guaranteed inside the next one.
-            chosen = rx_freq_source(config_module)
+            chosen = search_if(config_module)
             print("IF: %.3f GHz, from %s"
                   % (chosen["rx_freq_hz"] / 1e9, chosen["source"]))
             for line in chosen["warnings"]:

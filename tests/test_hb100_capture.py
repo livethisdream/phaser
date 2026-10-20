@@ -98,3 +98,34 @@ def test_axis_uses_the_radio_sample_rate(hb100):
     phaser.sdr = sdr
     found = absolute_peak(hb100, phaser, sdr, TONE_HZ + 4e6)
     assert abs(found - TONE_HZ) <= 2 * BIN_HZ
+
+
+class _Config:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_search_ignores_an_unverified_config_if(hb100, monkeypatch):
+    """A fresh kit searches at the bootstrap IF, not config.Rx_freq.
+
+    phaser-00 is deaf at the shipped 2.2 GHz; searching there on a freshly
+    flashed card found only a receiver spur and failed (2026-10-19).
+    """
+    import phaser_functions as pf
+    monkeypatch.setattr(pf, "load_if_cal", lambda: None)
+    chosen = hb100.search_if(_Config(Rx_freq=2.2e9))
+    assert chosen["rx_freq_hz"] == pf.DEFAULT_RX_FREQ_HZ
+    assert chosen["rx_freq_hz"] < pf.IF_UNMEASURED_CEILING_HZ
+
+
+def test_search_uses_the_measured_if(hb100, monkeypatch):
+    import phaser_functions as pf
+    monkeypatch.setattr(pf, "load_if_cal", lambda: {"rx_freq_hz": 1.69e9})
+    assert hb100.search_if(_Config(Rx_freq=2.2e9))["rx_freq_hz"] == 1.69e9
+
+
+def test_search_honors_a_deliberate_override(hb100, monkeypatch):
+    import phaser_functions as pf
+    monkeypatch.setattr(pf, "load_if_cal", lambda: None)
+    chosen = hb100.search_if(_Config(Rx_freq=2.2e9, Rx_freq_override=1.9e9))
+    assert chosen["rx_freq_hz"] == 1.9e9
