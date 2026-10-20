@@ -1876,6 +1876,10 @@ let sweepCounter = 0;
 
 const transport = createTransport({
     onMessage: (msg) => {
+        if (msg.type === 'hardware_missing') {
+            showHardwareMissing(msg.data || {});
+            return;
+        }
         if (msg.type === 'backend-ready' && msg.state) {
             // Initial state from backend - mark as ready and load state
             if (msg.state.status === 'ok' && msg.state.data) {
@@ -2342,6 +2346,67 @@ function confirmInApp({ title, paragraphs = [], bullets = [], note = '', confirm
         document.addEventListener('keydown', onKey);
     });
 }
+
+/* --- Hardware missing ---
+   The backend answers with hardware_missing when the hardware would not start
+   (HardwareMissingServer in phaser_headless.py). It watches for the Pluto and
+   restarts itself once it appears, so the card mostly just waits: the 2 s
+   reconnect brings up the full backend, and the next good probe hides it. */
+let hardwareMissingShown = false;
+
+function showHardwareMissing(info) {
+    const overlay = document.getElementById('hw-missing-modal');
+    if (!overlay) return;
+    const title = info.pluto_found ? 'Hardware did not start' : 'Pluto not found';
+    document.getElementById('hw-missing-title').textContent = title;
+    document.getElementById('hw-missing-message').textContent = info.message || '';
+    document.getElementById('hw-missing-detail').textContent = info.detail ? `Backend: ${info.detail}` : '';
+    document.getElementById('btn-hw-shutdown').hidden = info.shutdown_available !== true;
+    const retry = document.getElementById('btn-hw-retry');
+    retry.disabled = false;
+    retry.textContent = 'Retry';
+    overlay.hidden = false;
+    setConnectionPill(info.pluto_found ? 'Hardware Offline' : 'Pluto Not Found', 'down', title);
+    setBackendStatus('error', 'Backend: No Hardware');
+    if (!hardwareMissingShown) addRuntimeLog('error', 'HW', `${title}. ${info.detail || ''}`.trim());
+    hardwareMissingShown = true;
+}
+
+function hideHardwareMissing() {
+    const overlay = document.getElementById('hw-missing-modal');
+    if (overlay) overlay.hidden = true;
+    if (hardwareMissingShown) addRuntimeLog('info', 'HW', 'Hardware found');
+    hardwareMissingShown = false;
+}
+
+document.getElementById('btn-hw-retry')?.addEventListener('click', async () => {
+    const retry = document.getElementById('btn-hw-retry');
+    retry.disabled = true;
+    retry.textContent = 'Restarting...';
+    try {
+        await transport.invoke('retry_hardware', {});
+    } catch (err) {
+        addRuntimeLog('error', 'HW', 'Retry failed: ' + err);
+        retry.disabled = false;
+        retry.textContent = 'Retry';
+    }
+});
+
+document.getElementById('btn-hw-shutdown')?.addEventListener('click', async () => {
+    const ok = await confirmInApp({
+        title: 'Shut Down the Phaser',
+        paragraphs: ['Wait for the LEDs to go out before you pull the USB-C power.'],
+        confirmLabel: 'Shut Down',
+    });
+    if (!ok) return;
+    try {
+        const resp = await transport.invoke('power_off', {});
+        addRuntimeLog(resp?.status === 'ok' ? 'warn' : 'error', 'POWER', resp?.message || 'Shutdown refused');
+        if (resp?.status === 'ok') document.getElementById('hw-missing-message').textContent = 'Shutting down...';
+    } catch (err) {
+        addRuntimeLog('error', 'POWER', 'Could not shut down: ' + err);
+    }
+});
 
 // Characterization confirms first, unlike the other two. It is a once-per-kit
 // bench step rather than a routine one, it is worthless unless the HB100 is
@@ -3012,7 +3077,15 @@ async function probeBackendReadiness() {
             new Promise((_, reject) => setTimeout(() => reject(new Error('Backend probe timeout')), BACKEND_PROBE_TIMEOUT_MS)),
         ]);
 
+        if (msg.hardware_missing) {
+            // Not a backend that is still starting: retrying the probe cannot help.
+            showHardwareMissing(msg);
+            backendProbeState.probing = false;
+            updateSweepAvailability();
+            return;
+        }
         if (msg.status === 'ok' && msg.data) {
+            hideHardwareMissing();
             backendProbeState.ready = true;
             backendProbeState.retries = 0;
             setBackendStatus('ready', 'Backend: Ready');

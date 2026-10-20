@@ -1522,6 +1522,152 @@ class PhaserHeadless:
         self.ctx.term()
 
 
+# The Pluto's iiod, reached over the USB network gadget the Pluto presents
+# (SDR_functions and _do_init_hardware use "ip:192.168.2.1"). A TCP connect is
+# enough to tell "cable unplugged" from "plugged in but something else broke",
+# and it needs no libiio.
+PLUTO_IIOD = ("192.168.2.1", 30431)
+
+
+def pluto_reachable(timeout=1.0):
+    try:
+        with socket.create_connection(PLUTO_IIOD, timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+class HardwareMissingServer:
+    """Serves the UI, and says what is wrong, when the hardware will not start.
+
+    Without this a failed hardware init killed the process before the HTTP
+    server existed, so the browser said "refused to connect" -- which points
+    at the network, not at the cause. On two bring-ups in a row the cause was
+    the Pluto's USB cable to the Pi, left unplugged. Now the page loads and
+    shows a card naming the cable.
+
+    It watches for the Pluto and, once it appears, exits nonzero so systemd
+    (Restart=on-failure) starts the full backend; the page's 2 s WebSocket
+    reconnect then picks that up with no reload. A failure with the Pluto
+    present gets no watcher -- restarting would fail the same way -- only the
+    card's Retry button.
+    """
+
+    EXIT_RETRY = 3
+    # Plugged in is not ready: the Pluto's iiod answers a few seconds before
+    # the radio does, and an init in that window fails all over again.
+    SETTLE_S = 5.0
+    POLL_S = 2.0
+
+    # Borrowed rather than copied: the same static-file server, the same
+    # passwordless-poweroff probe. Neither touches hardware state.
+    _http_server = PhaserHeadless._http_server
+    shutdown_permitted = PhaserHeadless.shutdown_permitted
+
+    def __init__(self, error, ws_port=8765, http_port=8080, pluto_check=pluto_reachable):
+        self.error = f"{type(error).__name__}: {error}"
+        self.ws_port = ws_port
+        self.http_port = http_port
+        self.pluto_check = pluto_check
+        self.pluto_found = pluto_check()
+        self._shutdown_permitted = None
+        self.running = False
+        self.exit_code = 0
+
+    def status(self):
+        if self.pluto_found:
+            message = ("The Phaser hardware did not start. Check the Pluto's USB "
+                       "cable to the Pi and the PHASER's USB-C power, then press Retry.")
+        else:
+            message = ("The Pluto's USB cable to the Pi is unplugged, the usual "
+                       "cause, or the Pluto has no power. Plug it in and this page "
+                       "reconnects on its own.")
+        return {
+            "status": "error",
+            "hardware_missing": True,
+            "pluto_found": self.pluto_found,
+            "message": message,
+            "detail": self.error,
+            "shutdown_available": self.shutdown_permitted(),
+        }
+
+    def handle_command(self, msg):
+        cmd = msg.get("cmd")
+        if cmd == "retry_hardware":
+            self.request_restart("Retry pressed")
+            return {"status": "ok", "message": "Restarting the backend."}
+        if cmd == "power_off":
+            if not self.shutdown_permitted():
+                return {"status": "error",
+                        "message": "Shutdown is not permitted on this host."}
+            subprocess.Popen(["sudo", "-n"] + SHUTDOWN_CMD)
+            return {"status": "ok", "message": "Shutting down."}
+        return self.status()
+
+    def request_restart(self, why):
+        print(f"[HW] {why}; exiting for systemd to restart the backend")
+        self.exit_code = self.EXIT_RETRY
+        self.running = False
+
+    def watch_once(self):
+        """One poll. True when the Pluto has just appeared."""
+        if self.pluto_found:
+            return False
+        if self.pluto_check():
+            self.pluto_found = True
+            return True
+        return False
+
+    def _watch(self):
+        while self.running:
+            if self.watch_once():
+                print(f"[HW] Pluto appeared; waiting {self.SETTLE_S:.0f} s for it to settle")
+                time.sleep(self.SETTLE_S)
+                self.request_restart("Pluto found")
+                return
+            time.sleep(self.POLL_S)
+
+    def _websocket_server(self):
+        async def handler(websocket):
+            try:
+                await websocket.send(json.dumps({"type": "hardware_missing", "data": self.status()}))
+                async for message in websocket:
+                    try:
+                        msg = json.loads(message)
+                    except json.JSONDecodeError:
+                        continue
+                    reply = {"type": "response", **self.handle_command(msg)}
+                    if msg.get("id"):
+                        reply["id"] = msg["id"]
+                    await websocket.send(json.dumps(reply))
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
+        async def serve():
+            async with websockets.serve(handler, "0.0.0.0", self.ws_port):
+                while self.running:
+                    await asyncio.sleep(0.2)
+
+        asyncio.run(serve())
+
+    def run(self):
+        """Serve until the hardware should be retried; returns the exit code."""
+        self.running = True
+        print(f"[HW] Hardware init failed: {self.error}")
+        print("[HW] Pluto " + ("reachable" if self.pluto_found else
+                               "NOT reachable at %s:%d -- check its USB cable to the Pi" % PLUTO_IIOD))
+        threads = [threading.Thread(target=self._http_server, daemon=True)]
+        if HAS_WEBSOCKETS:
+            threads.append(threading.Thread(target=self._websocket_server, daemon=True))
+        threads.append(threading.Thread(target=self._watch, daemon=True))
+        for t in threads:
+            t.start()
+        while self.running:
+            time.sleep(0.2)
+        time.sleep(0.5)   # let the Retry reply reach the browser
+        return self.exit_code
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Phaser Headless Backend")
@@ -1550,14 +1696,20 @@ def main():
     if args.sim:
         print("*** RUNNING IN SIMULATION MODE — no Phaser hardware required ***")
 
-    server = PhaserHeadless(
-        pub_port=args.pub_port,
-        rep_port=args.rep_port,
-        ws_port=args.ws_port,
-        http_port=args.http_port,
-        radar_http_port=args.radar_http_port,
-        sim_mode=args.sim,
-    )
+    try:
+        server = PhaserHeadless(
+            pub_port=args.pub_port,
+            rep_port=args.rep_port,
+            ws_port=args.ws_port,
+            http_port=args.http_port,
+            radar_http_port=args.radar_http_port,
+            sim_mode=args.sim,
+        )
+    except Exception as e:
+        if args.sim:
+            raise
+        fallback = HardwareMissingServer(e, ws_port=args.ws_port, http_port=args.http_port)
+        sys.exit(fallback.run())
 
     def signal_handler(sig, frame):
         server.stop()
