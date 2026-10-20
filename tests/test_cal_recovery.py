@@ -5,7 +5,7 @@ config.Rx_freq put the receiver 20 MHz past an IF ceiling that varies ~200 MHz
 between kits. The console said "no signal is reaching the array" and listed
 the HB100, the stored frequency and the cables -- none of which was wrong.
 
-A unit that has never been characterised and fails that gate is worth
+A unit that has never been characterized and fails that gate is worth
 recovering rather than reporting, because the bench conditions a sweep needs
 (HB100 powered and aimed at the array) are exactly the ones calibration needs,
 so anyone who got that far has already set them up.
@@ -59,7 +59,7 @@ HB100 = 10.40763e9
 class FakeSDR:
     """A receiver that only hears while its rx_lo is inside a window.
 
-    This is the actual hardware behaviour the recovery exists for: reception
+    This is the actual hardware behavior the recovery exists for: reception
     is a property of the IF, so retuning the Pluto is what makes the array
     hear or not.
     """
@@ -107,11 +107,11 @@ class FakePhaser:
 # --- the policy -------------------------------------------------------------
 
 def test_a_healthy_contrast_never_triggers_a_sweep(cal, store):
-    assert cal.should_characterise(33.0, False, True) is False
+    assert cal.should_characterize(33.0, False, True) is False
 
 
 def test_a_failed_gate_on_a_fresh_unit_triggers_a_sweep(cal, store):
-    assert cal.should_characterise(0.93, False, True) is True
+    assert cal.should_characterize(0.93, False, True) is True
 
 
 def test_a_unit_that_already_has_a_measurement_is_never_re_swept(cal, store):
@@ -120,11 +120,11 @@ def test_a_unit_that_already_has_a_measurement_is_never_re_swept(cal, store):
     with a bad one."""
     pf.save_if_cal({"rx_freq_hz": 1.69e9, "clean_min_hz": 1.2e9,
                     "clean_max_hz": 2.175e9, "best_snr_db": 86.0})
-    assert cal.should_characterise(0.93, False, True) is False
+    assert cal.should_characterize(0.93, False, True) is False
 
 
 def test_it_is_attempted_at_most_once(cal, store):
-    assert cal.should_characterise(0.93, True, True) is False
+    assert cal.should_characterize(0.93, True, True) is False
 
 
 def test_an_unmeasured_hb100_frequency_blocks_the_sweep(cal, store):
@@ -137,7 +137,7 @@ def test_an_unmeasured_hb100_frequency_blocks_the_sweep(cal, store):
     "the IF was not the problem" when the IF was never tested. Run the HB100
     search first; there is nothing to sweep against until then.
     """
-    assert cal.should_characterise(0.93, False, False) is False
+    assert cal.should_characterize(0.93, False, False) is False
 
 
 # --- the recovery -----------------------------------------------------------
@@ -146,7 +146,7 @@ def test_it_finds_the_window_and_leaves_the_radio_inside_it(cal, store, fast):
     sdr = FakeSDR(window_hz=(1.2e9, 2.175e9))
     phaser = FakePhaser(sdr)
 
-    new_if = cal.characterise_in_place(phaser, sdr, HB100)
+    new_if = cal.characterize_in_place(phaser, sdr, HB100)
 
     assert new_if is not None
     assert 1.2e9 < new_if < 2.175e9, f"chose {new_if/1e9:.3f} GHz, outside the window"
@@ -159,7 +159,7 @@ def test_it_finds_the_window_and_leaves_the_radio_inside_it(cal, store, fast):
 
 def test_what_it_finds_is_what_it_stores(cal, store, fast):
     sdr = FakeSDR(window_hz=(1.2e9, 2.175e9))
-    new_if = cal.characterise_in_place(FakePhaser(sdr), sdr, HB100)
+    new_if = cal.characterize_in_place(FakePhaser(sdr), sdr, HB100)
     stored = pf.load_if_cal()
     assert stored is not None
     assert stored["rx_freq_hz"] == pytest.approx(new_if)
@@ -171,7 +171,7 @@ def test_a_bench_that_hears_nothing_saves_nothing(cal, store, fast):
     must not end up with a stored window invented out of noise -- that would
     turn a recoverable mistake into a kit that is miscalibrated for good."""
     sdr = FakeSDR(window_hz=None)
-    assert cal.characterise_in_place(FakePhaser(sdr), sdr, HB100) is None
+    assert cal.characterize_in_place(FakePhaser(sdr), sdr, HB100) is None
     assert pf.load_if_cal() is None
 
 
@@ -179,7 +179,7 @@ def test_a_failed_recovery_leaves_an_existing_measurement_alone(cal, store, fast
     pf.save_if_cal({"rx_freq_hz": 1.69e9, "clean_min_hz": 1.2e9,
                     "clean_max_hz": 2.175e9, "best_snr_db": 86.0})
     sdr = FakeSDR(window_hz=None)
-    assert cal.characterise_in_place(FakePhaser(sdr), sdr, HB100) is None
+    assert cal.characterize_in_place(FakePhaser(sdr), sdr, HB100) is None
     assert pf.load_if_cal()["rx_freq_hz"] == pytest.approx(1.69e9)
 
 
@@ -187,13 +187,13 @@ def test_the_sweep_flushes_between_tunings(cal, store, fast):
     """Without this every step reads the previous step's tuning, which is
     what put the HB100 search 8 MHz off a real tone (PR #29)."""
     sdr = FakeSDR(window_hz=(1.2e9, 2.175e9))
-    cal.characterise_in_place(FakePhaser(sdr), sdr, HB100)
+    cal.characterize_in_place(FakePhaser(sdr), sdr, HB100)
     steps = int((pf.IF_SWEEP_STOP_HZ - pf.IF_SWEEP_START_HZ) / pf.IF_SWEEP_STEP_HZ)
     assert sdr.destroyed >= steps
 
 
-def test_a_narrow_window_is_refused_rather_than_centred(cal, store, fast):
+def test_a_narrow_window_is_refused_rather_than_centered(cal, store, fast):
     """One or two clean steps is measurement noise, not a window."""
     sdr = FakeSDR(window_hz=(1.60e9, 1.625e9))
-    assert cal.characterise_in_place(FakePhaser(sdr), sdr, HB100) is None
+    assert cal.characterize_in_place(FakePhaser(sdr), sdr, HB100) is None
     assert pf.load_if_cal() is None

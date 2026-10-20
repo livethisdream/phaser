@@ -2251,7 +2251,7 @@ async function cancelCalibrationTask() {
     try {
         const msg = await transport.cancelCalibration();
         if (msg.status === 'ok') {
-            addRuntimeLog('info', 'CAL', 'Calibration cancelled');
+            addRuntimeLog('info', 'CAL', 'Calibration canceled');
             setCalibrationButtonsBusy(false);
             hideCalibrationModal();
         } else {
@@ -2286,7 +2286,7 @@ async function runCalibrationTask(taskName) {
 document.getElementById('btn-calibrate-phaser')?.addEventListener('click', () => runCalibrationTask('phaser_cal'));
 document.getElementById('btn-find-hb100')?.addEventListener('click', () => runCalibrationTask('find_hb100'));
 
-// Characterisation confirms first, unlike the other two. It is a once-per-kit
+// Characterization confirms first, unlike the other two. It is a once-per-kit
 // bench step rather than a routine one, it is worthless unless the HB100 is
 // actually set up, and it rewrites the IF the whole backend then runs at -- so
 // it is worth a sentence before a minute of sweeping.
@@ -2302,7 +2302,7 @@ document.getElementById('btn-characterize')?.addEventListener('click', () => {
         + 'Nothing is saved if the sweep hears nothing, so a bad run is safe.'
     );
     if (!ok) {
-        addRuntimeLog('info', 'CAL', 'Characterize IF cancelled before starting');
+        addRuntimeLog('info', 'CAL', 'Characterize IF canceled before starting');
         return;
     }
     runCalibrationTask('characterize');

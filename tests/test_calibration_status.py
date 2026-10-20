@@ -78,7 +78,7 @@ def test_idle_before_any_run(app):
     assert "returncode" not in status
 
 
-def test_cancelling_an_already_dead_process_reports_why(app):
+def test_canceling_an_already_dead_process_reports_why(app):
     """A crash looks exactly like this from the caller's side. Reporting 'no
     calibration running' threw away the only evidence of what went wrong."""
     app.cal_process = FakeProc(1)

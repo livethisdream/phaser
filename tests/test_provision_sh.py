@@ -477,7 +477,7 @@ def test_mbr_parsing_finds_the_fat_partition():
 
 
 @pytest.mark.parametrize("fat_type", [0x01, 0x04, 0x06, 0x0b, 0x0c, 0x0e])
-def test_all_fat_partition_types_recognised(fat_type):
+def test_all_fat_partition_types_recognized(fat_type):
     """Pi images have used several of these over the years."""
     b = _load_builder()
     offset, _ = b.parse_mbr(_mbr(boot_type=fat_type), "test")

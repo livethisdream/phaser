@@ -574,7 +574,7 @@ def scan_peak_is_trustworthy(result, min_snr_db=MIN_SCAN_SNR_DB,
     """(ok, reason) for a `find_scan_peak` result.
 
     Returns the reason as text so the caller can put it in front of whoever is
-    standing at the bench, which is the whole point: the old behaviour was to
+    standing at the bench, which is the whole point: the old behavior was to
     save a bogus frequency silently.
 
     `min_confirming` defaults to 1, i.e. off. It is tempting to require that
@@ -629,7 +629,7 @@ def measure_array_contrast(phaser, averages=4, max_gain=127):
     return float(on - off), float(on), float(off)
 
 
-# --- IF planning and per-unit characterisation ------------------------------
+# --- IF planning and per-unit characterization ------------------------------
 #
 # LO = SignalFreq + Rx_freq, and the ADF4159 register takes a QUARTER of it
 # because the CN0566 divides by 4 ahead of the PLL's RFIN. Both halves have
@@ -678,13 +678,13 @@ def measure_array_contrast(phaser, averages=4, max_gain=127):
 # to 12.608 GHz, flat at 85-88 dB SNR. A higher LO limit may well exist; this
 # source cannot reach it, so nothing here claims one.
 
-# Bootstrap only: the IF to use before a unit has been characterised. It sits
+# Bootstrap only: the IF to use before a unit has been characterized. It sits
 # ~480 MHz below the lower of the two ceilings measured so far, which is the
 # entire basis for the number. It is a safe place to start a measurement from,
 # not an answer -- phaser_characterize_headless.py replaces it with one.
 DEFAULT_RX_FREQ_HZ = 1.7e9
 
-# Used only when a unit has NOT been characterised: the lowest clean edge and
+# Used only when a unit has NOT been characterized: the lowest clean edge and
 # the lowest dead point seen on any kit, so an unmeasured unit is judged
 # against the worst case rather than the best.
 IF_UNMEASURED_CEILING_HZ = 2.18e9
@@ -695,7 +695,7 @@ IF_UNMEASURED_DEAD_HZ = 2.20e9
 HB100_MIN_HZ = 10.1e9
 HB100_MAX_HZ = 10.7e9
 
-# The sweep characterisation runs. The range is part of the definition of the
+# The sweep characterization runs. The range is part of the definition of the
 # answer, because choose_rx_freq returns the middle of the clean run: widening
 # or narrowing this moves the result. 1.2-2.6 GHz spans both kits measured so
 # far with room either side, and 25 MHz places a ~15 MHz skirt within a step.
@@ -705,11 +705,11 @@ IF_SWEEP_STEP_HZ = 25e6
 
 # A step is clean if it comes within this of the best step in the sweep. The
 # skirt falls ~30 dB per 5 MHz, so every step on it lands far outside 6 dB and
-# no threshold in this neighbourhood changes which steps qualify.
+# no threshold in this neighborhood changes which steps qualify.
 IF_CLEAN_TOLERANCE_DB = 6.0
 
 # Below this a "window" is measurement noise, not a window, and
-# characterisation fails rather than picking the middle of one.
+# characterization fails rather than picking the middle of one.
 IF_MIN_USABLE_SPAN_HZ = 100e6
 
 # A sweep whose best step is below this is not believed at all. choose_rx_freq
@@ -840,7 +840,7 @@ def choose_rx_freq(rows, tolerance_db=IF_CLEAN_TOLERANCE_DB,
 
 
 def save_if_cal(window, signal_freq_hz=None, rows=None):
-    """Persist a characterisation. Stored under its own key, so re-running it
+    """Persist a characterization. Stored under its own key, so re-running it
     does not disturb the phase, gain or channel calibrations beside it."""
     payload = {
         "rx_freq_hz": float(window["rx_freq_hz"]),
@@ -865,7 +865,7 @@ def save_if_cal(window, signal_freq_hz=None, rows=None):
 
 
 def load_if_cal():
-    """The stored characterisation, or None if this unit has never had one."""
+    """The stored characterization, or None if this unit has never had one."""
     stored = load_calibration().get("if_window")
     if not isinstance(stored, dict):
         return None
@@ -927,7 +927,7 @@ def rx_freq_source(config_module=None):
 
     if configured is not None:
         warnings.append(
-            "this unit has not been characterised, so config.Rx_freq = %.3f "
+            "this unit has not been characterized, so config.Rx_freq = %.3f "
             "GHz is being taken on trust. Run phaser_characterize_headless.py."
             % (configured / 1e9)
         )
@@ -985,19 +985,19 @@ def rf_chain_warnings(signal_freq_hz, rx_freq_hz, window=None):
         out.append(
             "IF %.3f GHz is at or above %.2f GHz, where a kit in this fleet "
             "was measured receiving nothing, and this unit has never been "
-            "characterised. Run phaser_characterize_headless.py."
+            "characterized. Run phaser_characterize_headless.py."
             % (rx / 1e9, IF_UNMEASURED_DEAD_HZ / 1e9)
         )
     elif rx > IF_UNMEASURED_CEILING_HZ:
         out.append(
             "IF %.3f GHz is above the highest a kit in this fleet was measured "
             "receiving cleanly (%.2f GHz), and this unit has never been "
-            "characterised. It may work; it was not measured to."
+            "characterized. It may work; it was not measured to."
             % (rx / 1e9, IF_UNMEASURED_CEILING_HZ / 1e9)
         )
     else:
         out.append(
-            "this unit has never been characterised; %.3f GHz is inside what "
+            "this unit has never been characterized; %.3f GHz is inside what "
             "other kits manage, which is not the same as inside what this one "
             "does. Run phaser_characterize_headless.py."
             % (rx / 1e9)

@@ -72,11 +72,11 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
 - **With no source lit, the centroid wanders the full -90..+90.** There is no
   mainlobe to weight, so `DEFAULT_SIGNAL_FLOOR_DB` is load-bearing rather than
   defensive: without it a player who walks away is scored into whichever sector
-  the noise favoured.
+  the noise favored.
 - **CTF tracking is fed by the sweep loop, not the poll.** A service restart
   leaves the sweep stopped, which is where every install lands. The backend
   reports `measuring:false` and nulls the live readouts rather than serving the
-  last angle — anything reading `ctf_status` must honour that flag or it draws
+  last angle — anything reading `ctf_status` must honor that flag or it draws
   stale data as live.
 - **`install.sh`'s `BACKEND_FILES` is an allowlist.** A backend module missing
   from it installs silently absent and the service crash-loops on the import —
@@ -94,8 +94,8 @@ Conversion of the legacy `phaser_gui.py` (from pyadi-iio examples) into a headle
 - **2026-10-15** — The usable IF is **measured per unit** into `calibration.json` and beats `config.py`; `rx_freq_source` resolves measurement > override > config > default. Reason: kits differ ~200 MHz, `config.py` never deploys, so no constant and no hand-edit can be right everywhere.
 - **2026-10-15** — The reception limit is on the **IF axis, not the LO**. Reason: the 2026-09-24 sweep moved both together and could not distinguish them; parking `rx_lo` and sweeping only the LO separated them. Evidence in `docs/calibration-bugs.md`.
 - **2026-10-15** — Phase calibration **fits the whole curve** (`angle(sum(P_linear·exp(jφ)))`) rather than taking an argmax. Reason: a quadratic peak makes argmax noise-dominated and it compounds along the array; 27.5 → 2.00 degrees of scatter.
-- **2026-10-15** — Characterisation is a **GUI button, not part of `provision.sh`**. Reason: provisioning runs unattended at first boot, often before the kit is assembled — the one moment the measurement cannot be made.
-- **2026-10-15** — Calibration **characterises an unmeasured kit and retries, once**. Reason: a sweep needs exactly the bench conditions calibration needs. Refuses if the kit is already measured, if the HB100 frequency is not, or if the sweep hears nothing.
+- **2026-10-15** — Characterization is a **GUI button, not part of `provision.sh`**. Reason: provisioning runs unattended at first boot, often before the kit is assembled — the one moment the measurement cannot be made.
+- **2026-10-15** — Calibration **characterizes an unmeasured kit and retries, once**. Reason: a sweep needs exactly the bench conditions calibration needs. Refuses if the kit is already measured, if the HB100 frequency is not, or if the sweep hears nothing.
 # Plan
 
 **Phase 1 (current) — Digital Beamforming UI polish:**

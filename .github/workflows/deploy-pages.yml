@@ -37,7 +37,7 @@ permissions:
   id-token: write
 
 # Grouped per ref so PR checks do not queue behind a deploy. A superseded PR run
-# is worth cancelling; a deploy in flight is not -- a half-published site is
+# is worth canceling; a deploy in flight is not -- a half-published site is
 # worse than a slightly stale one.
 concurrency:
   group: pages-${{ github.ref }}

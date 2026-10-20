@@ -1,4 +1,4 @@
-"""Characterising a unit's usable IF, and deciding which IF to run at.
+"""Characterizing a unit's usable IF, and deciding which IF to run at.
 
 The bug these guard against: config.py ships Rx_freq = 2.2 GHz, kit "phaser"
 can hear there, kit phaser-00 cannot, and nothing anywhere said so. config.py
@@ -71,7 +71,7 @@ def test_the_middle_is_far_from_the_edge_that_varies():
     """Both kits' answers clear the LOWER of the two measured ceilings.
 
     The two units differ by ~200 MHz at the top edge, so the margin that
-    matters is whether a unit characterised today would still be inside its
+    matters is whether a unit characterized today would still be inside its
     window after drifting by about that much. 1.69 and 1.79 GHz sit 390 and
     290 MHz under phaser-00's 2.18, which covers it.
     """
@@ -120,7 +120,7 @@ def test_the_chosen_if_is_rounded_to_something_a_person_can_read():
 
 # --- storing it -------------------------------------------------------------
 
-def test_a_characterisation_survives_a_round_trip(store):
+def test_a_characterization_survives_a_round_trip(store):
     rows = sweep(dead_from_hz=2.2e9)
     window = pf.choose_rx_freq(rows)
     pf.save_if_cal(window, signal_freq_hz=HB100_00, rows=rows)
@@ -131,7 +131,7 @@ def test_a_characterisation_survives_a_round_trip(store):
     assert len(loaded["sweep"]) == len(rows)
 
 
-def test_characterising_does_not_disturb_the_other_calibrations(store):
+def test_characterizing_does_not_disturb_the_other_calibrations(store):
     """Calibrations are run separately; writing one must not drop another."""
     pf.save_phase_cal([1.0] * 8)
     pf.save_hb100_cal(HB100_00)
@@ -143,7 +143,7 @@ def test_characterising_does_not_disturb_the_other_calibrations(store):
     assert data["if_window"]["rx_freq_hz"] == pytest.approx(1.69e9)
 
 
-def test_a_corrupt_characterisation_reads_as_absent(store):
+def test_a_corrupt_characterization_reads_as_absent(store):
     pf.save_calibration(if_window={"clean_min_hz": 1.0})   # no rx_freq_hz
     assert pf.load_if_cal() is None
 
@@ -153,7 +153,7 @@ def test_a_corrupt_characterisation_reads_as_absent(store):
 def test_with_no_measurement_the_config_value_is_used_but_flagged(store):
     chosen = pf.rx_freq_source(cfg(Rx_freq=2.2e9))
     assert chosen["rx_freq_hz"] == pytest.approx(2.2e9)
-    assert any("not been characterised" in w for w in chosen["warnings"])
+    assert any("not been characterized" in w for w in chosen["warnings"])
 
 
 def test_the_measurement_beats_config(store):
@@ -191,7 +191,7 @@ def test_with_nothing_at_all_the_bootstrap_default_is_used(store):
 
 def test_the_bootstrap_default_is_inside_every_kit_measured_so_far(store):
     """It has to be: it is the IF the HB100 search runs at on a fresh kit,
-    and the search is what the characterisation needs in order to run."""
+    and the search is what the characterization needs in order to run."""
     assert pf.DEFAULT_RX_FREQ_HZ < pf.IF_UNMEASURED_CEILING_HZ - 400e6
 
 

@@ -58,7 +58,7 @@ def _capture(my_phaser, my_sdr, signal_freq):
     # Destroy the RX buffer rather than discarding one read. Discarding one
     # was not enough: on hardware every capture still held the PREVIOUS LO's
     # data, whatever the settle time (0.05, 0.2 and 1.0 s measured the same),
-    # so each 10 MHz sweep step was labelled with the next step's frequency
+    # so each 10 MHz sweep step was labeled with the next step's frequency
     # and the search landed ~8 MHz off the tone. Discarding two did no better.
     # A fresh buffer measured within one bin from any jump (2026-10-15).
     if hasattr(my_sdr, "rx_destroy_buffer"):
@@ -83,9 +83,9 @@ def confirm_with_lo_shift(my_phaser, my_sdr, candidate_hz):
     frequency moves by exactly the shift and it fails.
     """
     for shift in (+CONFIRM_SHIFT_HZ, -CONFIRM_SHIFT_HZ):
-        centre = candidate_hz + shift
-        ampl, bb = _capture(my_phaser, my_sdr, centre)
-        observed = centre + bb[int(np.argmax(ampl))]
+        center = candidate_hz + shift
+        ampl, bb = _capture(my_phaser, my_sdr, center)
+        observed = center + bb[int(np.argmax(ampl))]
         error = abs(observed - candidate_hz)
         print(
             "  LO %+0.1f MHz -> peak at %.6f GHz (candidate %.6f GHz, "
@@ -117,10 +117,10 @@ def search_if(config_module):
         return chosen
     return {
         "rx_freq_hz": float(DEFAULT_RX_FREQ_HZ),
-        "source": "the bootstrap default (unit not characterised yet)",
+        "source": "the bootstrap default (unit not characterized yet)",
         "warnings": [
             "config.Rx_freq = %.3f GHz is not used for the search on an "
-            "uncharacterised unit. Run Characterize IF after this."
+            "uncharacterized unit. Run Characterize IF after this."
             % (chosen["rx_freq_hz"] / 1e9)
         ],
     }
@@ -175,7 +175,7 @@ def find_hb100():
             my_sdr.rx_hardwaregain_chan1 = 0
             # The IF is per-unit and measured; see
             # phaser_characterize_headless.py. Before a unit has been
-            # characterised this falls back to the bootstrap default, which
+            # characterized this falls back to the bootstrap default, which
             # is what makes the search runnable on a kit that has never been
             # measured -- it used to be a hardcoded 2.0 GHz, inside both kits
             # measured so far but not guaranteed inside the next one.
@@ -239,7 +239,7 @@ def find_hb100():
                 print("  NOTE: too few LO steps to build a spur template; "
                       "result is a plain peak search")
             elif abs(result["raw_freq_hz"] - peak_hz) > CONFIRM_TOLERANCE_HZ:
-                # Worth saying out loud: this is the old behaviour being
+                # Worth saying out loud: this is the old behavior being
                 # overruled, and the gap is how far off it would have been.
                 print(
                     "  spur rejection changed the answer: a plain peak search "

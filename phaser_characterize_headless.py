@@ -97,7 +97,7 @@ def setup(phaser, sdr, signal_freq, bootstrap_if):
     """Configure exactly as calibration does, at the bootstrap IF.
 
     Matching calibration matters: this measures the window THAT path sees, so
-    a difference in filter, sample rate or gain here would characterise a
+    a difference in filter, sample rate or gain here would characterize a
     configuration nobody runs.
     """
     phaser.configure(device_mode="rx")
@@ -129,13 +129,13 @@ def print_row(row):
 
 def report_failure(window, rows):
     print()
-    print("CHARACTERISATION FAILED: %s" % window.get("reason", "unknown"))
+    print("CHARACTERIZATION FAILED: %s" % window.get("reason", "unknown"))
     print()
     best = max(rows, key=lambda r: r["snr_db"]) if rows else None
     if best is not None:
         print("The best step was %.3f GHz at %.1f dB SNR (%.2f dBFS)."
               % (best["rx_freq_hz"] / 1e9, best["snr_db"], best["peak_dbfs"]))
-    print("Nothing was saved; any previous characterisation is intact.")
+    print("Nothing was saved; any previous characterization is intact.")
     print()
     print("Check, in this order:")
     print("  1. the HB100 is powered and aimed at the array, at boresight")
@@ -151,7 +151,7 @@ def characterize(signal_freq, bootstrap_if, dry_run=False):
 
     for attempt in range(MAX_RETRIES):
         try:
-            print(f"Characterisation attempt {attempt + 1}/{MAX_RETRIES}...")
+            print(f"Characterization attempt {attempt + 1}/{MAX_RETRIES}...")
             phaser, sdr = connect()
             setup(phaser, sdr, signal_freq, bootstrap_if)
 
@@ -282,7 +282,7 @@ def main():
 
     previous = load_if_cal()
     if previous is not None:
-        print("Previously characterised at %.3f GHz; re-measuring."
+        print("Previously characterized at %.3f GHz; re-measuring."
               % (float(previous["rx_freq_hz"]) / 1e9))
 
     bootstrap = args.bootstrap_if or DEFAULT_RX_FREQ_HZ

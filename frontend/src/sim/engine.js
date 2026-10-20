@@ -7,7 +7,7 @@
  * ./sdr.js instead of pyadi-iio.
  *
  * Python is the source of truth. Constants come from ./constants.generated.js
- * (see tools/gen_sim_constants.py) and behaviour is pinned by
+ * (see tools/gen_sim_constants.py) and behavior is pinned by
  * tests/test_sim_parity.py. Change the physics in Python first.
  */
 

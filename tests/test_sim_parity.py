@@ -7,7 +7,7 @@ does. This is the test that makes drift fail the build.
 
 Constants are handled separately and more strongly: tools/gen_sim_constants.py
 generates them from the Python, and CI fails if the committed output is stale.
-So what is left for this file is *behavioural* drift -- an algorithm change on
+So what is left for this file is *behavioral* drift -- an algorithm change on
 one side and not the other.
 
 --- Why noise is off ------------------------------------------------------
@@ -35,7 +35,7 @@ float64 rounding, i.e. by nothing physical.
 
 That was a real defect in do_sweep(), found by this test: a difference of
 exactly 2*pi between two implementations means both computed the same angle and
-then labelled it differently. It is fixed now (beam_phase is the angle of
+then labeled it differently. It is fixed now (beam_phase is the angle of
 sum * conj(delta)), so PhaseDiff and ErrorFunc are compared raw, with no
 wrapping. They agree to ~5e-14 and ~1e-15 respectively.
 
@@ -302,7 +302,7 @@ def test_fft_tone_matches(tmp_path, _importable):
     assert np.max(np.abs(py_gain[lobe] - js_gain[lobe])) < 1e-2, "FFT main lobe diverged"
 
 
-def test_element_phase_error_is_modelled_identically(tmp_path, _importable):
+def test_element_phase_error_is_modeled_identically(tmp_path, _importable):
     """The intrinsic per-element error the phase calibration exists to cancel.
 
     Nothing else in the matrix perturbs it, and it enters the physics at a
