@@ -768,7 +768,7 @@ privileges -- `ctf_flag.txt` and `ctf_sequence.txt` go in the install directory
 next to `phaser_ctf.py` (`/home/analog/pyadi-iio/examples/phaser/`), owned by
 the service user. The environment wins when both are present.
 
-Sectors default to five bins centred at -40/-20/0/+20/+40 degrees with +/-5
+Sectors default to five bins centered at -40/-20/0/+20/+40 degrees with +/-5
 degrees tolerance and a 2 s dwell; all of that is constructor arguments on
 `CtfMode`. The mode is passive -- it watches the commanded `phaseList` and
 answers `ctf_status` / `ctf_reset`, and does nothing at all unless a browser
@@ -858,7 +858,7 @@ Sim mode uses the same loaders and reads whatever cal state is present
 locally, so tweaks made on the Pi during development can be scp'd back and
 reproduced in sim.
 
-### Characterise a new kit once
+### Characterize a new kit once
 
 `calibration.json` also holds this unit's usable **IF window**, measured by
 `phaser_characterize_headless.py`. The IF that works is a property of the
@@ -874,7 +874,7 @@ python3 phaser_cal_headless.py               # channel, gain, phase
 ```
 
 You do not have to remember step 2. If calibration fails its signal check on
-a kit that has never been characterised, it runs the sweep itself, stores the
+a kit that has never been characterized, it runs the sweep itself, stores the
 result and retries — once, and never on a kit that already has a measurement.
 
 You **do** have to remember step 1. The sweep tunes against the stored HB100

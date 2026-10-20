@@ -274,7 +274,16 @@ if ! systemctl is-active --quiet "$SERVICE"; then
     sudo journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true
     exit 1
 fi
-CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" || echo 000)"
+# curl prints 000 itself when nothing answers and then exits non-zero, so an
+# `|| echo 000` here appended a second one ("HTTP 000000"). Retry briefly: the
+# backend starts the hardware before its web server.
+CODE=000
+for _ in 1 2 3 4 5 6 7 8; do
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" 2>/dev/null || true)"
+    CODE="${CODE:-000}"
+    [ "$CODE" = "200" ] && break
+    sleep 2
+done
 [ "$CODE" = "200" ] || say "WARN: the UI returned HTTP $CODE (expected 200)"
 
 # ---- 6b. the RF chain this kit will actually run ---------------------------
@@ -294,7 +303,7 @@ CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" 
 # figure in the repo came off one of them, and the other was deaf at the
 # shipped config.Rx_freq with nothing anywhere saying so.
 #
-# Warn, never fail. An uncharacterised kit is the normal state of a fresh
+# Warn, never fail. An uncharacterized kit is the normal state of a fresh
 # install, and refusing to install over it would turn a warning into a dead
 # workshop.
 step 6b "Checking the RF chain..."
@@ -348,22 +357,31 @@ if not problems:
 # install rather than an error. Leave a marker for the closing summary: the
 # three setup scripts have to run in order and nothing else says so.
 if window is None:
-    open("/tmp/.phaser-uncharacterised", "w").close()
+    open("/tmp/.phaser-uncharacterized", "w").close()
 PY
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '\n'; printf '=%.0s' {1..64}; printf '\n'
-say "Installed. Service is active and the UI answered HTTP $CODE."
+if [ "$CODE" = "200" ]; then
+    say "Installed. Service is active and the UI answered HTTP 200."
+else
+    # Not a failure on a freshly provisioned kit: the board's device-tree
+    # overlay only loads at boot, so the backend cannot start the hardware
+    # until the reboot provision.sh asks for. Say so instead of "success".
+    say "Installed, but the UI is not answering yet (HTTP $CODE)."
+    say "  On a kit just provisioned, reboot first; the board appears at boot."
+    say "  Otherwise:  sudo journalctl -u ${SERVICE} -n 30   ('No device found' = the Pluto's USB cable)"
+fi
 
-# Deliberately NOT run from here, nor from provision.sh. Characterisation
+# Deliberately NOT run from here, nor from provision.sh. Characterization
 # needs a powered HB100 aimed at the array, and provisioning runs unattended
 # at first boot (scripts/pi/firstrun.sh passes --yes), often before the kit is
 # even assembled -- sweeping then would measure noise. Telling the operator is
 # the most an installer can honestly do.
-if [ -f /tmp/.phaser-uncharacterised ]; then
-    rm -f /tmp/.phaser-uncharacterised
+if [ -f /tmp/.phaser-uncharacterized ]; then
+    rm -f /tmp/.phaser-uncharacterized
     say ""
-    say "This kit has NOT been characterised. The usable IF differs between"
+    say "This kit has NOT been characterized. The usable IF differs between"
     say "kits by ~200 MHz, and the config default is one that some kits cannot"
     say "hear at all -- a deaf kit looks exactly like a dead HB100."
     say ""

@@ -2,7 +2,7 @@
 
 Found on a kit on 2026-10-15. `_capture` discarded one RX buffer after each
 retune, but every capture still held the previous LO's data, whatever the
-settle time, so each 10 MHz sweep step was labelled with the next step's
+settle time, so each 10 MHz sweep step was labeled with the next step's
 frequency and the search landed ~8 MHz off a real 74 dB tone. Separately,
 loading LTE20_MHz.ftr moves the radio to 30.72 MSPS while the frequency axis
 assumed 30 MSPS. Destroying the buffer and using the radio's own sample rate
@@ -48,15 +48,15 @@ class FakeSdr:
 
     def __init__(self, phaser):
         self.phaser = phaser
-        self.buffer_centre = None
+        self.buffer_center = None
 
     def rx_destroy_buffer(self):
-        self.buffer_centre = None
+        self.buffer_center = None
 
     def rx(self):
-        if self.buffer_centre is None:
-            self.buffer_centre = self.phaser.centre_hz()
-        offset = TONE_HZ - self.buffer_centre
+        if self.buffer_center is None:
+            self.buffer_center = self.phaser.center_hz()
+        offset = TONE_HZ - self.buffer_center
         # _capture flips the spectrum (high-side LO), so the tone arrives
         # mirrored at baseband.
         t = np.arange(NBUF) / FS
@@ -68,13 +68,13 @@ class FakePhaser:
     SignalFreq = 0.0
     frequency = 0
 
-    def centre_hz(self):
+    def center_hz(self):
         return self.frequency * 4 - self.sdr.rx_lo
 
 
-def absolute_peak(mod, phaser, sdr, centre_hz):
-    ampl, bb = mod._capture(phaser, sdr, centre_hz)
-    return centre_hz + bb[int(np.argmax(ampl))]
+def absolute_peak(mod, phaser, sdr, center_hz):
+    ampl, bb = mod._capture(phaser, sdr, center_hz)
+    return center_hz + bb[int(np.argmax(ampl))]
 
 
 @pytest.mark.parametrize("jump_mhz", [-300, -10, +10, +300])
@@ -98,3 +98,34 @@ def test_axis_uses_the_radio_sample_rate(hb100):
     phaser.sdr = sdr
     found = absolute_peak(hb100, phaser, sdr, TONE_HZ + 4e6)
     assert abs(found - TONE_HZ) <= 2 * BIN_HZ
+
+
+class _Config:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_search_ignores_an_unverified_config_if(hb100, monkeypatch):
+    """A fresh kit searches at the bootstrap IF, not config.Rx_freq.
+
+    phaser-00 is deaf at the shipped 2.2 GHz; searching there on a freshly
+    flashed card found only a receiver spur and failed (2026-10-19).
+    """
+    import phaser_functions as pf
+    monkeypatch.setattr(pf, "load_if_cal", lambda: None)
+    chosen = hb100.search_if(_Config(Rx_freq=2.2e9))
+    assert chosen["rx_freq_hz"] == pf.DEFAULT_RX_FREQ_HZ
+    assert chosen["rx_freq_hz"] < pf.IF_UNMEASURED_CEILING_HZ
+
+
+def test_search_uses_the_measured_if(hb100, monkeypatch):
+    import phaser_functions as pf
+    monkeypatch.setattr(pf, "load_if_cal", lambda: {"rx_freq_hz": 1.69e9})
+    assert hb100.search_if(_Config(Rx_freq=2.2e9))["rx_freq_hz"] == 1.69e9
+
+
+def test_search_honors_a_deliberate_override(hb100, monkeypatch):
+    import phaser_functions as pf
+    monkeypatch.setattr(pf, "load_if_cal", lambda: None)
+    chosen = hb100.search_if(_Config(Rx_freq=2.2e9, Rx_freq_override=1.9e9))
+    assert chosen["rx_freq_hz"] == 1.9e9

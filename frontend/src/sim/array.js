@@ -6,7 +6,7 @@
  * pedantry. On the real ADAR1000, `rx_gain`/`rx_phase` land in SPI shadow
  * registers and only a latch (RX_LOAD) moves them into the beam state the RF
  * path uses. A caller that writes phases and forgets to latch gets a beam that
- * never moves -- the flat-line-instead-of-a-beam-pattern failure. Modelling it
+ * never moves -- the flat-line-instead-of-a-beam-pattern failure. Modeling it
  * here means the browser sim reproduces that bug too, which is the whole point
  * of a simulator used for teaching.
  */

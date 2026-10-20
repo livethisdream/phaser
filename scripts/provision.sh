@@ -198,13 +198,28 @@ else
     fi
 fi
 
-# Now there is something for systemd to enable, so this finally works.
-if systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd\.service'; then
+# Now there is something for systemd to enable. A masked unit swallows
+# `enable` silently, which left a provisioned kit reporting "NTP: no" with no
+# warning anywhere, so unmask it first when no other client is in charge.
+time_client() {
+    local u
+    for u in systemd-timesyncd chrony ntpsec ntp; do
+        systemctl is-active --quiet "$u" 2>/dev/null && { printf '%s' "$u"; return 0; }
+    done
+    return 1
+}
+if ! time_client >/dev/null \
+   && systemctl list-unit-files 2>/dev/null | grep -q '^systemd-timesyncd\.service'; then
+    sudo systemctl unmask systemd-timesyncd >/dev/null 2>&1 || true
     sudo systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true
 fi
-sudo timedatectl set-ntp true >/dev/null 2>&1 \
-    && say "NTP enabled" \
-    || warn "could not enable NTP (no client installed, or UDP/123 blocked)"
+sudo timedatectl set-ntp true >/dev/null 2>&1 || true
+if CLIENT="$(time_client)"; then
+    say "time sync: $CLIENT running"
+else
+    warn "no time-sync client is running. phaser-clock still re-seeds the clock over"
+    warn "HTTP at every boot, so it is right whenever the kit has network at boot."
+fi
 
 # Persist the corrected time immediately. There is no RTC, so between here and
 # the reboot at the end a power cut would otherwise throw away everything
@@ -359,7 +374,7 @@ sudo systemctl enable phaser-clock.service >/dev/null 2>&1 || true
 # Fixed-IP alias. A kit prepped by tools/prep_sdcard.py already has this, but a
 # kit provisioned the plain way over ssh should get it too -- it is what makes
 # the address predictable next time, and it is how a golden image carries the
-# behaviour to every card cloned from it.
+# behavior to every card cloned from it.
 install_if_changed "$SRC/scripts/pi/phaser-netalias" /usr/local/sbin/phaser-netalias 755 \
     "netalias script" || true
 if install_if_changed "$SRC/scripts/pi/phaser-netalias.service" \
@@ -470,7 +485,8 @@ say ""
 say "  hostname   $HOSTNAME_NEW  (http://${HOSTNAME_NEW}.local:8080/ after reboot)"
 ALIAS="$(grep -vE '^\s*(#|$)' "$BOOTDIR/phaser-ip" 2>/dev/null | head -n1 | tr -d ' \t\r\n' || true)"
 [ -n "${ALIAS:-}" ] && say "  fixed IP   ${ALIAS%%/*}  (also reachable there after reboot)"
-say "  clock      $(date '+%Y-%m-%d %H:%M:%S %Z')  NTP: $(timedatectl show -p NTP --value 2>/dev/null || echo unknown)"
+SYNC="$(time_client || echo none)"
+say "  clock      $(date '+%Y-%m-%d %H:%M:%S %Z')  sync: ${SYNC}, synchronized: $(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo unknown)"
 say "  overlay    merged into $CFG (original at $CFG.phaser-orig)"
 say ""
 say "A reboot is required: the device tree overlay and the hostname only take"

@@ -2251,7 +2251,7 @@ async function cancelCalibrationTask() {
     try {
         const msg = await transport.cancelCalibration();
         if (msg.status === 'ok') {
-            addRuntimeLog('info', 'CAL', 'Calibration cancelled');
+            addRuntimeLog('info', 'CAL', 'Calibration canceled');
             setCalibrationButtonsBusy(false);
             hideCalibrationModal();
         } else {

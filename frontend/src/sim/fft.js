@@ -69,7 +69,7 @@ export function fft(re, im) {
     }
 }
 
-/** np.fft.fftshift for a 1-D array (moves the zero-frequency bin to centre). */
+/** np.fft.fftshift for a 1-D array (moves the zero-frequency bin to center). */
 export function fftshift(arr) {
     const n = arr.length;
     const half = Math.ceil(n / 2);

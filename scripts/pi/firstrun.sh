@@ -7,7 +7,7 @@
 #     systemd.unit=kernel-command-line.target
 #
 # to cmdline.txt (as one line; it is wrapped here for width). That is the same mechanism Raspberry Pi Imager's own
-# "Advanced options" use, so it is a well-travelled path rather than a trick.
+# "Advanced options" use, so it is a well-traveled path rather than a trick.
 #
 # Its ONLY job is to make the kit reachable. Everything else -- overlay,
 # pyadi-iio, the UI -- is provision.sh's job, over ssh, where you can watch it

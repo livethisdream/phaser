@@ -42,7 +42,7 @@ MAX_RETRIES = 3
 RETRY_DELAY = 2.0
 
 
-def should_characterise(contrast_db, already_tried, signal_freq_measured):
+def should_characterize(contrast_db, already_tried, signal_freq_measured):
     """Is a recovery sweep the right response to this failed contrast check?
 
     Four conditions, and two of them are the ones that matter.
@@ -72,12 +72,12 @@ def should_characterise(contrast_db, already_tried, signal_freq_measured):
     return load_if_cal() is None
 
 
-def characterise_in_place(my_phaser, my_sdr, signal_freq):
+def characterize_in_place(my_phaser, my_sdr, signal_freq):
     """Measure this unit's IF window using the already-open connection.
 
     Called only after the contrast gate has failed on a unit that has never
-    been characterised. That combination is worth recovering from rather than
-    reporting, because the bench conditions characterisation needs -- HB100
+    been characterized. That combination is worth recovering from rather than
+    reporting, because the bench conditions characterization needs -- HB100
     powered and aimed at the array -- are exactly the ones calibration needs,
     so anyone who got this far has already set up everything the sweep
     requires. The usual objection to chaining the two does not apply.
@@ -92,7 +92,7 @@ def characterise_in_place(my_phaser, my_sdr, signal_freq):
     with the HB100 off is safe.
     """
     print()
-    print("This unit has never been characterised, and the usable IF differs")
+    print("This unit has never been characterized, and the usable IF differs")
     print("between kits by ~200 MHz. Measuring it now, since the HB100 is")
     print("evidently set up -- about a minute.")
     print()
@@ -160,7 +160,7 @@ def do_calibration():
     # At most one recovery sweep per invocation, however many times the
     # reconnect loop below runs. Measuring twice would say nothing new and
     # would double an already slow failure.
-    characterisation_tried = False
+    characterization_tried = False
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -250,14 +250,14 @@ def do_calibration():
                 "All elements on: %.2f dBFS, all off: %.2f dBFS, contrast: %.2f dB"
                 % (on_dbfs, off_dbfs, contrast_db)
             )
-            # An uncharacterised unit failing this gate is the one case
+            # An uncharacterized unit failing this gate is the one case
             # worth recovering rather than reporting: the commonest cause is
             # an IF this kit cannot hear, and the bench is demonstrably set
             # up, because that is what the operator just did.
-            if should_characterise(contrast_db, characterisation_tried,
+            if should_characterize(contrast_db, characterization_tried,
                                    signal_freq_measured):
-                characterisation_tried = True
-                new_if = characterise_in_place(
+                characterization_tried = True
+                new_if = characterize_in_place(
                     my_phaser, my_sdr, my_phaser.SignalFreq)
                 if new_if is not None:
                     rx_freq = new_if
@@ -309,9 +309,9 @@ def do_calibration():
                     print("  3. the RF cables from the CN0566 to the Pluto Rx")
                     print("     inputs")
                     return False
-                if characterisation_tried:
+                if characterization_tried:
                     # Already swept every IF and heard nothing anywhere, so
-                    # the IF is ruled out and saying "characterise it" would
+                    # the IF is ruled out and saying "characterize it" would
                     # send someone round the same loop.
                     print("  1. the HB100 is powered and pointed at the array.")
                     print("     The IF is already ruled out: a sweep of every")

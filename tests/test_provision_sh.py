@@ -204,6 +204,32 @@ def test_hostname_is_validated():
         assert "a-zA-Z0-9-" in text, f"{path.name} does not validate the hostname"
 
 
+def test_install_sh_reports_a_failed_ui_check_honestly():
+    """A UI that does not answer must not be reported as installed and fine.
+
+    `curl -w '%{http_code}' ... || echo 000` printed "HTTP 000000" (curl's own
+    000 plus the echo) inside "Service is active and the UI answered", on a
+    kit whose backend could not start until the reboot. Found 2026-10-19.
+    """
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "|| echo 000)" not in text, "curl already prints 000; the echo doubles it"
+    assert 'the UI answered HTTP $CODE' not in text, \
+        "the success line must not print an arbitrary code"
+    assert "not answering yet" in text, "expected an honest line for a UI that is down"
+
+
+def test_time_sync_is_verified_not_assumed():
+    """provision.sh must report the time client it found running.
+
+    `timedatectl show -p NTP` read "no" on a provisioned kit with no warning,
+    because enabling a masked systemd-timesyncd fails silently. Found 2026-10-19.
+    """
+    text = PROVISION.read_text(encoding="utf-8")
+    assert "unmask systemd-timesyncd" in text
+    assert "time_client" in text
+    assert "NTP: $(timedatectl show -p NTP" not in text, \
+        "the summary must report the running client, not the NTP property"
+
 def test_install_sh_is_reused_not_reimplemented():
     """provision.sh must chain into install.sh, not carry a second copy of it.
 
@@ -451,7 +477,7 @@ def test_mbr_parsing_finds_the_fat_partition():
 
 
 @pytest.mark.parametrize("fat_type", [0x01, 0x04, 0x06, 0x0b, 0x0c, 0x0e])
-def test_all_fat_partition_types_recognised(fat_type):
+def test_all_fat_partition_types_recognized(fat_type):
     """Pi images have used several of these over the years."""
     b = _load_builder()
     offset, _ = b.parse_mbr(_mbr(boot_type=fat_type), "test")

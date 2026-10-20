@@ -9,7 +9,7 @@ baseband offset (-20 dBFS, measured at exactly +678.000 kHz regardless of LO).
 Nothing caught it. The HB100 search takes a global argmax over a stepped-LO
 sweep, and because it maps each capture to absolute frequency, a fixed-baseband
 spur becomes one false candidate per step -- 70 of them -- any of which can win.
-Phase calibration then maximised power that had no dependence on element phase,
+Phase calibration then maximized power that had no dependence on element phase,
 so it wrote noise: reruns disagreed by 256 degrees and channel_cal came out
 negative, which is impossible for a magnitude ratio. The beam pattern was flat
 at 8.5 dB instead of 40+ dB and the UI just showed noise.

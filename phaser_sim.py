@@ -35,7 +35,7 @@ class _StubElement:
     them into the beam state the RF path actually uses. `latched_gain` and
     `latched_phase` are that beam state, and they are what SimSDR reads.
 
-    Modelling this is the point, not pedantry: a caller that writes phases and
+    Modeling this is the point, not pedantry: a caller that writes phases and
     forgets to latch gets a beam that never moves, on the real array and here
     alike -- which is the flat-line-instead-of-a-beam-pattern failure.
     """
