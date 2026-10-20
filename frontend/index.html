@@ -622,6 +622,25 @@
     </div>
   </div>
 
+  <!-- Shown when the backend is up but the hardware is not: by far the most
+       common cause is the Pluto's USB cable to the Pi. Without it the page used
+       not to load at all, and "refused to connect" pointed at the network. -->
+  <div class="modal-overlay" id="hw-missing-modal" hidden>
+    <div class="modal glass-panel" role="alertdialog" aria-modal="true" aria-labelledby="hw-missing-title" aria-describedby="hw-missing-message">
+      <div class="modal-header">
+        <h3 class="modal-title" id="hw-missing-title">Pluto not found</h3>
+      </div>
+      <div class="modal-body confirm-body">
+        <p id="hw-missing-message"></p>
+        <p class="confirm-note" id="hw-missing-detail"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btn-hw-shutdown" hidden>Shut Down</button>
+        <button class="btn btn-primary" id="btn-hw-retry">Retry</button>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

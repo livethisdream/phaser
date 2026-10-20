@@ -1385,6 +1385,12 @@ input[type=number]::-webkit-outer-spin-button {
   font-size: 0.9em;
 }
 
+/* A confirmation can be asked from inside another card (Shut Down on the
+   hardware-missing card), so it sits above every other overlay. */
+#confirm-modal {
+  z-index: 1001;
+}
+
 .modal-overlay[hidden] {
   display: none;
 }
