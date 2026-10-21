@@ -656,6 +656,11 @@ boresight, so the beam patterns are physically consistent — correct beamwidth,
 sidelobe roll-off, grating lobes on sparse tapers, MVDR nulls on the
 interferer.
 
+Signal vs Time (Beam Steering > Mode) works too, but the simulated source cannot
+be carried around the array: it stays at boresight, so the trace sits at the
+pattern's level for the held Steer Angle (about -12 dBFS at 0, deep in the
+sidelobes at 30). Walking the antenna pattern needs a kit and an HB100.
+
 `phaser_sim.py` is a development-only module and is not in `BACKEND_FILES`, so
 `--sim` is a local thing; on the Pi, use the browser simulator instead.
 

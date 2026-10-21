@@ -48,6 +48,13 @@ import { createSimSdr } from './sdr.js';
 
 const DEG = Math.PI / 180;
 
+// Mirrors HOLD_MODES in phaser_headless.py: these hold the beam at
+// hold_angle instead of sweeping it.
+const HOLD_MODES = ['Static Phase', 'Signal vs Time'];
+// Mirrors HOLD_FFT_INTERVAL_S: in a hold mode the spectrum rides along at most
+// this often.
+const HOLD_FFT_INTERVAL_MS = 200;
+
 /**
  * Port of phaser_ctf.peak_angle_centroid(): the mainlobe peak as a
  * power-weighted centroid rather than an argmax, which wanders across a peak
@@ -96,6 +103,8 @@ export function createEngine(options = {}) {
         phase_step: PHASE_STEP_DEG,
         steer_res: STEER_RES_DEG,
         ignore_res: IGNORE_RES,
+        sweep_mode: 'Beam Sweep',
+        hold_angle: 0,
         steer_min: STEER_MIN_DEG,
         steer_max: STEER_MAX_DEG,
         Averages: AVERAGES,
@@ -113,6 +122,9 @@ export function createEngine(options = {}) {
         sim_interferer_power_db: 0,
         sweeping: false,
     };
+
+    // When doSweep() last attached the spectrum; see HOLD_FFT_INTERVAL_MS.
+    let lastFftMs = null;
 
     const phaseCal = [...DEFAULT_PHASE_CAL];
     const gainCal = [...DEFAULT_GAIN_CAL];
@@ -238,7 +250,15 @@ export function createEngine(options = {}) {
 
         let phaseValues;
         let steerValues;
-        if (state.ignore_res) {
+        if (HOLD_MODES.includes(state.sweep_mode)) {
+            // Hold the beam: one point, the same ramp the sweep uses there.
+            steerValues = [state.hold_angle];
+            phaseValues = steerValues.map(
+                (sv) =>
+                    ((2 * STEER_PI * state.d * Math.sin(sv * DEG) * calcFreq) / C_M_PER_S) /
+                    DEG,
+            );
+        } else if (state.ignore_res) {
             // Legacy "ignore steering resolution": step the phase delta one
             // ADAR LSB at a time and let the angle axis fall out of it.
             const phaseLimit =
@@ -371,43 +391,52 @@ export function createEngine(options = {}) {
             }
         }
 
-        // FFT at the peak angle.
-        const n = dataFft.re.length;
-        const win = blackman(n);
-        const re = new Float64Array(n);
-        const im = new Float64Array(n);
-        let winSum = 0;
-        for (let j = 0; j < n; j++) {
-            re[j] = dataFft.re[j] * win[j];
-            im[j] = dataFft.im[j] * win[j];
-            winSum += win[j];
-        }
-        fft(re, im);
-
-        const mag = new Float64Array(n);
-        for (let j = 0; j < n; j++) mag[j] = Math.hypot(re[j], im[j]);
-        const shifted = fftshift(mag);
-
-        const maxGain = new Array(n);
-        for (let j = 0; j < n; j++) {
-            const sMag = Math.max(shifted[j] / winSum, 1e-15);
-            maxGain[j] = 20 * Math.log10(sMag / FULL_SCALE);
-        }
-
-        const xf = Array.from(fftshift(fftfreq(n, 1 / SAMPLE_RATE_HZ)));
-
-        return {
+        const result = {
             ArrayGain: gain,
             ArrayDelta: deltaGain,
             PhaseDiff: phaseDiff,
             ErrorFunc: errorFunc,
             ArrayAngle: angles,
-            max_gain: maxGain,
-            xf,
             peak_signal: maxSignal,
             // Same field, same function as do_sweep() -- see phaser_ctf.
             peak_angle_deg: peakAngleCentroid(angles, gain),
+            sweep_mode: state.sweep_mode,
+            hold_angle_deg: state.hold_angle,
         };
+
+        const now = Date.now();
+        if (!HOLD_MODES.includes(state.sweep_mode) || lastFftMs === null
+            || now - lastFftMs >= HOLD_FFT_INTERVAL_MS) {
+            lastFftMs = now;
+            // FFT at the peak angle.
+            const n = dataFft.re.length;
+            const win = blackman(n);
+            const re = new Float64Array(n);
+            const im = new Float64Array(n);
+            let winSum = 0;
+            for (let j = 0; j < n; j++) {
+                re[j] = dataFft.re[j] * win[j];
+                im[j] = dataFft.im[j] * win[j];
+                winSum += win[j];
+            }
+            fft(re, im);
+
+            const mag = new Float64Array(n);
+            for (let j = 0; j < n; j++) mag[j] = Math.hypot(re[j], im[j]);
+            const shifted = fftshift(mag);
+
+            const maxGain = new Array(n);
+            for (let j = 0; j < n; j++) {
+                const sMag = Math.max(shifted[j] / winSum, 1e-15);
+                maxGain[j] = 20 * Math.log10(sMag / FULL_SCALE);
+            }
+
+            const xf = Array.from(fftshift(fftfreq(n, 1 / SAMPLE_RATE_HZ)));
+
+            result.max_gain = maxGain;
+            result.xf = xf;
+        }
+        return result;
     }
 
     // --- state surface -----------------------------------------------------
@@ -487,6 +516,11 @@ export function createEngine(options = {}) {
             state.steer_res = Math.max(0.1, patch.steer_res);
         }
         if ('ignore_res' in patch) state.ignore_res = !!patch.ignore_res;
+        // The frontend's `mode` is the legacy sweep mode, as on the backend.
+        if (typeof patch.mode === 'string') state.sweep_mode = patch.mode;
+        if (Number.isFinite(patch.hold_angle)) {
+            state.hold_angle = Math.max(-90, Math.min(90, patch.hold_angle));
+        }
 
         return { status: 'ok' };
     }

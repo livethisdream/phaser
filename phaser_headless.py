@@ -77,6 +77,17 @@ from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additiv
 # the next install.sh writes it back.
 SHUTDOWN_CMD = ["/usr/bin/systemctl", "poweroff"]
 
+# Legacy Mode menu values that hold the beam at one steering angle instead of
+# sweeping it. Any other mode ("Beam Sweep", or a lab label such as
+# "Tracking") sweeps.
+HOLD_MODES = ("Static Phase", "Signal vs Time")
+
+# A hold mode returns one point per SDR read, so updates arrive as fast as the
+# receiver reads. The spectrum is ~600 KB of JSON per frame (16k bins of xf and
+# max_gain) and would set the update rate -- and back up the WebSocket, which
+# has no backpressure -- so there it rides along at most this often.
+HOLD_FFT_INTERVAL_S = 0.2
+
 
 class PhaserHeadless:
     def __init__(self, pub_port=5555, rep_port=5556, ws_port=8765, http_port=8080,
@@ -320,6 +331,13 @@ class PhaserHeadless:
         self.steer_min = -90
         self.steer_max = 90
 
+        # Sweep mode, as legacy's Mode menu. In HOLD_MODES each update is ONE
+        # steering point at hold_angle (degrees, +theta toward the E8 end, the
+        # same side the sweep plots +theta), whatever ignore_res says: legacy
+        # tests the mode after res_bits, so the mode wins.
+        self.sweep_mode = "Beam Sweep"
+        self.hold_angle = 0.0
+
         # GRCon26 CTF sector-sequence mode. Passive: it only watches the
         # commanded phaseList and answers ctf_status / ctf_reset, so it has no
         # effect on the workshop app unless a browser asks for it. Flag and
@@ -480,7 +498,15 @@ class PhaserHeadless:
         # SignalFreq.
         calc_freq = self.SignalFreq - self.BW * 1e6
 
-        if self.ignore_res:
+        if self.sweep_mode in HOLD_MODES:
+            # Hold the beam: one point, the same +i*PhDelta ramp the sweep
+            # uses at that angle, so a held 30 deg reads what the sweep reads
+            # at 30 deg. Phase Control offsets still add on top, as in legacy.
+            SteerValues = np.array([float(self.hold_angle)])
+            PhaseValues = np.degrees(
+                2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
+            )
+        elif self.ignore_res:
             # Legacy "ignore steering resolution": step the phase delta one
             # ADAR LSB at a time and let the angle axis fall out of it.
             phase_limit = (
@@ -611,34 +637,45 @@ class PhaserHeadless:
                 max_signal = avg_sum
                 data_fft = sum_chan
 
-        # FFT at peak angle
-        NumSamples = len(data_fft)
-        win = np.blackman(NumSamples)
-        y = data_fft * win
-        sp = np.absolute(np.fft.fft(y))
-        sp = np.fft.fftshift(sp)
-        s_mag = np.abs(sp) / np.sum(win)
-        s_mag = np.maximum(s_mag, 10**-15)
-        max_gain = 20 * np.log10(s_mag / (2**11))
-
-        ts = 1 / float(self.SampleRate)
-        xf = np.fft.fftfreq(NumSamples, ts)
-        xf = np.fft.fftshift(xf)
-
-        return {
+        result = {
             "ArrayGain": [float(x) for x in gain],
             "ArrayDelta": [float(x) for x in delta_gain],
             "PhaseDiff": phase_diff,
             "ErrorFunc": error_func,
             "ArrayAngle": [float(x) for x in angles],
-            "max_gain": max_gain.tolist(),
-            "xf": xf.tolist(),
             "peak_signal": float(max_signal),
             # Where the SOURCE is, for CTF tracking mode. Computed here rather
             # than in the browser because the flag is scored backend-side, and
             # a client-computed sector would be trivially spoofable.
             "peak_angle_deg": peak_angle_centroid(angles, gain),
+            # Echoed so the frontend can tell a held beam from a sweep, and
+            # spot a backend too old to know the mode.
+            "sweep_mode": self.sweep_mode,
+            "hold_angle_deg": float(self.hold_angle),
         }
+
+        now = time.monotonic()
+        last_fft = getattr(self, "_last_fft_t", None)
+        if (self.sweep_mode not in HOLD_MODES or last_fft is None
+                or now - last_fft >= HOLD_FFT_INTERVAL_S):
+            self._last_fft_t = now
+            # FFT at peak angle
+            NumSamples = len(data_fft)
+            win = np.blackman(NumSamples)
+            y = data_fft * win
+            sp = np.absolute(np.fft.fft(y))
+            sp = np.fft.fftshift(sp)
+            s_mag = np.abs(sp) / np.sum(win)
+            s_mag = np.maximum(s_mag, 10**-15)
+            max_gain = 20 * np.log10(s_mag / (2**11))
+
+            ts = 1 / float(self.SampleRate)
+            xf = np.fft.fftfreq(NumSamples, ts)
+            xf = np.fft.fftshift(xf)
+
+            result["max_gain"] = max_gain.tolist()
+            result["xf"] = xf.tolist()
+        return result
 
     # --- Mode dispatcher --------------------------------------------------
 
@@ -787,6 +824,8 @@ class PhaserHeadless:
                 "phase_step": self.phase_step,
                 "steer_res": self.steer_res,
                 "ignore_res": self.ignore_res,
+                "sweep_mode": self.sweep_mode,
+                "hold_angle": self.hold_angle,
                 "steer_min": self.steer_min,
                 "steer_max": self.steer_max,
                 "Averages": self.Averages,
@@ -1176,6 +1215,15 @@ class PhaserHeadless:
             if "ignore_res" in state:
                 self.ignore_res = bool(state["ignore_res"])
                 print(f"Ignore steering resolution: {self.ignore_res}")
+            # The frontend's `mode` is the legacy sweep mode. It is NOT
+            # self.mode, which is the run state (idle/sweep/cw_radar).
+            if "mode" in state:
+                sweep_mode = str(state["mode"])
+                if sweep_mode != self.sweep_mode:
+                    self.sweep_mode = sweep_mode
+                    print(f"Sweep mode: {self.sweep_mode}")
+            if "hold_angle" in state:
+                self.hold_angle = max(-90.0, min(90.0, float(state["hold_angle"])))
             return {"status": "ok"}
 
         elif cmd == "power_off":

@@ -38,7 +38,8 @@ OUT = REPO / "frontend" / "src" / "sim" / "constants.generated.js"
 def steering_pi():
     """Extract the truncated pi that the steering math uses.
 
-    do_sweep() and ConvertPhaseToSteerAngle()/ConvertSteerAngleToPhase() spell
+    do_sweep() (its steered sweep and its hold-mode point) and
+    ConvertPhaseToSteerAngle()/ConvertSteerAngleToPhase() spell
     pi as the literal 3.14159 rather than math.pi, deliberately matching the
     legacy phaser_gui.py they were ported from. A JS port reaching for Math.PI
     instead would shift every steering angle by ~0.03% and produce a parity
@@ -48,7 +49,7 @@ def steering_pi():
     real np.pi. The two coexist on purpose; see SIM_PI below.
 
     Parsing the literal rather than hardcoding it here makes this a tripwire: if
-    someone changes one of the three occurrences and not the others, this raises
+    someone changes one of the four occurrences and not the others, this raises
     instead of silently emitting a value that matches only part of the Python.
     """
     src = (REPO / "phaser_headless.py").read_text()
@@ -65,9 +66,9 @@ def steering_pi():
             "All occurrences must agree, or the sweep's angle axis disagrees "
             "with the phases actually loaded."
         )
-    if len(found) != 3:
+    if len(found) != 4:
         raise SystemExit(
-            f"phaser_headless.py: expected 3 steering pi literals, found {len(found)}. "
+            f"phaser_headless.py: expected 4 steering pi literals, found {len(found)}. "
             "Check whether a new call site needs porting to frontend/src/sim/."
         )
     return found[0]

@@ -229,6 +229,17 @@
             <div class="accordion-item">
                 <button class="accordion-header" title="Compute the per-element phases needed to steer to a chosen angle; sliders in Phase Control update to show the ramp"><span class="accordion-icon" data-icon="2"></span> Beam Steering <span>▼</span></button>
                 <div class="accordion-body">
+                    <!-- Legacy Mode menu. Signal vs Time holds the beam at the
+                         Steer Angle and plots peak amplitude against time on
+                         the Tracking tab (L21 Lab, antenna pattern). -->
+                    <div class="control-group" style="display:flex; align-items:center; gap:10px;">
+                      <label for="sweep-mode" style="margin-bottom:0">Mode</label>
+                      <select id="sweep-mode" class="modern-input-small" style="flex:1; width:auto; text-align:left;"
+                              title="Beam Sweep scans the beam; Signal vs Time holds it at the Steer Angle and plots peak amplitude against time">
+                        <option value="Beam Sweep">Beam Sweep</option>
+                        <option value="Signal vs Time">Signal vs Time</option>
+                      </select>
+                    </div>
                     <div class="control-group combo-group">
                       <label>Steer Angle (deg)</label>
                       <div class="combo-inputs">
@@ -248,6 +259,7 @@
                     <div class="action-row mt-2">
                         <button class="btn btn-outline" id="btn-apply-steer">Apply</button>
                     </div>
+                    <p id="svt-steer-note" hidden style="font-size:0.8rem; color:var(--text-muted); margin:0.75rem 0 0;">Signal vs Time: the beam is held at the Steer Angle, which takes effect as you move it. Apply sets the Taper and zeroes Phase Control.</p>
                 </div>
             </div>
 
@@ -477,7 +489,7 @@
                 <!-- Tracking tab only: the plotted history, as CSV, built in
                      the browser. Shown/hidden by the tab handler. -->
                 <button class="btn btn-outline btn-small" id="btn-export-tracking" hidden
-                        title="Download the tracked sweeps (sweep, time, Est. Angle, Centroid Angle, peak gain) as CSV">Export CSV</button>
+                        title="Download the tracked history as CSV: per sweep in Beam Sweep, or time and peak amplitude in Signal vs Time">Export CSV</button>
                 <button class="btn btn-outline btn-small btn-freeze" id="btn-memory" title="Click to freeze current trace (max 3). Hold to clear all.">
                   <span class="btn-freeze-fill"></span>
                   <span class="btn-freeze-label">Freeze</span>
