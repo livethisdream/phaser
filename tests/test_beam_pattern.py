@@ -386,3 +386,85 @@ def test_beam_phase_does_not_depend_on_which_sample_the_peak_lands_on():
         "the legacy expression no longer shows the branch-cut jumps; "
         "this test is no longer guarding anything"
     )
+
+
+# --- Signal vs Time: hold one steering angle ---------------------------
+
+@pytest.mark.parametrize("mode", ["Signal vs Time", "Static Phase"])
+@pytest.mark.parametrize("ignore_res", [True, False])
+def test_hold_modes_hold_one_angle_whatever_ignore_res(mode, ignore_res):
+    """Legacy checks the mode AFTER res_bits, so the mode wins.
+
+    Preset 7 inherits ignore_res=True from the base preset; when the headless
+    port let that win, Signal vs Time kept sweeping and the L21 Lab could not
+    run.
+    """
+    h = _headless()
+    h.handle_command({"cmd": "set_state", "state": {
+        "ignore_res": ignore_res, "mode": mode, "hold_angle": 30.0,
+    }})
+    data = h.do_sweep()
+    assert data["ArrayAngle"] == [30.0]
+    assert len(data["ArrayGain"]) == 1
+    assert data["sweep_mode"] == mode
+    assert data["hold_angle_deg"] == 30.0
+
+
+def test_held_beam_points_where_the_sweep_plots_it(monkeypatch):
+    """A held +theta is the sweep's +theta point: same side, never mirrored.
+
+    The sim's source sits at boresight, so a linear element phase error stands
+    in for an off-axis source: the sweep then peaks off boresight on one side.
+    Holding at that peak must read the peak, and holding at its mirror must
+    not. Noise is off so the held point and the sweep point, which write
+    identical phases, read identical levels.
+    """
+    import phaser_sim
+    monkeypatch.setattr(phaser_sim.SimSDR, "NOISE_SIGMA", 0.0)
+
+    h = _headless()
+    h.array.element_phase_error = [k * 60.0 for k in range(8)]
+    h.handle_command({"cmd": "set_state", "state": {
+        "ignore_res": False, "steer_res": 1.0,
+    }})
+    gain, angle = _sweep(h)
+    peak = float(angle[int(np.argmax(gain))])
+    assert abs(peak) > 10, f"source stand-in landed at {peak} deg, too near boresight"
+    at = dict(zip(np.round(angle).astype(int), gain))
+
+    h.handle_command({"cmd": "set_state", "state": {
+        "mode": "Signal vs Time", "hold_angle": peak,
+    }})
+    held_peak = h.do_sweep()["ArrayGain"][0]
+    h.handle_command({"cmd": "set_state", "state": {"hold_angle": -peak}})
+    held_mirror = h.do_sweep()["ArrayGain"][0]
+
+    assert abs(held_peak - gain.max()) < 1e-6
+    assert abs(held_mirror - at[int(round(-peak))]) < 1e-6
+    assert held_peak - held_mirror > 10
+
+
+def test_leaving_signal_vs_time_resumes_the_sweep():
+    """Any non-hold mode sweeps -- including lab labels such as 'Tracking'."""
+    h = _headless()
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Signal vs Time"}})
+    assert len(h.do_sweep()["ArrayGain"]) == 1
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Tracking"}})
+    assert len(h.do_sweep()["ArrayGain"]) > 20
+
+
+def test_hold_modes_send_the_spectrum_only_a_few_times_a_second():
+    """One point per update makes the 16k-bin FFT the whole payload.
+
+    At ~600 KB of JSON a frame it, not the radio, would set the Signal vs
+    Time update rate. The first update carries it so the FFT tab is never
+    blank; the next one, immediately after, must not. A sweep always does.
+    """
+    h = _headless()
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Signal vs Time"}})
+    first, second = h.do_sweep(), h.do_sweep()
+    assert "max_gain" in first and "xf" in first
+    assert "max_gain" not in second and "xf" not in second
+
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Beam Sweep"}})
+    assert "max_gain" in h.do_sweep() and "max_gain" in h.do_sweep()

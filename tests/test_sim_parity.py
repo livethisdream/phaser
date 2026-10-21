@@ -96,6 +96,15 @@ CASES = [
         {},
     ),
     ("averaged", {"Averages": 3}, {}),
+    # Hold modes: one point at hold_angle, and the mode must beat ignore_res
+    # (on by default), as it does in legacy.
+    ("signal_vs_time", {"mode": "Signal vs Time", "hold_angle": 30.0}, {}),
+    (
+        "static_phase_squint",
+        {"mode": "Static Phase", "hold_angle": -20.0, "BW": 500.0,
+         "phaseList": [0, 5, 10, 15, 20, 25, 30, 35]},
+        {},
+    ),
 ]
 
 CASE_IDS = [c[0] for c in CASES]

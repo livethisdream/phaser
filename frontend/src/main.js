@@ -18,6 +18,7 @@ const state = {
     PhaseValues: Array.from({length: 181}, (_, i) => i - 90),
     BW: 10,
     mode: "Beam Sweep",
+    hold_angle: 0,          // deg; where Signal vs Time holds the beam
     B0_Gain: 1.0,
     B1_Gain: 1.0,
     Beam0_Phase: 0,
@@ -94,6 +95,20 @@ let angleHistory = [];
 let centroidHistory = [];   // backend peak_angle_deg; null when it sent none
 let peakGainHistory = [];   // peak array gain, dB
 let stampHistory = [];      // browser clock, ms since epoch
+
+// Signal vs Time keeps its own history: peak amplitude of the held beam
+// against time. Legacy kept 100 points; this keeps the last SVT_WINDOW_S
+// seconds instead, so a 10-15 s walk around the array fits whatever the update
+// rate turns out to be. SVT_HISTORY_MAX only bounds memory.
+const HOLD_MODES = ['Static Phase', 'Signal vs Time'];
+const SVT_WINDOW_S = 30;
+const SVT_HISTORY_MAX = 20000;
+let svtT0 = null;           // browser clock, ms, of the first sample since reset
+let svtTime = [];           // s since svtT0
+let svtGain = [];           // peak amplitude, dBFS
+let svtStamp = [];          // browser clock, ms since epoch
+let svtHold = [];           // hold angle the backend reported, deg
+let svtNoEchoWarned = false;
 let autoSweepInterval = null;
 const THEME_KEY = 'phaser_theme';
 const runtimeLogs = [];
@@ -492,7 +507,7 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         const exportBtn = document.getElementById('btn-export-tracking');
         if (exportBtn) {
             exportBtn.hidden = targetId !== 'tab-tracking';
-            exportBtn.disabled = !timeHistory.length;
+            exportBtn.disabled = !(isHoldMode() ? svtTime.length : timeHistory.length);
         }
 
         // Defer resize until after the browser has painted the newly-visible tab,
@@ -845,12 +860,23 @@ document.getElementById('btn-zero-phase').addEventListener('click', () => {
 /* --- Beam Steering: compute per-element phase ramp for a chosen angle --- */
 const steerAngleSlider = document.getElementById('steer-angle');
 const steerAngleInput = document.getElementById('val-steer-angle');
+// The Steer Angle is also where Signal vs Time holds the beam. There it takes
+// effect as it moves -- no Apply -- so the beam cannot sit somewhere other than
+// what the field says.
+function setHoldAngleFromInput(raw) {
+    const theta = parseFloat(raw);
+    if (!Number.isFinite(theta)) return;
+    state.hold_angle = Math.max(-90, Math.min(90, theta));
+    if (isHoldMode()) syncStateToBackend();
+}
 if (steerAngleSlider && steerAngleInput) {
     steerAngleSlider.addEventListener('input', (e) => {
         steerAngleInput.value = e.target.value;
+        setHoldAngleFromInput(e.target.value);
     });
     steerAngleInput.addEventListener('input', (e) => {
         steerAngleSlider.value = e.target.value;
+        setHoldAngleFromInput(e.target.value);
     });
 }
 
@@ -879,9 +905,49 @@ document.getElementById('btn-apply-steer')?.addEventListener('click', () => {
     const gains = STEER_TAPERS[taperKey] || STEER_TAPERS.uniform;
 
     applyTaper(gains.slice());  // syncs backend
-    applyPhaseList(ramp);
+    if (isHoldMode()) {
+        // The backend already applies the +k*PhDelta ramp for hold_angle. The
+        // -k*PhDelta offsets above would cancel it and leave the beam at
+        // boresight, so Phase Control is zeroed instead.
+        state.hold_angle = Math.max(-90, Math.min(90, theta_deg));
+        applyPhaseList([0, 0, 0, 0, 0, 0, 0, 0]);
+    } else {
+        applyPhaseList(ramp);
+    }
     syncStateToBackend();
 });
+
+/* --- Sweep mode (legacy Mode menu) --- */
+function isHoldMode() {
+    return HOLD_MODES.includes(state.mode);
+}
+
+const sweepModeSelect = document.getElementById('sweep-mode');
+sweepModeSelect?.addEventListener('change', (e) => {
+    setSweepMode(e.target.value);
+    syncStateToBackend();
+});
+
+// Switch modes from the UI side: a fresh Signal vs Time history every time the
+// mode is entered (legacy resets Gain_time in mode_select), and the Tracking
+// tab brought forward, as legacy adds and selects its plot tab.
+function setSweepMode(mode, { selectTab = true } = {}) {
+    state.mode = mode;
+    resetSvtHistory();
+    syncSweepModeControls();
+    if (selectTab && state.mode === 'Signal vs Time') {
+        document.querySelector('[data-target="tab-tracking"]')?.click();
+    }
+}
+
+function syncSweepModeControls() {
+    if (sweepModeSelect) {
+        sweepModeSelect.value = isHoldMode() ? 'Signal vs Time' : 'Beam Sweep';
+    }
+    const note = document.getElementById('svt-steer-note');
+    if (note) note.hidden = !isHoldMode();
+    configureTrackingChart();
+}
 
 /* --- Digital Beam Forming mode toggle --- */
 function setBeamformerMode(mode) {
@@ -1517,6 +1583,12 @@ function applyInitialStateToControls() {
         ignoreRes.checked = Boolean(state.ignore_res);
     }
 
+    if (steerAngleSlider && steerAngleInput && isHoldMode()) {
+        steerAngleSlider.value = String(state.hold_angle);
+        steerAngleInput.value = String(state.hold_angle);
+    }
+    syncSweepModeControls();
+
     // Update beam squint display based on current BW
     updateBeamSquintDisplay();
 }
@@ -1625,6 +1697,8 @@ async function loadStateFromServer() {
         if (Number.isFinite(msg.data.Averages)) state.Averages = msg.data.Averages;
         if (Number.isFinite(msg.data.d)) state.d = msg.data.d;
         if (Number.isFinite(msg.data.BW)) state.BW = msg.data.BW;
+        if (typeof msg.data.sweep_mode === 'string') state.mode = msg.data.sweep_mode;
+        if (Number.isFinite(msg.data.hold_angle)) state.hold_angle = msg.data.hold_angle;
 
         // Update hardware connection indicator
         updateHardwareConnectionStatus(msg.data.hardware_connected ?? false, msg.data.sim_mode);
@@ -1839,12 +1913,45 @@ Plotly.newPlot('chart-fft', [{
 }), {displayModeBar: false, responsive: true});
 
 Plotly.newPlot('chart-tracking', [{
-    x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#ef4444', width: 3 }
+    x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#ef4444', width: 3 },
+    hovertemplate: 'Sweep %{x}<br>%{y:.1f}°<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
     xaxis: { title: 'Sweep Count', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
     yaxis: { title: 'Steering Angle (°)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-90, 90] }
 }), {displayModeBar: false, responsive: true});
 
+// The Tracking tab is two plots in one: peak steering angle per sweep in Beam
+// Sweep, and peak amplitude against time in Signal vs Time.
+function configureTrackingChart() {
+    // applyInitialStateToControls() first runs before this chart exists.
+    if (!document.getElementById('chart-tracking')?.data) return;
+    const held = isHoldMode();
+    Plotly.restyle('chart-tracking', {
+        x: [held ? svtTime : timeHistory],
+        y: [held ? svtGain : angleHistory],
+        hovertemplate: held
+            ? '%{x:.2f} s<br>%{y:.2f} dBFS<extra></extra>'
+            : 'Sweep %{x}<br>%{y:.1f}°<extra></extra>',
+    });
+    Plotly.relayout('chart-tracking', held ? {
+        'xaxis.title.text': 'Time (s)',
+        'xaxis.autorange': false,
+        'xaxis.range': svtXRange(),
+        'yaxis.title.text': 'Peak Amplitude (dBFS)',
+        'yaxis.autorange': true,
+        'title.text': svtTitle(),
+        'title.font.size': 13,
+        'margin.t': 40,
+    } : {
+        'xaxis.title.text': 'Sweep Count',
+        'xaxis.autorange': true,
+        'yaxis.title.text': 'Steering Angle (°)',
+        'yaxis.autorange': false,
+        'yaxis.range': [-90, 90],
+        'title.text': '',
+        'margin.t': 20,
+    });
+}
 
 function updatePlotLimits() {
     const xMin = parseFloat(document.getElementById('val-xmin').value);
@@ -1897,6 +2004,10 @@ const transport = createTransport({
                 if (Number.isFinite(data.Averages)) state.Averages = data.Averages;
                 if (Number.isFinite(data.d)) state.d = data.d;
                 if (Number.isFinite(data.BW)) state.BW = data.BW;
+                // Adopt the backend's sweep mode and hold, or the first
+                // set_state would silently drop a held beam back to a sweep.
+                if (typeof data.sweep_mode === 'string') state.mode = data.sweep_mode;
+                if (Number.isFinite(data.hold_angle)) state.hold_angle = data.hold_angle;
                 updateHardwareConnectionStatus(data.hardware_connected ?? false, data.sim_mode);
                 armShutdownIfPermitted(data.shutdown_available === true);
                 applyInitialStateToControls();
@@ -2670,7 +2781,9 @@ function applyPhaseList(phases) {
 
 function applyLabPreset(preset) {
     if (!preset) return;
-    state.mode = preset.mode ?? state.mode;
+    // The preset's own ui_tab is clicked below, so no tab switch here. A hold
+    // mode holds at the current Steer Angle (preset 7: 0 unless moved).
+    setSweepMode(preset.mode ?? state.mode, { selectTab: false });
     state.BW = Number.isFinite(preset.BW) ? preset.BW : state.BW;
     state.steer_res = Number.isFinite(preset.steer_res) ? preset.steer_res : state.steer_res;
     state.bits = Number.isFinite(preset.bits) ? preset.bits : state.bits;
@@ -2799,6 +2912,16 @@ async function fetchLabPreset(labIdx) {
 }
 
 function updateCharts(data) {
+    if (HOLD_MODES.includes(data.sweep_mode)) {
+        updateSignalVsTime(data);
+        return;
+    }
+    if (isHoldMode() && data.sweep_mode === undefined && !svtNoEchoWarned) {
+        // A backend from before this mode existed sweeps regardless.
+        svtNoEchoWarned = true;
+        addRuntimeLog('warn', 'SWEEP',
+            'Backend does not report a sweep mode, so it is still sweeping. Re-run install.sh on the Pi.');
+    }
     let peakIndex = 0;
     let peakValue = -1000;
     let xData = data.ArrayAngle || state.PhaseValues;
@@ -2926,7 +3049,11 @@ function updateCharts(data) {
             ? "-- °" : (Number(centroid.toFixed(1)) + 0).toFixed(1) + " °";
         renderAngleStat();
     }
-    
+
+    updateFftChart(data);
+}
+
+function updateFftChart(data) {
     // FFT data - apply same transforms as original Tkinter GUI (phaser_gui.py:2423)
     if(data.xf && data.max_gain) {
         // Debug: log FFT data range
@@ -2942,15 +3069,137 @@ function updateCharts(data) {
     }
 }
 
+/* --- Signal vs Time: peak amplitude of the held beam against time ---------- */
+function resetSvtHistory() {
+    svtT0 = null;
+    svtTime = []; svtGain = []; svtStamp = []; svtHold = [];
+}
+
+// Updates per second over the plotted window -- the number the L21 Lab text
+// quotes, so it is measured rather than assumed.
+function svtRate() {
+    const n = svtTime.length;
+    if (n < 2) return null;
+    const span = svtTime[n - 1] - svtTime[0];
+    return span > 0 ? (n - 1) / span : null;
+}
+
+function svtXRange() {
+    const last = svtTime.length ? svtTime[svtTime.length - 1] : 0;
+    const hi = Math.max(SVT_WINDOW_S, last);
+    return [hi - SVT_WINDOW_S, hi];
+}
+
+function svtTitle() {
+    const hold = svtHold.length ? svtHold[svtHold.length - 1] : state.hold_angle;
+    const rate = svtRate();
+    let title = `Beam held at ${Number(hold).toFixed(1)}°`;
+    title += rate === null ? '' : ` · ${rate.toFixed(1)} updates/s`;
+    if (state.phaseList.some((v) => Number(v) !== 0)) {
+        title += ' · Phase Control offsets active';
+    }
+    return title;
+}
+
+function updateSignalVsTime(data) {
+    const gain = data.ArrayGain;
+    if (!gain || !gain.length) return;
+    const peak = Math.max(...gain);
+    const hold = Number.isFinite(data.hold_angle_deg) ? data.hold_angle_deg : state.hold_angle;
+    const now = Date.now();
+    if (svtT0 === null) svtT0 = now;
+
+    svtTime.push((now - svtT0) / 1000);
+    svtGain.push(peak);
+    svtStamp.push(now);
+    svtHold.push(hold);
+    const last = svtTime[svtTime.length - 1];
+    while (svtTime.length > SVT_HISTORY_MAX
+           || (svtTime.length > 1 && last - svtTime[0] > SVT_WINDOW_S)) {
+        svtTime.shift(); svtGain.shift(); svtStamp.shift(); svtHold.shift();
+    }
+
+    // Every update is recorded, but drawn at most every SVT_DRAW_MS. One point
+    // per update means updates arrive as fast as the receiver can read, and
+    // redrawing the 16k-bin FFT and this trace for each one starved the page.
+    // In a hold mode the backend attaches the spectrum only a few times a
+    // second; keep the last one that had it.
+    if (data.xf && data.max_gain) svtLatestFft = data;
+    if (svtDrawTimer === null) {
+        const wait = Math.max(0, SVT_DRAW_MS - (now - svtLastDraw));
+        svtDrawTimer = setTimeout(drawSignalVsTime, wait);
+    }
+}
+
+const SVT_DRAW_MS = 100;
+let svtLatestFft = null;
+let svtDrawnFft = null;
+let svtDrawTimer = null;
+let svtLastDraw = 0;
+
+function drawSignalVsTime() {
+    svtDrawTimer = null;
+    svtLastDraw = Date.now();
+    if (!svtGain.length) return;
+
+    if (isHoldMode()) {
+        Plotly.update('chart-tracking', { x: [svtTime], y: [svtGain] }, {
+            'xaxis.range': svtXRange(),
+            'title.text': svtTitle(),
+        });
+    }
+    const exportBtn = document.getElementById('btn-export-tracking');
+    if (exportBtn) exportBtn.disabled = false;
+
+    const peak = svtGain[svtGain.length - 1];
+    const hold = svtHold[svtHold.length - 1];
+    document.getElementById('stat-peak').innerText = peak.toFixed(2) + " dB";
+    angleStats.peak = Number(hold).toFixed(1) + " °";
+    angleStats.centroid = angleStats.peak;
+    renderAngleStat();
+    if (svtLatestFft && svtLatestFft !== svtDrawnFft) {
+        svtDrawnFft = svtLatestFft;
+        updateFftChart(svtLatestFft);
+    }
+}
+
 /* --- Tracking tab: Export CSV -----------------------------------------------
  * Writes the history the tab keeps -- the last TRACK_HISTORY_MAX sweeps -- with
  * no backend round trip, so it works the same against a Pi and in ?sim=1. The
  * leading '#' lines record the settings in force at export time (not per row);
  * most CSV readers take them as comments (pandas: comment='#').
  */
+const csvFmt = (v, digits) => (Number.isFinite(v)
+    ? (Number(v.toFixed(digits)) + 0).toFixed(digits) : '');   // no "-0.000"
+
+// Signal vs Time: one row per update. The header records the held angle and
+// Signal Freq, which the L21 Lab needs to interpret the trace.
+function signalVsTimeCsv() {
+    const hold = svtHold.length ? svtHold[svtHold.length - 1] : state.hold_angle;
+    const rate = svtRate();
+    const lines = [
+        `# ADI Phaser Signal vs Time export, ${new Date().toISOString()}`,
+        `# mode=${state.mode} hold_angle_deg=${hold} signal_freq_hz=${state.SignalFreq}`
+            + ` rx_freq_hz=${state.Rx_freq} rx_gain_db=${state.Rx_gain}`
+            + ` | update_rate_per_s=${rate === null ? '' : rate.toFixed(2)}`
+            + ` | bits=${state.bits} averages=${state.Averages}`
+            + ` | gainList=${state.gainList.join(' ')} phaseList=${state.phaseList.join(' ')}`,
+        'sample,timestamp,t_s,hold_angle_deg,peak_dbfs',
+    ];
+    for (let i = 0; i < svtTime.length; i++) {
+        lines.push([
+            i + 1,
+            new Date(svtStamp[i]).toISOString(),
+            csvFmt(svtTime[i], 3),
+            csvFmt(svtHold[i], 1),
+            csvFmt(svtGain[i], 2),
+        ].join(','));
+    }
+    return lines.join('\n') + '\n';
+}
+
 function trackingCsv() {
-    const fmt = (v, digits) => (Number.isFinite(v)
-        ? (Number(v.toFixed(digits)) + 0).toFixed(digits) : '');   // no "-0.000"
+    const fmt = csvFmt;
     const steer = state.ignore_res
         ? `phase step = 1 LSB = ${360 / 2 ** state.bits} deg (ignore_res)`
         : `steer_res ${state.steer_res} deg`;
@@ -2974,15 +3223,17 @@ function trackingCsv() {
 }
 
 document.getElementById('btn-export-tracking')?.addEventListener('click', () => {
-    if (!timeHistory.length) {
+    const held = isHoldMode();
+    if (!(held ? svtTime.length : timeHistory.length)) {
         addRuntimeLog('warn', 'ui', 'Export CSV: no sweeps recorded yet.');
         return;
     }
-    const blob = new Blob([trackingCsv()], { type: 'text/csv' });
+    const blob = new Blob([held ? signalVsTimeCsv() : trackingCsv()], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `phaser-tracking-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    const kind = held ? 'signal-vs-time' : 'tracking';
+    a.download = `phaser-${kind}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -3000,7 +3251,12 @@ sweepBtn.addEventListener('click', async () => {
     }
 
     if (!isSweeping) {
-        // Start sweeping - send current state first, then start
+        // Start sweeping - send current state first, then start. Signal vs
+        // Time counts from each Start, so a walk begins at t = 0.
+        if (isHoldMode()) {
+            resetSvtHistory();
+            configureTrackingChart();
+        }
         transport.send({ cmd: 'set_state', data: { state } });
         transport.send({ cmd: 'start_sweep' });
         isSweeping = true;
@@ -3023,7 +3279,9 @@ sweepBtn.addEventListener('click', async () => {
 /* --- Lab Pre-sets --- */
 document.querySelectorAll('.lab-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
-        const labIdx = parseInt(e.target.dataset.lab);
+        // currentTarget, not target: a click on the number badge targets the
+        // inner <span>, which has no data-lab, and loaded the base preset.
+        const labIdx = parseInt(e.currentTarget.dataset.lab);
         addRuntimeLog('info', 'LAB', `Loading lab preset ${labIdx}`);
         const preset = await fetchLabPreset(labIdx);
         applyLabPreset(preset);
