@@ -99,6 +99,13 @@ CASES = [
     # Hold modes: one point at hold_angle, and the mode must beat ignore_res
     # (on by default), as it does in legacy.
     ("signal_vs_time", {"mode": "Signal vs Time", "hold_angle": 30.0}, {}),
+    # Lab 6: a held 15 deg beam on a 2-bit phase shifter, Blackman taper.
+    (
+        "signal_vs_time_two_bit",
+        {"mode": "Signal vs Time", "hold_angle": 15.0, "bits": 2,
+         "gainList": [6, 27, 66, 100, 100, 66, 27, 6]},
+        {},
+    ),
     (
         "static_phase_squint",
         {"mode": "Static Phase", "hold_angle": -20.0, "BW": 500.0,

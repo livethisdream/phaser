@@ -2784,6 +2784,13 @@ function applyLabPreset(preset) {
     // The preset's own ui_tab is clicked below, so no tab switch here. A hold
     // mode holds at the current Steer Angle (preset 7: 0 unless moved).
     setSweepMode(preset.mode ?? state.mode, { selectTab: false });
+    if (Number.isFinite(preset.hold_angle)) {
+        state.hold_angle = Math.max(-90, Math.min(90, preset.hold_angle));
+        if (steerAngleSlider && steerAngleInput) {
+            steerAngleSlider.value = String(state.hold_angle);
+            steerAngleInput.value = String(state.hold_angle);
+        }
+    }
     state.BW = Number.isFinite(preset.BW) ? preset.BW : state.BW;
     state.steer_res = Number.isFinite(preset.steer_res) ? preset.steer_res : state.steer_res;
     state.bits = Number.isFinite(preset.bits) ? preset.bits : state.bits;
@@ -2874,11 +2881,13 @@ function localLabPreset(labIdx) {
         case 5: return { ...base, BW: 500, ui_tab: 'tab-rect' };
 
         // Lab 6 — QUANTIZATION SIDELOBES (PDF p.21): PDF explicitly says
-        // "Blackman is the pre-programmed default for this lab" and sets
-        // steering angle to 15°. Uses Phase Shift Bits (not steer_res) as
-        // the quantization knob — set ignore_res=true so student's changes
-        // to the Bits slider drive the phase step.
-        case 6: return { ...base, ui_tab: 'tab-rect',
+        // "Blackman is the pre-programmed default for this lab", sets the
+        // steering angle to 15° and has the student carry the HB100 in an arc,
+        // then drop Phase Shift Bits to 2 and repeat. That is a walk with the
+        // beam held, so Signal vs Time, as legacy "Lab 6: Quantization" does.
+        // The Bits slider quantizes the held ramp as it does the sweep.
+        case 6: return { ...base, mode: 'Signal vs Time', hold_angle: 15,
+                         ui_tab: 'tab-tracking',
                          gainList: [6, 27, 66, 100, 100, 66, 27, 6],
                          ignore_res: true };
 
