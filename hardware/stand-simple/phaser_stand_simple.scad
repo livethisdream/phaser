@@ -39,7 +39,7 @@ fit   = 0.3;   // radial clearance on sliding fits (PLA/PETG)
 // hand at 0.3 mm.
 bore_fit    = 0.5;   // radial, base bore around the 24 mm platter post
 channel_fit = 1.0;   // radial, outside of the detent-skirt channel
-m5_pilot = 4.2;  // M5 self-tapping into plastic
+m5_pilot = 4.2;  // retainer screw pilot; an M4 x 12 flat-head fits the printed hole (M5 does not)
 m4_pilot = 3.3;
 qtr_head_af = 11.3;  // 1/4-20 hex head, 7/16" AF + clearance
 qtr_head_h  = 4.6;
@@ -229,7 +229,7 @@ module platter(top = "mast") {
   }
 }
 
-// Washer under the base; one M5 x 16 flat-head screw clamps it to the post.
+// Washer under the base; one M4 x 12 flat-head screw clamps it to the post.
 module retainer() {
   difference() {
     cylinder(d = retainer_d, h = retainer_t);

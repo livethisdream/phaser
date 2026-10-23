@@ -64,7 +64,7 @@ eventually.
 
 | Item | Qty | Build | Where |
 |---|---|---|---|
-| M4 × 16 countersunk (flat-head) screw | 1 | both | retainer → platter post |
+| M4 × 12 countersunk (flat-head) screw | 1 | both | retainer → platter post |
 | M4 × 12 screw | 3 | mast | mast → platter |
 | 1/4-20 × 3/4" hex bolt | 1 | mast | stud the Phaser threads onto |
 | 1/4-20 hex nut | 1 | mast | pressed into the lock wheel |
