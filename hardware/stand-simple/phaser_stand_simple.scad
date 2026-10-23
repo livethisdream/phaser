@@ -32,6 +32,11 @@ mast_y = -(thread_behind_board + board_t / 2);
 
 // ---------------------------------------------------------------- fits
 fit   = 0.3;   // radial clearance on sliding fits (PLA/PETG)
+// Printed holes come out undersized, so the base's openings get more room
+// than the nominal fit. The first test print needed the post bore opened by
+// hand at 0.3 mm.
+bore_fit    = 0.5;   // radial, base bore around the 24 mm platter post
+channel_fit = 1.0;   // radial, outside of the detent-skirt channel
 m5_pilot = 4.2;  // M5 self-tapping into plastic
 m4_pilot = 3.3;
 qtr_head_af = 11.3;  // 1/4-20 hex head, 7/16" AF + clearance
@@ -63,9 +68,13 @@ detent_step = 5;
 skirt_r     = [56, 60];
 skirt_h     = 8;
 groove_d    = 1.2;
-leaf_t      = 1.6;
-leaf_w      = 14;
-leaf_preload = 0.8;    // ridge interference with the skirt face
+// The first print's leaf (1.6 x 14 x 11 mm, 0.8 mm preload) was too stiff to
+// turn. This one is ~20x softer: thinner, narrower, nearly twice as tall
+// (it stands in a deeper pocket), with less interference.
+leaf_t      = 1.2;
+leaf_w      = 10;
+leaf_preload = 0.5;    // ridge interference with the skirt face
+leaf_floor_z = 2;      // leaf root; pocket under the leaf goes down to here
 
 retainer_d = 36;
 retainer_t = 4;
@@ -90,7 +99,8 @@ tripod_groove_depth = 4;
 tripod_leg0 = atan2(mast_y, mast_x) + 60;
 
 scale_r0 = platter_r + 2;
-engrave  = 0.6;
+engrave  = 0.6;   // platter tick marks
+scale_depth = 0.8; // base scale: 5-degree ticks only, 1 mm wide
 
 platter_z = base_h + track_h;  // platter underside in the assembly
 
@@ -102,14 +112,16 @@ module ring(r, h) { difference() { cylinder(r = r[1], h = h); translate([0, 0, -
 
 // ---------------------------------------------------------------- base
 module scale_marks() {
-  for (a = [0 : 1 : 359]) if (abs(a - 180) > 10) {
-    len = (a % 10 == 0) ? 6 : (a % 5 == 0) ? 4 : 2.2;
-    w   = (a % 5 == 0) ? 0.8 : 0.5;
-    rotate(-a) translate([-w / 2, scale_r0, base_h - engrave]) cube([w, len, engrave + eps]);
+  // 1-degree ticks were too fine for a 0.4 mm nozzle; 5-degree spacing is
+  // ~8.5 mm at this radius.
+  for (a = [0 : 5 : 359]) if (abs(a - 180) > 10) {
+    len = (a % 30 == 0) ? 7 : (a % 10 == 0) ? 5.5 : 3.5;
+    w   = 1.0;
+    rotate(-a) translate([-w / 2, scale_r0, base_h - scale_depth]) cube([w, len, scale_depth + eps]);
   }
   // 0 at boresight, positive clockwise seen from above.
   for (a = [-150 : 30 : 150])
-    rotate(-a) translate([0, scale_r0 + 8.5, base_h - engrave]) linear_extrude(engrave + eps)
+    rotate(-a) translate([0, scale_r0 + 8.5, base_h - scale_depth]) linear_extrude(scale_depth + eps)
       text(str(a), size = 4.2, halign = "center", valign = "bottom", font = "DejaVu Sans:style=Bold");
 }
 
@@ -121,10 +133,9 @@ pocket_depth = skirt_h + 4;
 module leaf() {
   // Vertical cantilever: anchored to the pocket floor, flexes radially.
   r_out = skirt_r[0] - fit - 0.4;
-  floor_z = base_h - pocket_depth;
   rotate(-leaf_a) {
-    translate([-leaf_w / 2, r_out - leaf_t, floor_z - eps])
-      cube([leaf_w, leaf_t, pocket_depth - 0.6]);
+    translate([-leaf_w / 2, r_out - leaf_t, leaf_floor_z - eps])
+      cube([leaf_w, leaf_t, base_h - 0.6 - leaf_floor_z]);
     // Ridge: a vertical 90-degree V that reaches into the skirt grooves.
     reach = skirt_r[0] + leaf_preload - (r_out - leaf_t);
     translate([0, r_out - leaf_t, base_h - skirt_h + 0.5])
@@ -140,10 +151,13 @@ module base() {
       translate([0, 0, base_h - eps]) ring(track_r, track_h + eps);
     }
     // Spindle bore and retainer recess.
-    translate([0, 0, -eps]) cylinder(d = post_d + 2 * fit, h = base_h + 1);
+    translate([0, 0, -eps]) cylinder(d = post_d + 2 * bore_fit, h = base_h + 1);
     translate([0, 0, -eps]) cylinder(d = recess_d, h = recess_h + eps);
     // Channel the platter skirt turns in.
-    translate([0, 0, base_h - pocket_depth]) ring([skirt_r[0] - 4, skirt_r[1] + fit + 0.5], pocket_depth + eps);
+    translate([0, 0, base_h - pocket_depth]) ring([skirt_r[0] - 4, skirt_r[1] + channel_fit], pocket_depth + eps);
+    // Deeper pocket under the leaf so it can be taller and softer.
+    rotate(-leaf_a) translate([-leaf_w / 2 - 2, skirt_r[0] - 4, leaf_floor_z])
+      cube([leaf_w + 4, 5, base_h]);
     // Feet recesses (optional 12 mm stick-on feet).
     for (a = [45 : 90 : 359]) rotate(a) translate([0, base_d / 2 - 18, -eps]) cylinder(d = 12.5, h = 0.8 + eps);
     for (a = motor_insert_a) rotate(-a) translate([0, motor_insert_r, base_h - insert_h])

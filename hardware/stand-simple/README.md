@@ -87,12 +87,18 @@ recesses on the base underside, and a little dry PTFE lube on the ring.
 ## Things to check on the first unit
 
 - **Fit:** the post should turn freely in the base with no wobble. If it
-  binds or rattles, change `fit` (radial clearance, default 0.3 mm) and
-  reprint the base only.
+  binds or rattles, change `bore_fit` (radial clearance, default 0.5 mm) and
+  reprint the base only. The first test print, at 0.3 mm, needed the bore
+  opened by hand.
 - **Detent feel:** if the clicks are too stiff or too soft, change
-  `leaf_preload` (default 0.8 mm) and reprint the base.
+  `leaf_preload` (default 0.5 mm) and reprint the base. The first test
+  print's leaf (1.6 mm thick, 0.8 mm preload) was too stiff to turn. The
+  current one is 1.2 mm thick and about twice as tall, and is roughly 20×
+  softer.
+- **Scale:** ticks are every 5°, 1 mm wide and 0.8 mm deep. The 1° ticks were
+  dropped because they were too fine to print cleanly.
 - **Array offset:** `array_center_from_left` is still an assumption (see
-  `../stand/README.md`). Only `mast.stl` depends on it.
+  `../stand/README.md`). `mast.stl` and `platter_tripod.stl` depend on it.
 - **Wiring:** route the cables with slack. There is no end stop, so stay
   within about ±180°.
 
