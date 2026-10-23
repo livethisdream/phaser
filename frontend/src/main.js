@@ -29,10 +29,13 @@ const state = {
     mvdrK: 128,             // MVDR snapshot count
     mvdrDiagLoad: 0.001,    // MVDR diagonal loading factor
 
-    // Simulator interferer (instructor-only, sim mode only; hidden by default)
+    // Computed interferer, added to the received IQ by the backend (real
+    // hardware and simulator alike) for the MVDR lab. Interferer pane.
     interferer_enable: false,
     interferer_angle_deg: 30,
     interferer_power_dbfs: -10,
+    interferer_offset_hz: 100e3,
+    interferer_phase_deg: 0,
 };
 
 /* Read a `?name=1` flag from the URL, matching the parameter name
@@ -52,12 +55,8 @@ function urlFlag(name) {
     return false;
 }
 
-// Instructor mode: adds ?instructor=1 to the URL to reveal the
-// Simulator Interferer accordion. Students never see it.
-const instructorMode = urlFlag('instructor');
-
-// CTF mode: ?ctf=1 reveals the GRCon26 sector-sequence panel. Unlike
-// instructor mode this parameter is UI convenience only, NOT a secret —
+// CTF mode: ?ctf=1 reveals the GRCon26 sector-sequence panel. This
+// parameter is UI convenience only, NOT a secret —
 // the sequence check and the flag live in the backend, because this bundle
 // is served to every browser that connects and a CTF player's whole job is
 // to go looking. Everything below only displays what the backend reports.
@@ -452,6 +451,8 @@ const accordionIcons = [
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M4.5 18.5h15"></path><path d="M6 16l4-5 3 2 5-6"></path><circle cx="6" cy="16" r="1"></circle><circle cx="10" cy="11" r="1"></circle><circle cx="13" cy="13" r="1"></circle><circle cx="18" cy="7" r="1"></circle></svg>',
     // 6. Lab Presets
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M9 3h6"></path><path d="M10 3v6.2L6 17a2 2 0 0 0 1.78 2.9h8.44A2 2 0 0 0 18 17l-4-7.8V3"></path><path d="M7.5 15h9"></path></svg>',
+    // 7. Interferer
+    '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"></path></svg>',
 ];
 
 // Populate accordion icons
@@ -1034,18 +1035,6 @@ if (mvdrDiagInput) {
     });
 }
 
-/* --- Simulator Interferer (instructor mode only) ---
-   The accordion stays hidden unless BOTH conditions are met:
-     1. URL contains ?instructor=1 (see instructorMode above)
-     2. Backend reports sim_mode: true (revealSimInterfererIfEligible())
-   Students loading the app normally never see or reach this panel. */
-function revealSimInterfererIfEligible(serverState) {
-    const el = document.getElementById('accordion-sim-interferer');
-    if (!el) return;
-    const showIt = instructorMode && !!serverState?.sim_mode;
-    el.hidden = !showIt;
-}
-
 /* --- CTF Mode (GRCon26) ---
    A display for backend state, nothing more. It polls ctf_status rather than
    computing anything: the backend needs a poll to advance its dwell clock
@@ -1328,31 +1317,215 @@ function wireHoldToCommit(el, holdMs, onCommit) {
 // already watching during a run.
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
 
-const simInterfererEnable = document.getElementById('sim-interferer-enable');
-if (simInterfererEnable) {
-    simInterfererEnable.addEventListener('change', (e) => {
-        state.interferer_enable = !!e.target.checked;
-        syncStateToBackend();
-    });
+/* --- Interferer ---
+   The backend computes a jammer and adds it to the received IQ before the
+   digital beamformer (phaser_headless._interferer_channels), on the kit and
+   in the simulator alike. This pane drives it; the badge over the plots and
+   the two stat-row readouts show it is on. */
+const interfererBtn = document.getElementById('btn-interferer');
+const interfererCoherent = document.getElementById('interferer-coherent');
+// The offset the slider holds while "Coherent" pins the backend's to 0 Hz.
+let interfererOffsetKhz = state.interferer_offset_hz / 1e3;
+
+// Interferer-vs-target ratio last measured under each beamformer mode, for
+// the suppression readout. Only comparable under identical settings, so any
+// change that moves either tone or the beam clears both.
+const interfererRatio = { manual: null, mvdr: null };
+let interfererRatioKey = null;
+
+function interfererSettingsKey() {
+    return JSON.stringify([
+        state.interferer_angle_deg, state.interferer_power_dbfs,
+        state.interferer_offset_hz, state.interferer_phase_deg,
+        state.mode, state.hold_angle, state.gainList, state.phaseList,
+    ]);
 }
 
-// Angle: slider <-> number input, both write into state
-function linkInterfererPair(slId, inId, stateKey) {
+function applyInterfererUi() {
+    const on = !!state.interferer_enable;
+    if (interfererBtn) {
+        interfererBtn.setAttribute('aria-pressed', String(on));
+        interfererBtn.textContent = on ? 'Interferer ON · click to stop' : 'Inject Interferer';
+    }
+    const coherent = state.interferer_offset_hz === 0;
+    if (interfererCoherent) interfererCoherent.checked = coherent;
+    document.getElementById('interferer-phase-group').hidden = !coherent;
+    for (const id of ['interferer-offset', 'val-interferer-offset']) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = coherent;
+    }
+    document.getElementById('interferer-badge').hidden = !on;
+    document.getElementById('interferer-ratio-box').hidden = !on;
+    document.getElementById('interferer-suppression-box').hidden = !on;
+    if (!on) {
+        interfererRatio.manual = null;
+        interfererRatio.mvdr = null;
+        clearFftToneMarkers();
+    }
+}
+
+function setInterfererPair(slId, inId, value) {
+    const sl = document.getElementById(slId);
+    const inp = document.getElementById(inId);
+    if (sl) sl.value = value;
+    if (inp) inp.value = value;
+}
+
+interfererBtn?.addEventListener('click', () => {
+    state.interferer_enable = !state.interferer_enable;
+    applyInterfererUi();
+    syncStateToBackend();
+});
+
+interfererCoherent?.addEventListener('change', (e) => {
+    state.interferer_offset_hz = e.target.checked ? 0 : interfererOffsetKhz * 1e3;
+    applyInterfererUi();
+    syncStateToBackend();
+});
+
+// Slider <-> number input, both write into state (times `scale`).
+function linkInterfererPair(slId, inId, stateKey, scale = 1, onValue = null) {
     const sl = document.getElementById(slId);
     const inp = document.getElementById(inId);
     if (!sl || !inp) return;
     const onChange = (raw) => {
         const v = parseFloat(raw);
         if (Number.isFinite(v)) {
-            state[stateKey] = v;
+            state[stateKey] = v * scale;
+            if (onValue) onValue(v);
             syncStateToBackend();
         }
     };
     sl.addEventListener('input', (e) => { inp.value = e.target.value; onChange(e.target.value); });
     inp.addEventListener('input', (e) => { sl.value = e.target.value; onChange(e.target.value); });
 }
-linkInterfererPair('sim-interferer-angle', 'val-sim-interferer-angle', 'interferer_angle_deg');
-linkInterfererPair('sim-interferer-power', 'val-sim-interferer-power', 'interferer_power_dbfs');
+linkInterfererPair('interferer-angle', 'val-interferer-angle', 'interferer_angle_deg');
+linkInterfererPair('interferer-power', 'val-interferer-power', 'interferer_power_dbfs');
+linkInterfererPair('interferer-offset', 'val-interferer-offset', 'interferer_offset_hz', 1e3,
+    (khz) => { interfererOffsetKhz = khz; });
+linkInterfererPair('interferer-phase', 'val-interferer-phase', 'interferer_phase_deg');
+
+/** Hydrate the pane from get_state. */
+function loadInterfererState(data) {
+    if (typeof data.interferer_enable === 'boolean') state.interferer_enable = data.interferer_enable;
+    if (Number.isFinite(data.interferer_angle_deg)) {
+        state.interferer_angle_deg = data.interferer_angle_deg;
+        setInterfererPair('interferer-angle', 'val-interferer-angle', data.interferer_angle_deg);
+    }
+    if (Number.isFinite(data.interferer_power_dbfs)) {
+        state.interferer_power_dbfs = data.interferer_power_dbfs;
+        setInterfererPair('interferer-power', 'val-interferer-power', data.interferer_power_dbfs);
+    }
+    if (Number.isFinite(data.interferer_offset_hz)) {
+        state.interferer_offset_hz = data.interferer_offset_hz;
+        // Coherent (0 Hz) leaves the slider on its default to return to.
+        if (data.interferer_offset_hz !== 0) {
+            interfererOffsetKhz = data.interferer_offset_hz / 1e3;
+            setInterfererPair('interferer-offset', 'val-interferer-offset', interfererOffsetKhz);
+        }
+    }
+    if (Number.isFinite(data.interferer_phase_deg)) {
+        state.interferer_phase_deg = data.interferer_phase_deg;
+        setInterfererPair('interferer-phase', 'val-interferer-phase', Math.round(data.interferer_phase_deg));
+    }
+    applyInterfererUi();
+}
+
+/** Peak dBFS within a few bins of `hz` -- the tone's level on the FFT. */
+function toneLevelDbfs(data, hz) {
+    let best = -Infinity;
+    let bestDist = Infinity;
+    let idx = -1;
+    for (let i = 0; i < data.xf.length; i++) {
+        const dist = Math.abs(data.xf[i] - hz);
+        if (dist < bestDist) { bestDist = dist; idx = i; }
+    }
+    for (let i = Math.max(0, idx - 3); i <= Math.min(data.xf.length - 1, idx + 3); i++) {
+        best = Math.max(best, data.max_gain[i]);
+    }
+    return best;
+}
+
+function updateInterfererReadout(data) {
+    const ratioEl = document.getElementById('interferer-ratio');
+    const supEl = document.getElementById('interferer-suppression');
+    const hint = document.getElementById('interferer-hint');
+    if (!state.interferer_enable || !ratioEl) return;
+
+    const key = interfererSettingsKey();
+    if (key !== interfererRatioKey) {
+        interfererRatioKey = key;
+        interfererRatio.manual = null;
+        interfererRatio.mvdr = null;
+    }
+
+    const held = HOLD_MODES.includes(data.sweep_mode);
+    const tgt = data.target_tone_hz;
+    const intf = data.interferer_freq_hz;
+    const binHz = data.xf.length > 1 ? Math.abs(data.xf[1] - data.xf[0]) : 0;
+    let msg = '';
+    if (!Number.isFinite(tgt) || !Number.isFinite(intf)) {
+        msg = 'Waiting for a sweep to find the target tone.';
+    } else if (Math.abs(intf - tgt) < 8 * binHz) {
+        // Coherent, or nearly: one peak on the FFT, nothing to tell apart.
+        msg = 'Coherent: the two tones overlap on the FFT, so they cannot be measured apart. '
+            + 'Watch the beam pattern instead.';
+    } else if (!held) {
+        // A sweep's spectrum comes from its loudest angle, which may be the
+        // interferer's own direction -- not a fair comparison.
+        msg = 'Hold the beam on the target (Static Phase or Signal vs Time) to measure suppression.';
+    }
+
+    if (msg) {
+        ratioEl.textContent = '-- dB';
+    } else {
+        const ratio = toneLevelDbfs(data, intf) - toneLevelDbfs(data, tgt);
+        interfererRatio[state.bfMode === 'mvdr' ? 'mvdr' : 'manual'] = ratio;
+        ratioEl.textContent = `${ratio.toFixed(1)} dB`;
+    }
+
+    if (interfererRatio.manual !== null && interfererRatio.mvdr !== null) {
+        supEl.textContent = `${(interfererRatio.manual - interfererRatio.mvdr).toFixed(1)} dB`;
+    } else {
+        supEl.textContent = '-- dB';
+        if (!msg) {
+            msg = `Now switch to ${state.bfMode === 'mvdr' ? 'Manual' : 'MVDR'} with the same settings `
+                + 'to compare.';
+        }
+    }
+    if (hint) hint.textContent = msg;
+}
+
+/* FFT tone markers. The FFT x axis is negated (see updateFftChart), so the
+   markers are too. */
+function fftToneShapes(data) {
+    const line = (hz, color) => ({
+        type: 'line', xref: 'x', yref: 'paper', x0: -hz / 1e6, x1: -hz / 1e6, y0: 0, y1: 1,
+        line: { color, width: 1.5, dash: 'dot' },
+    });
+    const label = (hz, text, color, y) => ({
+        xref: 'x', yref: 'paper', x: -hz / 1e6, y, text, showarrow: false,
+        font: { color, size: 11 },
+    });
+    const shapes = [];
+    const annotations = [];
+    if (Number.isFinite(data.target_tone_hz)) {
+        shapes.push(line(data.target_tone_hz, '#10b981'));
+        annotations.push(label(data.target_tone_hz, 'Target', '#10b981', 1.0));
+    }
+    if (Number.isFinite(data.interferer_freq_hz)) {
+        shapes.push(line(data.interferer_freq_hz, '#f59e0b'));
+        annotations.push(label(data.interferer_freq_hz, 'Interferer', '#f59e0b', 0.93));
+    }
+    return { shapes, annotations };
+}
+
+let fftMarkersShown = false;
+function clearFftToneMarkers() {
+    if (!fftMarkersShown || !document.getElementById('chart-fft')?.data) return;
+    fftMarkersShown = false;
+    Plotly.relayout('chart-fft', { shapes: [], annotations: [] });
+}
 
 /* --- Base Config Events --- */
 const freqInput = document.getElementById('freq');
@@ -1704,31 +1877,8 @@ async function loadStateFromServer() {
         updateHardwareConnectionStatus(msg.data.hardware_connected ?? false, msg.data.sim_mode);
         armShutdownIfPermitted(msg.data.shutdown_available === true);
 
-        // Reveal the instructor-only interferer panel iff (a) URL has
-        // ?instructor=1 AND (b) backend is running in sim mode. Also
-        // hydrate the panel's controls from the current server state.
-        revealSimInterfererIfEligible(msg.data);
         revealCtfIfEligible();
-        if (typeof msg.data.interferer_enable === 'boolean') {
-            state.interferer_enable = msg.data.interferer_enable;
-            const el = document.getElementById('sim-interferer-enable');
-            if (el) el.checked = msg.data.interferer_enable;
-        }
-        if (Number.isFinite(msg.data.interferer_angle_deg)) {
-            state.interferer_angle_deg = msg.data.interferer_angle_deg;
-            const s = document.getElementById('sim-interferer-angle');
-            const n = document.getElementById('val-sim-interferer-angle');
-            if (s) s.value = msg.data.interferer_angle_deg;
-            if (n) n.value = msg.data.interferer_angle_deg;
-        }
-        if (Number.isFinite(msg.data.interferer_power_dbfs)) {
-            state.interferer_power_dbfs = msg.data.interferer_power_dbfs;
-            const s = document.getElementById('sim-interferer-power');
-            const n = document.getElementById('val-sim-interferer-power');
-            if (s) s.value = msg.data.interferer_power_dbfs;
-            if (n) n.value = msg.data.interferer_power_dbfs;
-        }
-
+        loadInterfererState(msg.data);
         applyInitialStateToControls();
     } catch (err) {
         console.warn('Failed to load initial state from server:', err);
@@ -3074,7 +3224,16 @@ function updateFftChart(data) {
 
         // Negate and convert Hz to MHz to match original GUI behavior
         const xfMHz = data.xf.map(f => -f / 1e6);
-        Plotly.update('chart-fft', {x: [xfMHz], y: [data.max_gain]}, {});
+        let layout = {};
+        if (state.interferer_enable) {
+            layout = fftToneShapes(data);
+            fftMarkersShown = true;
+        } else if (fftMarkersShown) {
+            layout = { shapes: [], annotations: [] };
+            fftMarkersShown = false;
+        }
+        Plotly.update('chart-fft', {x: [xfMHz], y: [data.max_gain]}, layout);
+        updateInterfererReadout(data);
     }
 }
 

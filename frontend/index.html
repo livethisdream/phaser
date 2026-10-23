@@ -61,20 +61,25 @@
               <path d="M12 8v4l2.6 2.6"></path>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="3" title="Quantization" aria-label="Quantization">
+          <button class="sidebar-icon-btn" data-section="4" title="Quantization" aria-label="Quantization">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 7.5h14v9H5z"></path>
               <path d="M8 7.5v3M11 7.5v2M14 7.5v3M17 7.5v2"></path>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="4" title="Digital Beam" aria-label="Digital Beam Forming">
+          <button class="sidebar-icon-btn" data-section="5" title="Digital Beam" aria-label="Digital Beam Forming">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="12" cy="12" r="2"></circle>
               <path d="M12 4v3M12 17v3M4 12h3M17 12h3"></path>
               <path d="M6.7 6.7l2.1 2.1M15.2 15.2l2.1 2.1M17.3 6.7l-2.1 2.1M8.8 15.2l-2.1 2.1"></path>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="5" title="Plot Options" aria-label="Plot Options">
+          <button class="sidebar-icon-btn" data-section="6" title="Interferer" aria-label="Interferer">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="7" title="Plot Options" aria-label="Plot Options">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M4.5 18.5h15"></path>
               <path d="M6 16l4-5 3 2 5-6"></path>
@@ -84,7 +89,7 @@
               <circle cx="18" cy="7" r="1"></circle>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="6" title="Lab Presets" aria-label="Lab Presets">
+          <button class="sidebar-icon-btn" data-section="8" title="Lab Presets" aria-label="Lab Presets">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M9 3h6"></path>
               <path d="M10 3v6.2L6 17a2 2 0 0 0 1.78 2.9h8.44A2 2 0 0 0 18 17l-4-7.8V3"></path>
@@ -352,6 +357,48 @@
                 </div>
             </div>
 
+            <!-- 6. Interferer -->
+            <div class="accordion-item" id="accordion-interferer">
+                <button class="accordion-header" title="Add a computed jammer to the received signal to see what MVDR does about it"><span class="accordion-icon" data-icon="7"></span> Interferer <span>▼</span></button>
+                <div class="accordion-body">
+                    <button class="btn btn-outline interferer-toggle" id="btn-interferer" aria-pressed="false">Inject Interferer</button>
+                    <p class="interferer-note">
+                      Computed, not radiated: a second source at the angle below is added to the
+                      received signal, as the array would see it, before the digital beamformer.
+                    </p>
+                    <div class="control-group combo-group mt-2">
+                      <label>Angle (deg)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-angle" min="-90" max="90" step="1" value="30" class="modern-slider">
+                        <input type="number" id="val-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-input-small">
+                      </div>
+                    </div>
+                    <div class="control-group combo-group mt-2">
+                      <label title="What a full-taper beam pointed straight at it would read">Power (dBFS)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-power" min="-60" max="0" step="1" value="-10" class="modern-slider">
+                        <input type="number" id="val-interferer-power" min="-60" max="0" step="1" value="-10" class="modern-input-small">
+                      </div>
+                    </div>
+                    <div class="control-group combo-group mt-2">
+                      <label title="From the target tone. Keep it well above 25 kHz so the two are distinct over MVDR's snapshot window">Offset from target (kHz)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-offset" min="-750" max="750" step="5" value="100" class="modern-slider">
+                        <input type="number" id="val-interferer-offset" min="-750" max="750" step="5" value="100" class="modern-input-small">
+                      </div>
+                    </div>
+                    <label class="toggle-container mt-2" title="Same frequency as the target: the case MVDR handles badly"><span>Coherent with target</span><input type="checkbox" id="interferer-coherent"><span class="checkmark"></span></label>
+                    <div class="control-group combo-group mt-2" id="interferer-phase-group" hidden>
+                      <label title="Only meaningful in the simulator; a real HB100's phase is not ours to set">Phase (deg, sim only)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-phase" min="0" max="359" step="1" value="0" class="modern-slider">
+                        <input type="number" id="val-interferer-phase" min="0" max="359" step="1" value="0" class="modern-input-small">
+                      </div>
+                    </div>
+                    <p id="interferer-hint" class="interferer-note mt-2"></p>
+                </div>
+            </div>
+
             <!-- 6. Plot Options -->
             <div class="accordion-item">
                 <button class="accordion-header" title="Toggle visual markers and override graph axes boundaries"><span class="accordion-icon" data-icon="5"></span> Plot Options <span>▼</span></button>
@@ -413,33 +460,8 @@
                 </div>
             </div>
 
-            <!-- 8. Simulator Interferer (instructor mode only — hidden unless ?instructor=1) -->
-            <div class="accordion-item" id="accordion-sim-interferer" hidden>
-                <button class="accordion-header" title="Inject a simulated jammer at a chosen angle to demonstrate adaptive nulling (sim mode only)"><span class="accordion-icon" data-icon="7"></span> Simulator Interferer <span>▼</span></button>
-                <div class="accordion-body">
-                    <label class="toggle-container mt-2"><span>Enable Interferer</span><input type="checkbox" id="sim-interferer-enable"><span class="checkmark"></span></label>
-                    <div class="control-group combo-group mt-2">
-                      <label>Interferer Angle (deg)</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="sim-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-slider">
-                        <input type="number" id="val-sim-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-input-small" style="width:88px;">
-                      </div>
-                    </div>
-                    <div class="control-group combo-group mt-2">
-                      <label>Interferer Power (dBFS)</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="sim-interferer-power" min="-60" max="0" step="1" value="-10" class="modern-slider">
-                        <input type="number" id="val-sim-interferer-power" min="-60" max="0" step="1" value="-10" class="modern-input-small" style="width:88px;">
-                      </div>
-                    </div>
-                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0.5rem 0 0; line-height:1.35;">
-                      Instructor-only panel. Simulator sums a second plane wave at the chosen angle and power. Only visible with <code>?instructor=1</code> in the URL, and only while the backend reports sim mode.
-                    </p>
-                </div>
-            </div>
-
             <div class="accordion-item" id="accordion-ctf" hidden>
-                <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="7"></span> CTF Mode <span>▼</span></button>
+                <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="8"></span> CTF Mode <span>▼</span></button>
                 <div class="accordion-body">
                     <!-- Sector table, the helper-line toggle, and a single status
                          line. No controls: the live beam/sector readout, the
@@ -499,6 +521,7 @@
           </div>
         
         <div class="plots-stack">
+          <div class="interferer-badge" id="interferer-badge" hidden>Interferer</div>
           <div class="chart-wrapper tab-content active" id="tab-rect">
              <div id="chart-rect" style="width:100%; height:100%;"></div>
           </div>
@@ -540,6 +563,20 @@
                   <span class="stat-label"><span id="stat-angle-label">Angle · Peak</span> <span class="stat-toggle-icon" aria-hidden="true">⇄</span></span>
                   <span class="stat-value" id="stat-angle">-- °</span>
               </button>
+              <!-- Interferer readouts, from the FFT: the interferer tone's level
+                   relative to the target tone's, and how much lower that ratio
+                   is under MVDR than under Manual with the same settings.
+                   Shown only while the interferer is on. -->
+              <div class="stat-box" id="interferer-ratio-box" hidden
+                   title="Interferer tone level minus target tone level, from the FFT. Measured with the beam held (Static Phase or Signal vs Time).">
+                  <span class="stat-label">Interferer vs Target</span>
+                  <span class="stat-value" id="interferer-ratio">-- dB</span>
+              </div>
+              <div class="stat-box" id="interferer-suppression-box" hidden
+                   title="How much lower Interferer vs Target reads under MVDR than under Manual, same settings. Switch modes to fill it in.">
+                  <span class="stat-label">MVDR Suppression</span>
+                  <span class="stat-value" id="interferer-suppression">-- dB</span>
+              </div>
               <!-- CTF progress. It sits in the stat row rather than in the CTF
                    panel for the same reason the sector bands do: the player is
                    already looking at the plot and its readouts, not at the

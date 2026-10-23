@@ -693,27 +693,26 @@ pytest tests/test_sim_parity.py       # fails until you do
 Parity is only as strong as the case matrix in that test. **A new physics knob
 needs a new case**, or it is simply untested on the JS side.
 
-### Instructor mode
+### Interferer (MVDR lab)
 
-Append `?instructor=1` to the URL:
+The **Interferer** pane in the sidebar adds a computed jammer to the received
+signal, for demonstrating MVDR nulling without a second HB100. The backend
+(`PhaserHeadless._interferer_channels`) models a plane wave arriving at the
+chosen angle, passes it through the same analog steering and taper the real
+signal went through, and adds it to the two sub-array channels before the
+digital beamformer -- on the kit and in the simulator alike.
 
-```text
-http://localhost:8080/?instructor=1
-```
-
-This reveals a **Simulator Interferer** panel in the sidebar (a configurable
-jammer for MVDR nulling demos). Students loading the app without the flag see
-no trace of it, and it stays hidden unless the transport is actually a
-simulator — so `?instructor=1` against the *real* Pi app shows nothing either.
-
-It works in the browser simulator too, including on the hosted demo:
-`?sim=1&instructor=1`, or just `?instructor=1` on the Pages site, which is
-already in simulation.
-
-The parameter *name* is matched case-insensitively (`?INSTRUCTOR=1` works),
-because a flag that is silently ignored looks exactly like a stale bundle. The
-value still has to be `1`. `?sim=` and `?backend=` are unchanged -- they are
-read by the transport, not by `main.js`, and are lowercase-only.
+- **Power** is absolute dBFS: what a full-taper beam pointed straight at it
+  would read.
+- **Offset** is from the target tone, which the backend re-measures every
+  sweep from the signal *before* injection. Keep it well above ~25 kHz so the
+  two are distinct over MVDR's 128-snapshot window; **Coherent** pins it to
+  0 Hz, the case MVDR handles badly.
+- While it is on, an **Interferer** badge sits over every plot, the FFT marks
+  both tones, and the stat row shows the interferer's level relative to the
+  target and, after measuring both Manual and MVDR with the same settings,
+  how much MVDR suppresses it. Measure with the beam held on the target
+  (Static Phase or Signal vs Time).
 
 ### CTF mode
 
@@ -727,7 +726,7 @@ http://phaser.local:8080/?ctf=1
 
 The name is case-insensitive, so `?CTF=1` works too; the value must be `1`.
 
-Unlike instructor mode, the URL parameter is UI convenience, **not** a secret.
+The URL parameter is UI convenience, **not** a secret.
 `frontend/dist` is served to every browser that connects and a CTF player's
 whole job is to go looking, so the sequence check and the flag both live in
 `phaser_ctf.py` on the backend. The panel only renders what the backend
@@ -825,7 +824,6 @@ genuinely useful for frontend work:
 
 ```text
 http://localhost:5173/?sim=1
-http://localhost:5173/?sim=1&instructor=1     # with the interferer panel
 ```
 
 For the backend-connected path, use `npm run build` + reload, or run
