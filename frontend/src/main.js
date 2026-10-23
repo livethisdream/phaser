@@ -1764,6 +1764,17 @@ function applyInitialStateToControls() {
         ignoreRes.checked = Boolean(state.ignore_res);
     }
 
+    // Digital beam weights. A preset or a server reload that changes them
+    // otherwise leaves the sliders showing the old values.
+    for (const [slId, inId, key] of [
+        ['b0_gain', 'val-b0g', 'B0_Gain'], ['b1_gain', 'val-b1g', 'B1_Gain'],
+        ['b0_phase', 'val-b0p', 'Beam0_Phase'], ['b1_phase', 'val-b1p', 'Beam1_Phase'],
+    ]) {
+        const sl = document.getElementById(slId), inp = document.getElementById(inId);
+        if (sl) sl.value = String(state[key]);
+        if (inp) inp.value = String(state[key]);
+    }
+
     if (steerAngleSlider && steerAngleInput && isHoldMode()) {
         steerAngleSlider.value = String(state.hold_angle);
         steerAngleInput.value = String(state.hold_angle);
@@ -3141,11 +3152,15 @@ function localLabPreset(labIdx) {
         // the HB100 by hand and traces the pattern amplitude vs time.
         case 7: return { ...base, mode: 'Signal vs Time', ui_tab: 'tab-tracking' };
 
-        // Lab 8 — MONOPULSE TRACKING (PDF p.28): PDF selects Blackman taper
-        // and enables monopulse delta/error display. Tracking mode drives
-        // the closed-loop steering.
+        // Lab 8 — MONOPULSE TRACKING (PDF p.28): selecting the lab is step 1
+        // and choosing Blackman in the Gain tab is step 2, so the student
+        // applies the taper -- the preset loads uniform. Both digital beams
+        // start at 0 deg: the sum/delta pair assumes the two channels are in
+        // phase, and a Beam 1 Phase left over from Lab 4 skews the error
+        // function. Enables the monopulse delta/error display; Tracking mode
+        // drives the closed-loop steering.
         case 8: return { ...base, mode: 'Tracking', ui_tab: 'tab-rect',
-                         gainList: [6, 27, 66, 100, 100, 66, 27, 6],
+                         Beam0_Phase: 0, Beam1_Phase: 0,
                          showDelta: true, showError: true };
 
         default: return base;

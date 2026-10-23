@@ -83,6 +83,37 @@ def ADAR_set_mode(device, mode):
             channel.rx_enable = True
 
 
+# Voltage amplitude of an element at each rx_gain register code, relative to
+# code 127. The register is not linear in voltage: the ECE 444 Module 3 dry run
+# (2026-10-23, phaser-00) fitted amplitude = (code/127)**0.68 to three taper
+# peak drops (Hann, Blackman, Chebyshev) within 0.1 dB, and that fit predicted
+# the beamwidths within ~0.5 deg without being fitted to them. Mapping slider %
+# linearly onto the code made every taper milder than the slider said.
+#
+# This is the one place the chip's curve lives. rx_gain_code() inverts it for
+# the backend, and phaser_sim reads it to model the chip, so the simulator stays
+# linear in slider %. A table measured with tools/measure_rx_gain_curve.py
+# replaces it by replacing this list (128 entries, 0.0 at code 0, 1.0 at 127);
+# then re-run tools/gen_sim_constants.py.
+RX_GAIN_EXPONENT = 0.68
+RX_GAIN_AMPLITUDE = [(code / 127.0) ** RX_GAIN_EXPONENT for code in range(128)]
+
+
+def rx_gain_code(amplitude):
+    """Register code whose voltage amplitude is nearest `amplitude`.
+
+    `amplitude` is a fraction of full scale (code 127). Ties go to the lower
+    code. Zero maps to code 0, which ADAR_set_Taper routes through the
+    attenuator.
+    """
+    target = max(0.0, min(1.0, float(amplitude)))
+    best = 0
+    for code in range(1, 128):
+        if abs(RX_GAIN_AMPLITUDE[code] - target) < abs(RX_GAIN_AMPLITUDE[best] - target):
+            best = code
+    return best
+
+
 def ADAR_set_Taper(array, taper_list):
     """ Set array taper gains """
     # Map elements 1..8 to their gains

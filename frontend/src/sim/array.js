@@ -11,7 +11,7 @@
  * of a simulator used for teaching.
  */
 
-import { NUM_ELEMENTS } from './constants.generated.js';
+import { NUM_ELEMENTS, RX_GAIN_AMPLITUDE } from './constants.generated.js';
 
 class StubElement {
     constructor() {
@@ -50,8 +50,23 @@ export function createStubArray() {
 }
 
 /**
+ * ADAR_pyadi_functions.rx_gain_code: the register code whose voltage amplitude
+ * (RX_GAIN_AMPLITUDE) is nearest `amplitude`, a fraction of full scale. Ties go
+ * to the lower code.
+ */
+export function rxGainCode(amplitude) {
+    const target = Math.max(0, Math.min(1, amplitude));
+    let best = 0;
+    for (let code = 1; code < 128; code++) {
+        if (Math.abs(RX_GAIN_AMPLITUDE[code] - target)
+            < Math.abs(RX_GAIN_AMPLITUDE[best] - target)) best = code;
+    }
+    return best;
+}
+
+/**
  * ADAR_set_Taper. Taper arrives on the ADAR's 0-127 register scale (the caller
- * has already applied the 0-100 -> 0-127 conversion and the gain calibration).
+ * has already applied the gain calibration and inverted the register curve).
  */
 export function adarSetTaper(array, taperList) {
     for (let i = 0; i < NUM_ELEMENTS; i++) {

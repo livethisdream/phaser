@@ -47,7 +47,7 @@ import {
     TX_FREQ_HZ,
     TX_GAIN_DB,
 } from './constants.generated.js';
-import { adarSetPhase, adarSetTaper, createStubArray, pyRound } from './array.js';
+import { adarSetPhase, adarSetTaper, createStubArray, pyRound, rxGainCode } from './array.js';
 import { blackman, fft, fftfreq, fftshift } from './fft.js';
 import { createSimSdr } from './sdr.js';
 
@@ -151,16 +151,15 @@ export function createEngine(options = {}) {
     // --- calibration application ------------------------------------------
 
     /**
-     * _apply_gain_cal. Taper arrives on the frontend's 0-100 scale; the ADAR
-     * rx_gain register is 0-127, so the two are not interchangeable -- a taper
-     * commanded to 100 must reach full scale, not 79% of it.
+     * _apply_gain_cal. Taper arrives on the frontend's 0-100 scale as percent
+     * of full-scale voltage; gcal scales that amplitude, then rxGainCode
+     * inverts the ADAR rx_gain register's (non-linear) curve.
      */
     function applyGainCal(taper) {
         const out = [];
         for (let i = 0; i < NUM_ELEMENTS; i++) {
             const value = taper[i] ?? 100;
-            const scaled = (value * 127) / 100 * (gainCal[i] ?? 1);
-            out.push(Math.max(0, Math.min(127, pyRound(scaled))));
+            out.push(rxGainCode(value / 100 * (gainCal[i] ?? 1)));
         }
         return out;
     }

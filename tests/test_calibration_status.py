@@ -98,3 +98,25 @@ def test_success_is_also_retained(app, monkeypatch):
 
     assert app.get_calibration_status()["success"] is True
     assert app.get_calibration_status()["success"] is True
+
+
+@pytest.mark.parametrize("was_sweeping,returncode,expected", [
+    (True, 0, "sweep"),   # Find HB100 used to leave this idle, plots frozen
+    (False, 0, "idle"),   # never start a sweep nobody asked for
+    (True, 1, "idle"),    # a failed run never re-initialized the hardware
+])
+def test_sweep_resumes_after_a_successful_task(app, was_sweeping, returncode, expected):
+    import threading
+
+    app.mode = "idle"
+    app.sweeping = False
+    app.cw_lock = threading.Lock()
+    app.cal_resume_sweep = was_sweeping
+    app._reload_calibration = lambda task: None
+    app.cal_process = FakeProc(returncode)
+    app.cal_task = "find_hb100"
+
+    app.get_calibration_status()
+    assert app.mode == expected
+    assert app.sweeping == (expected == "sweep")
+    assert app.cal_resume_sweep is False
