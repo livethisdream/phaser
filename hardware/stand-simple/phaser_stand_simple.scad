@@ -39,11 +39,7 @@ fit   = 0.3;   // radial clearance on sliding fits (PLA/PETG)
 // hand at 0.3 mm.
 bore_fit    = 0.5;   // radial, base bore around the 24 mm platter post
 channel_fit = 1.0;   // radial, outside of the detent-skirt channel
-// Retainer screw is M4 x 16 flat-head; an M5 in a 4.2 mm pilot was too tight
-// on the first print. Sizes allow for printed holes coming out undersized.
-ret_pilot  = 3.5;  // M4 self-tapping into the platter post
-ret_clear  = 4.6;  // M4 clearance through the retainer
-ret_csk_d  = 8.8;  // M4 flat-head (8 mm nominal) countersink
+m5_pilot = 4.2;  // M5 self-tapping into plastic
 m4_pilot = 3.3;
 qtr_head_af = 11.3;  // 1/4-20 hex head, 7/16" AF + clearance
 qtr_head_h  = 4.6;
@@ -213,7 +209,7 @@ module platter(top = "mast") {
         polygon([[-5, platter_r - 6], [5, platter_r - 6], [0.6, scale_r0 + 5.5], [-0.6, scale_r0 + 5.5]]);
     }
     // Pilot for the retainer screw.
-    translate([0, 0, -post_len - eps]) cylinder(d = ret_pilot, h = 16, $fn = 24);
+    translate([0, 0, -post_len - eps]) cylinder(d = m5_pilot, h = 16, $fn = 24);
     // 72 vertical V-grooves on the skirt's inner face.
     for (a = [0 : detent_step : 359]) rotate(a) translate([0, skirt_r[0], -skirt_h - eps])
       rotate(45) translate([-groove_d * 0.71, -groove_d * 0.71, 0])
@@ -233,12 +229,12 @@ module platter(top = "mast") {
   }
 }
 
-// Washer under the base; one M4 x 16 flat-head screw clamps it to the post.
+// Washer under the base; one M5 x 16 flat-head screw clamps it to the post.
 module retainer() {
   difference() {
     cylinder(d = retainer_d, h = retainer_t);
-    translate([0, 0, -eps]) cylinder(d = ret_clear, h = retainer_t + 2 * eps, $fn = 24);
-    translate([0, 0, -eps]) cylinder(d1 = ret_csk_d, d2 = ret_clear, h = (ret_csk_d - ret_clear) / 2 + eps, $fn = 32);
+    translate([0, 0, -eps]) cylinder(d = 5.4, h = retainer_t + 2 * eps, $fn = 24);
+    translate([0, 0, -eps]) cylinder(d1 = 10.4, d2 = 5.4, h = 2.6 + eps, $fn = 32);
   }
 }
 

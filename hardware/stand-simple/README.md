@@ -69,8 +69,8 @@ eventually.
 | 1/4-20 × 3/4" hex bolt | 1 | mast | stud the Phaser threads onto |
 | 1/4-20 hex nut | 1 | mast | pressed into the lock wheel |
 
-The tripod build needs only the M4 screw. (Early prints used M5; it was too
-tight in the printed pilot hole.)
+The tripod build needs only the M4 screw. An M5 does not fit the printed
+pilot hole in the platter post; use M4.
 
 The screws cut their own threads in the printed pilot holes, so no inserts
 or tapping are needed. Optional extras: 12 mm stick-on feet, which have
