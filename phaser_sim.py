@@ -119,19 +119,6 @@ class SimSDR:
     # inside the passband so the FFT plot shows a peak.
     TARGET_IF_HZ = 1.0e6
 
-    # Interferer defaults. All off by default so plain sim mode remains a
-    # clean single-target scene. Enabled and configured from phaser_headless
-    # via set_interferer(); the frontend "Simulator Interferer" panel is
-    # hidden unless the app is loaded with ?instructor=1.
-    #
-    # NOTE: Interferer runs at the SAME IF as the target on purpose. This
-    # is the classic textbook MVDR setup — two co-frequency sources at
-    # different arrival angles, where the covariance matrix has clean
-    # rank-2 structure and MVDR can place a hard null on the interferer.
-    # A different-IF interferer is more realistic but shows much weaker
-    # nulling because the sources are then temporally uncorrelated.
-    INTERFERER_IF_HZ = 1.0e6  # same as TARGET_IF_HZ (see comment above)
-
     # Output scaling. Chosen so a full-taper on-boresight beam peaks around
     # -10 dBFS in the sum channel, matching typical HB100 signal levels on real
     # hardware (leaves headroom before the 2^11 fixed-point full-scale).
@@ -168,27 +155,12 @@ class SimSDR:
         self.tx_hardwaregain_chan0 = -30
         self.tx_hardwaregain_chan1 = -30
 
-        # Interferer state (default: disabled)
-        self._interferer_enable = False
-        self._interferer_angle_deg = 30.0
-        self._interferer_power_db = 0.0   # relative to target amplitude
-
         self._rng = np.random.default_rng(0)
 
     def set_signal_freq(self, freq_hz):
         """Kept in sync from phaser_headless.set_signal_freq so the spatial
         phase progression uses the current SignalFreq."""
         self._SignalFreq = float(freq_hz)
-
-    def set_interferer(self, enable=None, angle_deg=None, power_db=None):
-        """Configure the simulator interferer. Called from phaser_headless
-        when the frontend (instructor mode) updates interferer state."""
-        if enable is not None:
-            self._interferer_enable = bool(enable)
-        if angle_deg is not None:
-            self._interferer_angle_deg = float(angle_deg)
-        if power_db is not None:
-            self._interferer_power_db = float(power_db)
 
     def _superpose_source(self, chan_sub, t, if_hz, arrival_angle_deg,
                           amplitude, wavelength):
@@ -227,9 +199,10 @@ class SimSDR:
 
         Sums:
           - Target: plane wave at TARGET_ANGLE_DEG, IF = TARGET_IF_HZ, unit amp
-          - Interferer (if enabled): plane wave at interferer_angle_deg,
-            IF = INTERFERER_IF_HZ, amp = 10^(power_db/20) relative to target
           - Independent complex noise per sub-array
+
+        No interferer here: that is injected by PhaserHeadless.do_sweep()
+        after the read, on hardware and in sim alike, so there is one model.
         """
         N = self.rx_buffer_size
         fs = float(self.sample_rate)
@@ -251,18 +224,6 @@ class SimSDR:
             amplitude=1.0,
             wavelength=wavelength,
         )
-
-        # Interferer (only when instructor mode has enabled it). Uses the
-        # same IF as the target — see class comment for rationale.
-        if self._interferer_enable:
-            interf_amp = 10.0 ** (self._interferer_power_db / 20.0)
-            self._superpose_source(
-                chan_sub, t,
-                if_hz=self.INTERFERER_IF_HZ,
-                arrival_angle_deg=self._interferer_angle_deg,
-                amplitude=interf_amp,
-                wavelength=wavelength,
-            )
 
         amp = self.AMP_SCALE
         chan0 = chan_sub[0] * amp

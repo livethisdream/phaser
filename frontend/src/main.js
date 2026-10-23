@@ -30,9 +30,9 @@ const state = {
     mvdrDiagLoad: 0.001,    // MVDR diagonal loading factor
 
     // Simulator interferer (instructor-only, sim mode only; hidden by default)
-    sim_interferer_enable: false,
-    sim_interferer_angle_deg: 30,
-    sim_interferer_power_db: 0,
+    interferer_enable: false,
+    interferer_angle_deg: 30,
+    interferer_power_dbfs: -10,
 };
 
 /* Read a `?name=1` flag from the URL, matching the parameter name
@@ -1331,7 +1331,7 @@ wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfRe
 const simInterfererEnable = document.getElementById('sim-interferer-enable');
 if (simInterfererEnable) {
     simInterfererEnable.addEventListener('change', (e) => {
-        state.sim_interferer_enable = !!e.target.checked;
+        state.interferer_enable = !!e.target.checked;
         syncStateToBackend();
     });
 }
@@ -1351,8 +1351,8 @@ function linkInterfererPair(slId, inId, stateKey) {
     sl.addEventListener('input', (e) => { inp.value = e.target.value; onChange(e.target.value); });
     inp.addEventListener('input', (e) => { sl.value = e.target.value; onChange(e.target.value); });
 }
-linkInterfererPair('sim-interferer-angle', 'val-sim-interferer-angle', 'sim_interferer_angle_deg');
-linkInterfererPair('sim-interferer-power', 'val-sim-interferer-power', 'sim_interferer_power_db');
+linkInterfererPair('sim-interferer-angle', 'val-sim-interferer-angle', 'interferer_angle_deg');
+linkInterfererPair('sim-interferer-power', 'val-sim-interferer-power', 'interferer_power_dbfs');
 
 /* --- Base Config Events --- */
 const freqInput = document.getElementById('freq');
@@ -1709,24 +1709,24 @@ async function loadStateFromServer() {
         // hydrate the panel's controls from the current server state.
         revealSimInterfererIfEligible(msg.data);
         revealCtfIfEligible();
-        if (typeof msg.data.sim_interferer_enable === 'boolean') {
-            state.sim_interferer_enable = msg.data.sim_interferer_enable;
+        if (typeof msg.data.interferer_enable === 'boolean') {
+            state.interferer_enable = msg.data.interferer_enable;
             const el = document.getElementById('sim-interferer-enable');
-            if (el) el.checked = msg.data.sim_interferer_enable;
+            if (el) el.checked = msg.data.interferer_enable;
         }
-        if (Number.isFinite(msg.data.sim_interferer_angle_deg)) {
-            state.sim_interferer_angle_deg = msg.data.sim_interferer_angle_deg;
+        if (Number.isFinite(msg.data.interferer_angle_deg)) {
+            state.interferer_angle_deg = msg.data.interferer_angle_deg;
             const s = document.getElementById('sim-interferer-angle');
             const n = document.getElementById('val-sim-interferer-angle');
-            if (s) s.value = msg.data.sim_interferer_angle_deg;
-            if (n) n.value = msg.data.sim_interferer_angle_deg;
+            if (s) s.value = msg.data.interferer_angle_deg;
+            if (n) n.value = msg.data.interferer_angle_deg;
         }
-        if (Number.isFinite(msg.data.sim_interferer_power_db)) {
-            state.sim_interferer_power_db = msg.data.sim_interferer_power_db;
+        if (Number.isFinite(msg.data.interferer_power_dbfs)) {
+            state.interferer_power_dbfs = msg.data.interferer_power_dbfs;
             const s = document.getElementById('sim-interferer-power');
             const n = document.getElementById('val-sim-interferer-power');
-            if (s) s.value = msg.data.sim_interferer_power_db;
-            if (n) n.value = msg.data.sim_interferer_power_db;
+            if (s) s.value = msg.data.interferer_power_dbfs;
+            if (n) n.value = msg.data.interferer_power_dbfs;
         }
 
         applyInitialStateToControls();
