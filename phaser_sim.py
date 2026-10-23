@@ -19,6 +19,8 @@ Changing the physics here means:
 
 import numpy as np
 
+from ADAR_pyadi_functions import RX_GAIN_AMPLITUDE
+
 
 class _StubGPIOs:
     """Swallows attribute writes (gpio_vctrl_1 = 1, gpio_tx_sw = 0, ...)."""
@@ -197,8 +199,9 @@ class SimSDR:
 
         Physical model per element k (k=0..7):
           phi_incident_k = 2*pi * (k * d / lambda) * sin(theta)
-          elem_signal   = (gain_k/127) * exp(j*if*t)
+          elem_signal   = A(gain_k) * exp(j*if*t)
                           * exp(j*(phi_incident_k - rx_phase_k))
+        A() is RX_GAIN_AMPLITUDE, the register's voltage response.
         Sub-array 0 = elements 0..3, sub-array 1 = elements 4..7 (matches
         the ADAR device_element_map wiring in _do_init_hardware).
         """
@@ -208,7 +211,9 @@ class SimSDR:
             el = self._array.elements[k + 1]
             # Latched beam state, not the shadow registers -- an unlatched
             # write must not steer the simulated array either.
-            gain = max(0.0, min(127.0, float(el.latched_gain))) / 127.0
+            # The register is not linear in voltage; model the chip's curve,
+            # so the backend's inverse of it leaves the sim linear in slider %.
+            gain = RX_GAIN_AMPLITUDE[max(0, min(127, int(el.latched_gain)))]
             rx_phase_rad = np.radians(float(el.latched_phase))
             # Intrinsic element phase error, which the commanded rx_phase has
             # to absorb via the phase calibration.

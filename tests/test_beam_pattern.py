@@ -271,6 +271,53 @@ def test_taper_reaches_full_scale():
     assert h._apply_gain_cal([0] * 8) == [0] * 8
 
 
+def test_taper_percent_is_voltage():
+    """Slider % is percent of full-scale voltage, through the register's curve.
+
+    The register goes as (code/127)**0.68 in voltage, so a linear % -> code
+    map put one element at 50% at -3.8 dB instead of -6.0.
+    """
+    from ADAR_pyadi_functions import RX_GAIN_AMPLITUDE
+
+    h = _headless()
+    h.gain_cal = [1.0] * 8
+    for pct in range(0, 101):
+        code = h._apply_gain_cal([pct] * 8)[0]
+        nearest = min(range(128), key=lambda c: abs(RX_GAIN_AMPLITUDE[c] - pct / 100))
+        assert abs(RX_GAIN_AMPLITUDE[code] - pct / 100) == pytest.approx(
+            abs(RX_GAIN_AMPLITUDE[nearest] - pct / 100)), pct
+    half = RX_GAIN_AMPLITUDE[h._apply_gain_cal([50] * 8)[0]]
+    assert 20 * np.log10(half) == pytest.approx(-6.02, abs=0.1)
+
+
+def test_gain_cal_scales_amplitude_before_the_curve():
+    """gcal is an amplitude ratio: 100% at gcal 0.5 is the same code as 50%."""
+    h = _headless()
+    h.gain_cal = [1.0] * 8
+    fifty = h._apply_gain_cal([50] * 8)
+    h.gain_cal = [0.5] * 8
+    assert h._apply_gain_cal([100] * 8) == fifty
+
+
+@pytest.mark.parametrize("taper,ref,expected_db", [
+    # One element at 50% against the same element at 100%.
+    ([50, 0, 0, 0, 0, 0, 0, 0], [100, 0, 0, 0, 0, 0, 0, 0], -6.02),
+    # Hann preset against uniform: 20*log10(4.64/8). It read 3.7 dB on
+    # phaser-00 before the register curve was inverted.
+    ([12, 43, 77, 100, 100, 77, 43, 12], [100] * 8, -4.73),
+])
+def test_sim_taper_peak_drop_is_linear_in_percent(monkeypatch, taper, ref, expected_db):
+    import phaser_sim
+    monkeypatch.setattr(phaser_sim.SimSDR, "NOISE_SIGMA", 0.0)
+    h = _headless()
+
+    def peak(t):
+        h.set_taper(t)
+        return float(np.max(_sweep(h)[0]))
+
+    assert peak(taper) - peak(ref) == pytest.approx(expected_db, abs=0.1)
+
+
 def test_coarse_phase_bits_do_not_quantize_the_calibration():
     """`bits` coarsens the steering ramp, not the per-element correction."""
     from ADAR_pyadi_functions import ADAR_set_Phase

@@ -72,6 +72,9 @@ CASES = [
     ("boresight", {}, {}),
     ("steered", {"ignore_res": False, "steer_res": 1.0}, {"steer_min": -60, "steer_max": 60}),
     ("tapered", {"gainList": [6, 27, 66, 100, 100, 66, 27, 6]}, {}),
+    # One element at half voltage: exercises the rx_gain register curve on
+    # both sides (backend inverts it, SDR stub applies it).
+    ("half_scale_element", {"gainList": [50, 0, 0, 0, 0, 0, 0, 0]}, {}),
     ("three_bit", {"bits": 3}, {}),
     ("beam_squint", {"BW": 10.0}, {}),
     ("phase_offsets", {"phaseList": [0, 15, 30, 45, 60, 75, 90, 105]}, {}),
@@ -411,6 +414,31 @@ process.stdout.write(JSON.stringify(a.elements.map((e) => e.latchedGain)));
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout) == expected
     assert expected[0] == 0, "a zeroed element must route through the attenuator"
+
+
+def test_rx_gain_code_matches_python(tmp_path, _importable):
+    """Amplitude -> register code: the inverse of the chip's gain curve.
+
+    Includes gcal-style products and exact table values, where a
+    nearest-neighbor tie-break would show up first.
+    """
+    from ADAR_pyadi_functions import RX_GAIN_AMPLITUDE, rx_gain_code
+
+    amps = [p / 100 * g for p in range(0, 101) for g in (1.0, 0.93, 0.871)]
+    amps += list(RX_GAIN_AMPLITUDE) + [-0.1, 1.2]
+    expected = [rx_gain_code(a) for a in amps]
+
+    driver = tmp_path / "gaincode.mjs"
+    sim_dir = (ROOT / "frontend" / "src" / "sim").as_posix()
+    driver.write_text(f"""
+import {{ rxGainCode }} from '{sim_dir}/array.js';
+const amps = JSON.parse(process.argv[2]);
+process.stdout.write(JSON.stringify(amps.map(rxGainCode)));
+""")
+    proc = subprocess.run([NODE, str(driver), json.dumps(amps)],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == expected
 
 
 def test_unlatched_writes_flatten_the_pattern_in_js(tmp_path, _importable):

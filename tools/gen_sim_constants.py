@@ -28,6 +28,7 @@ import types
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+import ADAR_pyadi_functions        # noqa: E402
 import config                      # noqa: E402
 import phaser_ctf                  # noqa: E402
 import phaser_sim                  # noqa: E402
@@ -117,9 +118,10 @@ def main():
 
     body = f"""// GENERATED FILE -- DO NOT EDIT BY HAND.
 //
-// Produced by tools/gen_sim_constants.py from phaser_sim.py, config.py and
-// phaser_headless.py. Python is the source of truth for the simulator's
-// physics; this file exists so the JS port cannot drift from it.
+// Produced by tools/gen_sim_constants.py from phaser_sim.py, config.py,
+// ADAR_pyadi_functions.py and phaser_headless.py. Python is the source of
+// truth for the simulator's physics; this file exists so the JS port cannot
+// drift from it.
 //
 // To change a value here, change it in Python and re-run:
 //     python tools/gen_sim_constants.py
@@ -185,6 +187,13 @@ export const SIM_PI = Math.PI;
 // from the legacy phaser_gui.py. Do not "fix" this to Math.PI: it would move
 // every steering angle by ~0.03% relative to the hardware code path.
 export const STEER_PI = {steer_pi};
+
+// --- ADAR1000 rx_gain register ---------------------------------------------
+// Voltage amplitude at each register code 0-127, relative to code 127. The
+// register is not linear in voltage; applyGainCal inverts this table and the
+// SDR stub applies it, so the sim stays linear in slider %. Emitted as numbers
+// rather than recomputed with Math.pow, which need not round like Python's **.
+export const RX_GAIN_AMPLITUDE = {list(ADAR_pyadi_functions.RX_GAIN_AMPLITUDE)!r};
 
 // --- Calibration -----------------------------------------------------------
 // A static build has no calibration store, so it gets whatever a fresh clone

@@ -33,6 +33,7 @@ import {
     INTERFERER_IF_HZ,
     NOISE_SIGMA,
     NUM_ELEMENTS,
+    RX_GAIN_AMPLITUDE,
     SIM_PI,
     TARGET_ANGLE_DEG,
     TARGET_IF_HZ,
@@ -75,7 +76,9 @@ export function createSimSdr({
             const el = state.array.elements[k];
             // Latched beam state, not the shadow registers -- an unlatched
             // write must not steer the simulated array either.
-            const gain = Math.max(0, Math.min(127, el.latchedGain)) / 127;
+            // The register is not linear in voltage; model the chip's curve,
+            // so applyGainCal's inverse of it leaves the sim linear in slider %.
+            const gain = RX_GAIN_AMPLITUDE[Math.max(0, Math.min(127, el.latchedGain | 0))];
             const rxPhaseRad = (el.latchedPhase * Math.PI) / 180;
             const errRad = (state.array.elementPhaseError[k] * Math.PI) / 180;
             const phiIncident =

@@ -45,7 +45,7 @@ import adi
 from SDR_functions import SDR_init, SDR_LO_init, SDR_getData, SDR_setRx, SDR_setTx
 from ADAR_pyadi_functions import (
     ADAR_init, ADAR_set_mode, ADAR_set_Taper, ADAR_set_Phase,
-    load_phase_cal, load_gain_cal
+    load_phase_cal, load_gain_cal, rx_gain_code
 )
 
 try:
@@ -131,6 +131,9 @@ class PhaserHeadless:
         # run starts, so the answer is the same however often you ask.
         self.cal_last_result = None
         self.cal_started_at = None
+        # Whether a sweep was running when the task took the hardware, so it
+        # can be handed back afterwards. See _resume_sweep_after_calibration.
+        self.cal_resume_sweep = False
 
         # Initialize hardware
         self._init_hardware()
@@ -378,16 +381,20 @@ class PhaserHeadless:
     def _apply_gain_cal(self, taper_values):
         """Apply gain calibration to taper values.
 
-        Taper values arrive on the frontend's 0-100 scale; the ADAR1000
-        rx_gain register is 0-127. Legacy scales between the two --
-        `int(gainList[i] * 127 / 100 * gcal[i])` -- and this did not, so a
-        taper commanded to 100 only ever reached 79% of full scale.
+        Taper values arrive on the frontend's 0-100 scale and mean percent of
+        full-scale VOLTAGE, which is what the labs teach. The ADAR1000 rx_gain
+        register is 0-127 and not linear in voltage, so a linear % -> code map
+        (legacy's `int(gainList[i] * 127 / 100 * gcal[i])`) made every taper
+        milder than the slider said: one element at 50% read -3.8 dB, not -6.
+
+        gcal is an amplitude ratio (measured at code 127), so it scales the
+        target amplitude; the chip's curve is inverted after it, by
+        rx_gain_code().
         """
         calibrated = []
         for idx, value in enumerate((list(taper_values) + [100] * 8)[:8]):
             gain_mult = self.gain_cal[idx] if idx < len(self.gain_cal) else 1.0
-            scaled = value * 127.0 / 100.0 * gain_mult
-            calibrated.append(int(max(0, min(127, round(scaled)))))
+            calibrated.append(rx_gain_code(value / 100.0 * gain_mult))
         return calibrated
 
     def _apply_phase_cal(self, phase_values):
@@ -971,6 +978,7 @@ class PhaserHeadless:
         # CW teardown (restoring SDR state) before the calibration subprocess
         # tries to grab the hardware.
         was_sweeping = self.sweeping
+        self.cal_resume_sweep = was_sweeping
         if self.mode != "idle":
             self._set_mode("idle")
 
@@ -992,7 +1000,9 @@ class PhaserHeadless:
             self.cal_reader_thread.start()
             return {"status": "ok", "message": f"Started {task_name}"}
         except Exception as e:
-            self.sweeping = was_sweeping
+            self.cal_resume_sweep = False
+            if was_sweeping:
+                self._set_mode("sweep")
             return {"status": "error", "message": str(e)}
 
     def get_calibration_status(self):
@@ -1032,8 +1042,10 @@ class PhaserHeadless:
             # Reload calibration if successful
             if returncode == 0:
                 self._reload_calibration(self.cal_task)
+                self._resume_sweep_after_calibration()
             else:
                 print(f"[CAL:{self.cal_task}] FAILED, exit {returncode}", flush=True)
+                self.cal_resume_sweep = False
 
             self.cal_last_result = dict(result)
             self.cal_process = None
@@ -1064,6 +1076,20 @@ class PhaserHeadless:
         self.cal_log.append("Calibration canceled by user")
         print(f"Calibration {task} canceled")
         return {"status": "ok", "message": f"Canceled {task}"}
+
+    def _resume_sweep_after_calibration(self):
+        """Hand the sweep back if a calibration task interrupted one.
+
+        run_calibration drops to idle so the subprocess can own the hardware,
+        and nothing ever switched back: after Find HB100 the browser still
+        showed Stop while the backend sat idle, so the plots froze until the
+        user pressed Stop and Start. Only after a successful run, which is the
+        one that re-initializes the hardware first.
+        """
+        resume = getattr(self, "cal_resume_sweep", False)
+        self.cal_resume_sweep = False
+        if resume and self.mode == "idle":
+            self._set_mode("sweep")
 
     def _reload_calibration(self, task_name):
         """Re-initialize hardware after calibration script completes.
