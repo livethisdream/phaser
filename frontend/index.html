@@ -369,8 +369,8 @@
                     <div class="control-group combo-group mt-2">
                       <label>Angle (deg)</label>
                       <div class="combo-inputs">
-                        <input type="range" id="interferer-angle" min="-90" max="90" step="1" value="30" class="modern-slider">
-                        <input type="number" id="val-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-input-small">
+                        <input type="range" id="interferer-angle" min="-90" max="90" step="1" value="-20" class="modern-slider">
+                        <input type="number" id="val-interferer-angle" min="-90" max="90" step="1" value="-20" class="modern-input-small">
                       </div>
                     </div>
                     <div class="control-group combo-group mt-2">
@@ -502,6 +502,8 @@
                     <button class="tab-btn active" data-target="tab-rect">Rectangular</button>
                     <button class="tab-btn" data-target="tab-polar">Polar</button>
                     <button class="tab-btn" data-target="tab-fft">FFT</button>
+                    <button class="tab-btn" data-target="tab-adaptive" id="tab-btn-adaptive" hidden
+                            title="The array's response with the MVDR weights, for the held beam">Adaptive</button>
                     <button class="tab-btn" data-target="tab-tracking">Tracking</button>
                     <button class="tab-btn" data-target="tab-logs" id="tab-btn-logs" hidden>Logs</button>
                 </div>
@@ -530,6 +532,9 @@
           </div>
           <div class="chart-wrapper tab-content" id="tab-fft">
              <div id="chart-fft" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-adaptive">
+             <div id="chart-adaptive" style="width:100%; height:100%;"></div>
           </div>
           <div class="chart-wrapper tab-content" id="tab-tracking">
              <div id="chart-tracking" style="width:100%; height:100%;"></div>

@@ -32,7 +32,7 @@ const state = {
     // Computed interferer, added to the received IQ by the backend (real
     // hardware and simulator alike) for the MVDR lab. Interferer pane.
     interferer_enable: false,
-    interferer_angle_deg: 30,
+    interferer_angle_deg: -20,
     interferer_power_dbfs: -10,
     interferer_offset_hz: 100e3,
     interferer_phase_deg: 0,
@@ -67,6 +67,12 @@ const ctfMode = urlFlag('ctf');
 // updateCharts() reads them on every sweep.
 state.ctfSectors = [];
 state.ctfSectorLines = true;
+
+// Adaptive tab: newest held-beam update carrying adaptive_pattern, and the
+// one last drawn. Up here, not by the chart, because setSweepMode() can clear
+// them before that part of the module has run.
+let adaptiveLatest = null;
+let adaptiveDrawn = null;
 
 // When switching Manual -> MVDR, we zero B0/B1 so residual manual weights
 // don't fight the adaptive algorithm. These snapshots restore them on the
@@ -935,6 +941,7 @@ sweepModeSelect?.addEventListener('change', (e) => {
 function setSweepMode(mode, { selectTab = true } = {}) {
     state.mode = mode;
     resetSvtHistory();
+    if (!isHoldMode()) clearAdaptivePattern();
     syncSweepModeControls();
     if (selectTab && state.mode === 'Signal vs Time') {
         document.querySelector('[data-target="tab-tracking"]')?.click();
@@ -986,6 +993,7 @@ function setBeamformerMode(mode) {
     state.bfMode = mode;
     document.getElementById('bf-panel-manual').hidden = (mode !== 'manual');
     document.getElementById('bf-panel-mvdr').hidden = (mode !== 'mvdr');
+    syncAdaptiveTab();
     syncStateToBackend();
 }
 
@@ -1969,6 +1977,12 @@ function applyPlotTheme() {
         'xaxis.gridcolor': palette.gridColor,
         'yaxis.gridcolor': palette.gridColor,
     });
+
+    Plotly.relayout('chart-adaptive', {
+        ...common,
+        'xaxis.gridcolor': palette.gridColor,
+        'yaxis.gridcolor': palette.gridColor,
+    });
 }
 
 Plotly.newPlot('chart-rect', [
@@ -2061,6 +2075,85 @@ Plotly.newPlot('chart-fft', [{
     xaxis: { title: 'Frequency (MHz)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
     yaxis: { title: 'Amplitude (dBFS)', range: [-100, 0], gridcolor: getPlotPalette().gridColor, griddash: 'dash' }
 }), {displayModeBar: false, responsive: true});
+
+/* --- Adaptive tab: the array's response with the MVDR weights -------------
+   The weights are two complex numbers, which say nothing until they are turned
+   back into a pattern; this is where the null on the interferer shows. Only a
+   held beam has one set of weights (a sweep re-solves them at every angle),
+   so the backend attaches adaptive_pattern only then, and the tab is only
+   offered in MVDR mode. */
+Plotly.newPlot('chart-adaptive', [
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Conventional',
+      line: { color: '#94a3b8', width: 2, dash: 'dash' } },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'MVDR',
+      line: { color: '#6366f1', width: 3 } },
+], Object.assign({}, getLayoutBase(), {
+    xaxis: { title: 'Arrival Angle (°)', range: [-90, 90], gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Response (dB, 0 = look direction)', range: [-60, 5], gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    showlegend: true,
+    legend: { x: 1, xanchor: 'right', y: 1 },
+    annotations: [adaptiveEmptyNote()],
+}), {displayModeBar: false, responsive: true});
+
+function adaptiveEmptyNote() {
+    return {
+        xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false,
+        text: 'Hold the beam (Mode: Signal vs Time) in MVDR to see the adaptive pattern.',
+        font: { size: 13, color: getPlotPalette().fontColor },
+    };
+}
+
+function syncAdaptiveTab() {
+    const btn = document.getElementById('tab-btn-adaptive');
+    if (!btn) return;
+    const show = state.bfMode === 'mvdr';
+    btn.hidden = !show;
+    if (!show && btn.classList.contains('active')) {
+        document.querySelector('[data-target="tab-rect"]')?.click();
+    }
+    if (!show) clearAdaptivePattern();
+}
+
+/** Back to the empty note: the last pattern no longer describes the beam. */
+function clearAdaptivePattern() {
+    adaptiveLatest = null;
+    adaptiveDrawn = null;
+    if (!document.getElementById('chart-adaptive')?.data) return;
+    Plotly.update('chart-adaptive', { x: [[], []], y: [[], []] },
+        { shapes: [], annotations: [adaptiveEmptyNote()] });
+}
+
+function drawAdaptivePattern() {
+    if (!adaptiveLatest || adaptiveLatest === adaptiveDrawn) return;
+    adaptiveDrawn = adaptiveLatest;
+    const pat = adaptiveLatest.adaptive_pattern;
+    const look = adaptiveLatest.hold_angle_deg;
+    const marker = (x, color, text, y) => ({
+        shape: {
+            type: 'line', x0: x, x1: x, y0: 0, y1: 1, yref: 'paper',
+            line: { color, width: 1.5, dash: 'dot' },
+        },
+        note: { x, y, xref: 'x', yref: 'paper', text, showarrow: false, font: { color, size: 11 } },
+    });
+    const marks = [];
+    // Below the top centre, where the Interferer badge sits.
+    if (Number.isFinite(look)) marks.push(marker(look, '#10b981', 'Look', 0.9));
+    if (state.interferer_enable) {
+        marks.push(marker(state.interferer_angle_deg, '#f59e0b', 'Interferer', 0.85));
+    }
+    // MVDR can rise well above 0 dB away from the look direction -- a jammer
+    // near the sub-arrays' grating ambiguity (+/-30 deg at boresight) takes
+    // large weights to null -- so the top follows the data.
+    const top = Math.max(5, Math.ceil(Math.max(...pat.adaptive_db) / 5) * 5 + 5);
+    Plotly.update('chart-adaptive', {
+        x: [pat.angles, pat.angles],
+        y: [pat.conventional_db, pat.adaptive_db],
+    }, {
+        shapes: marks.map((m) => m.shape),
+        annotations: marks.map((m) => m.note),
+        'yaxis.range': [-60, top],
+    });
+}
 
 Plotly.newPlot('chart-tracking', [{
     x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#ef4444', width: 3 },
@@ -2836,6 +2929,7 @@ function resizePlotsAfterSidebarTransition() {
       Plotly.Plots.resize(document.getElementById('chart-rect'));
       Plotly.Plots.resize(document.getElementById('chart-polar'));
       Plotly.Plots.resize(document.getElementById('chart-fft'));
+      Plotly.Plots.resize(document.getElementById('chart-adaptive'));
       Plotly.Plots.resize(document.getElementById('chart-tracking'));
   }, 300);
 }
@@ -3293,6 +3387,7 @@ function updateSignalVsTime(data) {
     // In a hold mode the backend attaches the spectrum only a few times a
     // second; keep the last one that had it.
     if (data.xf && data.max_gain) svtLatestFft = data;
+    if (data.adaptive_pattern && state.bfMode === 'mvdr') adaptiveLatest = data;
     if (svtDrawTimer === null) {
         const wait = Math.max(0, SVT_DRAW_MS - (now - svtLastDraw));
         svtDrawTimer = setTimeout(drawSignalVsTime, wait);
@@ -3329,6 +3424,7 @@ function drawSignalVsTime() {
         svtDrawnFft = svtLatestFft;
         updateFftChart(svtLatestFft);
     }
+    drawAdaptivePattern();
 }
 
 /* --- Tracking tab: Export CSV -----------------------------------------------
@@ -3543,7 +3639,7 @@ async function probeBackendReadiness() {
 // Force resize all plots after initial render to prevent "jump" on first tab click
 // This ensures hidden plots have correct dimensions when first shown
 setTimeout(() => {
-    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-tracking'];
+    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-adaptive', 'chart-tracking'];
     chartIds.forEach(id => {
         const el = document.getElementById(id);
         if (el && window.Plotly) {

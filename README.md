@@ -713,6 +713,12 @@ digital beamformer -- on the kit and in the simulator alike.
   target and, after measuring both Manual and MVDR with the same settings,
   how much MVDR suppresses it. Measure with the beam held on the target
   (Static Phase or Signal vs Time).
+- In MVDR mode an **Adaptive** tab plots the held beam's response with the
+  MVDR weights beside the conventional one, so the notch on the interferer is
+  visible. Worth trying in class: the two sub-arrays sit about two
+  wavelengths apart, so a jammer near +/-30 deg (looking at boresight) is
+  nearly indistinguishable from the target to the digital stage. MVDR still
+  nulls it, but only with large weights that lift the rest of the pattern.
 
 ### CTF mode
 

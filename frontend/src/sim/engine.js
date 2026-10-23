@@ -3,7 +3,7 @@
  *
  * Mirrors do_sweep(), _apply_gain_cal(), _apply_phase_cal(),
  * ConvertPhaseToSteerAngle(), _mvdr_weights(), _interferer_channels(),
- * _measure_target_tone() and the get_state/set_state
+ * _adaptive_pattern(), _measure_target_tone() and the get_state/set_state
  * command handlers from phaser_headless.py, driving the stubs in ./array.js and
  * ./sdr.js instead of pyadi-iio.
  *
@@ -282,6 +282,48 @@ export function createEngine(options = {}) {
         return { re, im };
     }
 
+    /**
+     * _adaptive_pattern: the whole array's response (analog stage + digital
+     * weights w) against angle, for the beam held at phDelta, beside equal
+     * weights [0.5, 0.5]. Both / (sum(g)/2), floored at -80 dB.
+     */
+    function adaptivePattern(phDelta, w) {
+        const angles = [];
+        for (let i = 0; i <= 360; i++) angles.push(-90 + i * 0.5);
+        const wavelength = C_M_PER_S / state.SignalFreq;
+
+        // Per element: taper and commanded phase, as interfererWeights.
+        const g = [];
+        const psi = [];
+        let gSum = 0;
+        for (let k = 0; k < NUM_ELEMENTS; k++) {
+            g.push(Math.max(0, Math.min(100, state.gainList[k])) / 100);
+            gSum += g[k];
+            const ramp = pyRound((k * phDelta) / state.phase_step) * state.phase_step;
+            psi.push((ramp + state.phaseList[k]) * DEG);
+        }
+        const norm = Math.max(gSum / 2, 1e-12);
+        const db = (re, im) => 20 * Math.log10(Math.max(Math.hypot(re, im) / norm, 1e-4));
+
+        const adaptive = [];
+        const conventional = [];
+        for (const ang of angles) {
+            const sinT = Math.sin(ang * DEG);
+            let a0re = 0, a0im = 0, a1re = 0, a1im = 0;
+            for (let k = 0; k < NUM_ELEMENTS; k++) {
+                const ph = 2 * Math.PI * ((k * state.d) / wavelength) * sinT - psi[k];
+                if (k < 4) { a0re += g[k] * Math.cos(ph); a0im += g[k] * Math.sin(ph); }
+                else { a1re += g[k] * Math.cos(ph); a1im += g[k] * Math.sin(ph); }
+            }
+            // conj(w0)*a0 + conj(w1)*a1
+            const yRe = w[0].re * a0re + w[0].im * a0im + w[1].re * a1re + w[1].im * a1im;
+            const yIm = w[0].re * a0im - w[0].im * a0re + w[1].re * a1im - w[1].im * a1re;
+            adaptive.push(db(yRe, yIm));
+            conventional.push(db(0.5 * (a0re + a1re), 0.5 * (a0im + a1im)));
+        }
+        return { angles, adaptive_db: adaptive, conventional_db: conventional };
+    }
+
     /** _measure_target_tone: strongest bin of the pre-injection sum, in Hz. */
     function measureTargetTone(raw) {
         const n = raw.re.length;
@@ -353,6 +395,8 @@ export function createEngine(options = {}) {
         let bestRaw = null;
         let bestRawPow = -1;
         let tone = null;
+        // Last MVDR weights; behind the adaptive pattern of a held beam.
+        let lastW = null;
 
         for (let i = 0; i < phaseValues.length; i++) {
             adarSetPhase(array, phaseValues[i], state.phase_step, phaseList);
@@ -394,6 +438,7 @@ export function createEngine(options = {}) {
                     // cheaper than K separate reads and mathematically the same.
                     const k = Math.min(state.mvdrK | 0, n);
                     const w = mvdrWeights(c0, c1, k);
+                    lastW = w;
                     sumRe = new Float64Array(n);
                     sumIm = new Float64Array(n);
                     // y = w^H x
@@ -536,6 +581,11 @@ export function createEngine(options = {}) {
                 ? (targetToneHz ?? 0) + state.interferer_offset_hz
                 : null,
         };
+
+        if (HOLD_MODES.includes(state.sweep_mode) && lastW) {
+            // Every held update, not throttled with the spectrum.
+            result.adaptive_pattern = adaptivePattern(phaseValues[0], lastW);
+        }
 
         const now = Date.now();
         if (!HOLD_MODES.includes(state.sweep_mode) || lastFftMs === null

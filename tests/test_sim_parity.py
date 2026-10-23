@@ -113,6 +113,19 @@ CASES = [
         },
         {"steer_min": -60, "steer_max": 60},
     ),
+    # Held MVDR beam: carries the adaptive pattern, with its notch.
+    (
+        "mvdr_held_adaptive_pattern",
+        {
+            "bfMode": "mvdr",
+            "mode": "Signal vs Time",
+            "hold_angle": 10.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": -35.0,
+            "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
+        },
+        {},
+    ),
     (
         "interferer_coherent_held",
         {
@@ -315,6 +328,20 @@ def _assert_sweeps_match(name, py, js):
         f"{name}: JS beam_phase left (-pi, pi]; it must be the angle of "
         "sum * conj(delta), not a difference of two angles"
     )
+
+    assert ("adaptive_pattern" in py) == ("adaptive_pattern" in js), (
+        f"{name}: only one side attached an adaptive pattern"
+    )
+    if "adaptive_pattern" in py:
+        pa, ja = py["adaptive_pattern"], js["adaptive_pattern"]
+        assert pa["angles"] == pytest.approx(ja["angles"], abs=1e-12)
+        for key in ("adaptive_db", "conventional_db"):
+            pv, jv = np.asarray(pa[key]), np.asarray(ja[key])
+            # Deep nulls are float32-vs-float64 residue, as in the sweep.
+            ok = pv > -40.0
+            assert ok.any() and np.max(np.abs(pv[ok] - jv[ok])) < 1e-3, (
+                f"{name}: {key} diverged"
+            )
 
     assert abs(py["peak_signal"] - js["peak_signal"]) < 1e-3, f"{name}: peak signal diverged"
     assert int(np.argmax(py_gain)) == int(np.argmax(js_gain)), (

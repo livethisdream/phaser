@@ -379,8 +379,14 @@ class PhaserHeadless:
         #                 which is the case MVDR handles badly.
         #   phase_deg  -- start phase. Only meaningful against the simulated
         #                 target; a real HB100's phase is not ours to set.
+        #   angle_deg  -- default clear of +/-30 deg. The two sub-arrays sit
+        #                 ~2 wavelengths apart, so where sin(angle) differs
+        #                 from the look's by ~0.5 (+/-30 deg at boresight) a
+        #                 jammer looks almost like the look direction to the
+        #                 digital stage, and MVDR can only null it with huge
+        #                 weights.
         self.interferer_enable = False
-        self.interferer_angle_deg = 30.0
+        self.interferer_angle_deg = -20.0
         self.interferer_power_dbfs = -10.0
         self.interferer_offset_hz = 100e3
         self.interferer_phase_deg = 0.0
@@ -538,6 +544,46 @@ class PhaserHeadless:
         tone = np.exp(1j * (2 * np.pi * f * t + np.radians(self.interferer_phase_deg)))
         return w[0] * tone, w[1] * tone
 
+    def _adaptive_pattern(self, PhDelta, w):
+        """Response of the whole array -- analog stage plus digital weights --
+        against arrival angle, for the beam held at PhDelta.
+
+        The MVDR weights only exist as two complex numbers, which say nothing
+        to a student until they are turned back into a pattern: this is where
+        the null on the interferer becomes visible. Same element model as
+        _interferer_channels(): commanded taper and ramp, no calibration.
+
+        Returns angles (deg), adaptive_db for weights `w` and conventional_db
+        for equal weights [0.5, 0.5] -- what MVDR's distortionless constraint
+        reduces to with nothing to null. Both are divided by the mean
+        sub-array gain sum(g)/2, so each reads ~0 dB at the look direction,
+        and floored at -80 dB.
+
+        PORTED TO JAVASCRIPT in frontend/src/sim/engine.js (adaptivePattern).
+        """
+        angles = np.arange(-90.0, 90.5, 0.5)
+        wavelength = self.c / self.SignalFreq
+        sin_t = np.sin(np.radians(angles))
+        a = np.zeros((2, len(angles)), dtype=np.complex128)
+        g_sum = 0.0
+        for k in range(8):
+            g = max(0.0, min(100.0, float(self.gainList[k]))) / 100.0
+            g_sum += g
+            ramp = round(k * PhDelta / self.phase_step) * self.phase_step
+            psi = np.radians(ramp + float(self.phaseList[k]))
+            phi = 2 * np.pi * (k * self.d / wavelength) * sin_t
+            a[0 if k < 4 else 1] += g * np.exp(1j * (phi - psi))
+        norm = max(g_sum / 2, 1e-12)
+
+        def db(y):
+            return (20 * np.log10(np.maximum(np.abs(y) / norm, 1e-4))).tolist()
+
+        return {
+            "angles": angles.tolist(),
+            "adaptive_db": db(np.conj(w[0]) * a[0] + np.conj(w[1]) * a[1]),
+            "conventional_db": db(0.5 * (a[0] + a[1])),
+        }
+
     def _measure_target_tone(self, raw):
         """Baseband frequency of the strongest tone in `raw`, in Hz.
 
@@ -611,6 +657,9 @@ class PhaserHeadless:
         # Loudest pre-injection buffer of this sweep; feeds target_tone_hz.
         best_raw = None
         best_raw_pow = -1.0
+        # Last MVDR weights computed; a held beam has one point, so these are
+        # the weights behind the adaptive pattern.
+        last_w = None
 
         for i, PhDelta in enumerate(PhaseValues):
             ADAR_set_Phase(self.array, PhDelta, self.phase_step, phaseList)
@@ -652,6 +701,7 @@ class PhaserHeadless:
                     K = int(min(self.mvdr_K, len(chan1)))
                     X = np.vstack([chan1[:K], chan2[:K]]).astype(np.complex128)
                     w = self._mvdr_weights(X)
+                    last_w = w
                     # Apply weights: y = w^H · x, per-sample
                     sum_chan = np.conj(w[0]) * chan1 + np.conj(w[1]) * chan2
                     # MVDR produces one optimal beam; no natural delta output.
@@ -777,6 +827,11 @@ class PhaserHeadless:
                 if self.interferer_enable else None
             ),
         }
+
+        if self.sweep_mode in HOLD_MODES and last_w is not None:
+            # Every held update, not throttled with the spectrum: it is 361
+            # points, and it should move as the weights do.
+            result["adaptive_pattern"] = self._adaptive_pattern(PhaseValues[0], last_w)
 
         now = time.monotonic()
         last_fft = getattr(self, "_last_fft_t", None)

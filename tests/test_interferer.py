@@ -184,3 +184,50 @@ def test_set_state_clamps_and_get_state_echoes():
     assert data["interferer_power_dbfs"] == 0.0
     assert data["interferer_offset_hz"] == h.SampleRate / 4
     assert data["interferer_phase_deg"] == 270.0
+
+
+def _held_mvdr(angle, **extra):
+    return _sweeps(_headless({
+        "bfMode": "mvdr",
+        "mode": "Static Phase",
+        "hold_angle": 0.0,
+        "interferer_enable": True,
+        "interferer_angle_deg": angle,
+        "interferer_power_dbfs": -6.0,
+        **extra,
+    }), 2)
+
+
+@pytest.mark.parametrize("angle", [-40.0, -20.0, 25.0])
+def test_adaptive_pattern_nulls_the_interferer(angle):
+    """The picture step 3 exists for: a notch where the jammer is, unity
+    where the beam looks, and the conventional pattern beside it showing the
+    jammer was sitting in a sidelobe."""
+    pat = _held_mvdr(angle)["adaptive_pattern"]
+    angles = np.asarray(pat["angles"])
+    adaptive = np.asarray(pat["adaptive_db"])
+    conventional = np.asarray(pat["conventional_db"])
+
+    look = int(np.argmin(np.abs(angles - 0.0)))
+    jam = int(np.argmin(np.abs(angles - angle)))
+    assert abs(adaptive[look]) < 1.5, "MVDR's distortionless response is off at the look angle"
+    assert abs(conventional[look]) < 0.1
+    # The null can sit a degree or two off: noise in the 128-snapshot
+    # covariance estimate. Its depth is set by the jammer's power over the
+    # noise and the diagonal load; ~10-20 dB below the sidelobe it sat in at
+    # this level. (Not at every angle: where the conventional pattern already
+    # has a null, MVDR has nothing to gain and can read worse.)
+    near = np.abs(angles - angle) <= 3.0
+    assert adaptive[near].min() < conventional[jam] - 10.0, (
+        f"no notch at {angle} deg: adaptive {adaptive[near].min():.1f} dB vs "
+        f"conventional {conventional[jam]:.1f} dB"
+    )
+
+
+def test_adaptive_pattern_only_on_a_held_mvdr_beam():
+    """A sweep re-solves the weights at every angle, so there is no one
+    pattern to draw; manual mode has no adaptive weights at all."""
+    sweep = _sweeps(_headless({"bfMode": "mvdr", "interferer_enable": True}), 1)
+    manual = _sweeps(_headless({"mode": "Static Phase", "interferer_enable": True}), 1)
+    assert "adaptive_pattern" not in sweep
+    assert "adaptive_pattern" not in manual
