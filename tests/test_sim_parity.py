@@ -76,22 +76,66 @@ CASES = [
     ("beam_squint", {"BW": 10.0}, {}),
     ("phase_offsets", {"phaseList": [0, 15, 30, 45, 60, 75, 90, 105]}, {}),
     ("digital_weights", {"B0_Gain": 0.7, "B1_Gain": 1.0, "Beam0_Phase": 35.0}, {}),
+    # Synthetic interferer (injected in do_sweep, not in the simulator). These
+    # run two sweeps; see test_sweep_matches_python.
     (
         "mvdr_interferer",
         {
             "bfMode": "mvdr",
-            "sim_interferer_enable": True,
-            "sim_interferer_angle_deg": 30.0,
-            "sim_interferer_power_db": 0.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": 30.0,
+            "interferer_power_dbfs": -12.0,
         },
         {},
     ),
     (
         "interferer_manual",
         {
-            "sim_interferer_enable": True,
-            "sim_interferer_angle_deg": -45.0,
-            "sim_interferer_power_db": 6.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": -45.0,
+            "interferer_power_dbfs": -6.0,
+        },
+        {},
+    ),
+    # Taper, user phase offsets and a coarse phase shifter all shape what the
+    # analog stage does to the interferer.
+    (
+        "interferer_through_analog_stage",
+        {
+            "interferer_enable": True,
+            "interferer_angle_deg": 22.0,
+            "interferer_power_dbfs": -15.0,
+            "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
+            "phaseList": [0, 15, 30, 45, 60, 75, 90, 105],
+            "bits": 4,
+            "ignore_res": False,
+            "steer_res": 1.0,
+        },
+        {"steer_min": -60, "steer_max": 60},
+    ),
+    # Held MVDR beam: carries the adaptive pattern, with its notch.
+    (
+        "mvdr_held_adaptive_pattern",
+        {
+            "bfMode": "mvdr",
+            "mode": "Signal vs Time",
+            "hold_angle": 10.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": -35.0,
+            "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
+        },
+        {},
+    ),
+    (
+        "interferer_coherent_held",
+        {
+            "bfMode": "mvdr",
+            "mode": "Static Phase",
+            "hold_angle": 0.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": -20.0,
+            "interferer_offset_hz": 0.0,
+            "interferer_phase_deg": 75.0,
         },
         {},
     ),
@@ -119,7 +163,7 @@ CASE_IDS = [c[0] for c in CASES]
 
 # --- the two implementations ----------------------------------------------
 
-def _python_sweep(patch, sweep_params, phase_error=None):
+def _python_sweep(patch, sweep_params, phase_error=None, sweeps=1):
     """Run do_sweep() against the Python simulator with noise disabled."""
     if "adi" not in sys.modules:
         # pyadi-iio binds libiio at import; sim mode never touches it.
@@ -142,7 +186,9 @@ def _python_sweep(patch, sweep_params, phase_error=None):
             h.handle_command({"cmd": "set_state", "data": {"state": patch}})
         if sweep_params:
             h.handle_command({"cmd": "set_sweep_params", "data": sweep_params})
-        return h.do_sweep()
+        for _ in range(sweeps):
+            out = h.do_sweep()
+        return out
     finally:
         phaser_sim.SimSDR.NOISE_SIGMA = original
 
@@ -156,11 +202,13 @@ if (cfg.patch && Object.keys(cfg.patch).length) engine.setState(cfg.patch);
 if (cfg.sweepParams && Object.keys(cfg.sweepParams).length) {
     engine.setSweepParams(cfg.sweepParams);
 }
-process.stdout.write(JSON.stringify(engine.doSweep()));
+let out;
+for (let i = 0; i < cfg.sweeps; i++) out = engine.doSweep();
+process.stdout.write(JSON.stringify(out));
 """
 
 
-def _js_sweep(patch, sweep_params, phase_error=None, tmp_path=None):
+def _js_sweep(patch, sweep_params, phase_error=None, tmp_path=None, sweeps=1):
     """Run the same sweep through frontend/src/sim/engine.js via node."""
     sim_dir = (ROOT / "frontend" / "src" / "sim").as_posix()
     driver = tmp_path / "driver.mjs"
@@ -170,6 +218,7 @@ def _js_sweep(patch, sweep_params, phase_error=None, tmp_path=None):
         "patch": patch,
         "sweepParams": sweep_params,
         "phaseError": phase_error,
+        "sweeps": sweeps,
     })
     proc = subprocess.run(
         [NODE, str(driver), cfg],
@@ -197,8 +246,34 @@ def _importable():
 
 @pytest.mark.parametrize("name,patch,sweep_params", CASES, ids=CASE_IDS)
 def test_sweep_matches_python(name, patch, sweep_params, tmp_path, _importable):
-    py = _python_sweep(patch, sweep_params)
-    js = _js_sweep(patch, sweep_params, tmp_path=tmp_path)
+    # With the interferer on, it is placed relative to target_tone_hz, which
+    # the first sweep measures; compare the second, which uses it.
+    sweeps = 2 if patch.get("interferer_enable") else 1
+    py = _python_sweep(patch, sweep_params, sweeps=sweeps)
+    js = _js_sweep(patch, sweep_params, tmp_path=tmp_path, sweeps=sweeps)
+    _assert_sweeps_match(name, py, js)
+
+
+def test_first_sweep_with_interferer_matches_python(tmp_path, _importable):
+    """Before any tone is measured the interferer sits at offset_hz from DC."""
+    patch = {"interferer_enable": True, "interferer_angle_deg": 30.0}
+    py = _python_sweep(patch, {})
+    js = _js_sweep(patch, {}, tmp_path=tmp_path)
+    assert py["target_tone_hz"] is not None and js["target_tone_hz"] is not None
+    assert py["target_tone_hz"] == pytest.approx(js["target_tone_hz"], abs=1e-6)
+    _assert_sweeps_match("first_sweep_interferer", py, js)
+
+
+def test_tone_tracking_matches_python(tmp_path, _importable):
+    """target_tone_hz and interferer_freq_hz, which step 2's FFT markers use."""
+    patch = {"interferer_enable": True, "interferer_offset_hz": -250e3}
+    py = _python_sweep(patch, {}, sweeps=2)
+    js = _js_sweep(patch, {}, tmp_path=tmp_path, sweeps=2)
+    assert py["target_tone_hz"] == pytest.approx(js["target_tone_hz"], abs=1e-6)
+    assert py["interferer_freq_hz"] == pytest.approx(js["interferer_freq_hz"], abs=1e-6)
+
+
+def _assert_sweeps_match(name, py, js):
 
     assert len(js["ArrayGain"]) == len(py["ArrayGain"]), (
         f"{name}: sweep produced {len(js['ArrayGain'])} points, Python produced "
@@ -253,6 +328,20 @@ def test_sweep_matches_python(name, patch, sweep_params, tmp_path, _importable):
         f"{name}: JS beam_phase left (-pi, pi]; it must be the angle of "
         "sum * conj(delta), not a difference of two angles"
     )
+
+    assert ("adaptive_pattern" in py) == ("adaptive_pattern" in js), (
+        f"{name}: only one side attached an adaptive pattern"
+    )
+    if "adaptive_pattern" in py:
+        pa, ja = py["adaptive_pattern"], js["adaptive_pattern"]
+        assert pa["angles"] == pytest.approx(ja["angles"], abs=1e-12)
+        for key in ("adaptive_db", "conventional_db"):
+            pv, jv = np.asarray(pa[key]), np.asarray(ja[key])
+            # Deep nulls are float32-vs-float64 residue, as in the sweep.
+            ok = pv > -40.0
+            assert ok.any() and np.max(np.abs(pv[ok] - jv[ok])) < 1e-3, (
+                f"{name}: {key} diverged"
+            )
 
     assert abs(py["peak_signal"] - js["peak_signal"]) < 1e-3, f"{name}: peak signal diverged"
     assert int(np.argmax(py_gain)) == int(np.argmax(js_gain)), (

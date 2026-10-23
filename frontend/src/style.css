@@ -14,6 +14,7 @@
   --secondary: #0088d1;
   --success: #10b981;
   --error: #ef4444;
+  --warning: #f59e0b;
   
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
@@ -1728,4 +1729,53 @@ input[type=number]::-webkit-outer-spin-button {
     height: min(34dvh, 62vw);
     min-height: 190px;
   }
+}
+
+/* --- Interferer -------------------------------------------------------- */
+/* Author display rules beat the UA's [hidden] { display: none }. */
+.interferer-badge[hidden],
+#interferer-phase-group[hidden],
+.plot-stats .stat-box[hidden] {
+  display: none;
+}
+
+.interferer-toggle {
+  width: 100%;
+}
+.interferer-toggle[aria-pressed="true"] {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #111;
+}
+.interferer-toggle[aria-pressed="true"]:hover {
+  color: #111;
+  border-color: var(--warning);
+  background: var(--warning);
+  filter: brightness(1.08);
+}
+
+.interferer-note {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0.5rem 0 0;
+  line-height: 1.35;
+}
+
+/* Over every plot tab, so a screenshot cannot pass the computed jammer off
+   as a real one. Top centre: the freeze legend owns the top right. */
+.interferer-badge {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  pointer-events: none;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  background: var(--warning);
+  color: #111;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
 }

@@ -130,7 +130,6 @@ def main():
 // --- Scene -----------------------------------------------------------------
 export const TARGET_ANGLE_DEG = {sdr.TARGET_ANGLE_DEG!r};
 export const TARGET_IF_HZ = {sdr.TARGET_IF_HZ!r};
-export const INTERFERER_IF_HZ = {sdr.INTERFERER_IF_HZ!r};
 
 // --- Synthesis -------------------------------------------------------------
 export const AMP_SCALE = {sdr.AMP_SCALE!r};
@@ -163,6 +162,12 @@ export const BW_MHZ = {h.BW!r};
 export const BF_MODE = {h.bf_mode!r};
 export const MVDR_K = {h.mvdr_K!r};
 export const MVDR_DIAG_LOAD = {h.mvdr_diag_load!r};
+
+// --- Synthetic interferer (injected in do_sweep) ---------------------------
+export const INTERFERER_ANGLE_DEG = {h.interferer_angle_deg!r};
+export const INTERFERER_POWER_DBFS = {h.interferer_power_dbfs!r};
+export const INTERFERER_OFFSET_HZ = {h.interferer_offset_hz!r};
+export const INTERFERER_PHASE_DEG = {h.interferer_phase_deg!r};
 export const B0_GAIN = {h.B0_Gain!r};
 export const B1_GAIN = {h.B1_Gain!r};
 export const BEAM0_PHASE_DEG = {h.Beam0_Phase!r};

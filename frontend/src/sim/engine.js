@@ -2,7 +2,8 @@
  * engine.js — port of PhaserHeadless's sweep pipeline and state surface.
  *
  * Mirrors do_sweep(), _apply_gain_cal(), _apply_phase_cal(),
- * ConvertPhaseToSteerAngle(), _mvdr_weights() and the get_state/set_state
+ * ConvertPhaseToSteerAngle(), _mvdr_weights(), _interferer_channels(),
+ * _adaptive_pattern(), _measure_target_tone() and the get_state/set_state
  * command handlers from phaser_headless.py, driving the stubs in ./array.js and
  * ./sdr.js instead of pyadi-iio.
  *
@@ -27,6 +28,10 @@ import {
     ELEMENT_SPACING_M,
     FULL_SCALE,
     IGNORE_RES,
+    INTERFERER_ANGLE_DEG,
+    INTERFERER_OFFSET_HZ,
+    INTERFERER_PHASE_DEG,
+    INTERFERER_POWER_DBFS,
     MVDR_DIAG_LOAD,
     MVDR_K,
     NUM_ELEMENTS,
@@ -117,14 +122,18 @@ export function createEngine(options = {}) {
         bfMode: BF_MODE,
         mvdrK: MVDR_K,
         mvdrDiagLoad: MVDR_DIAG_LOAD,
-        sim_interferer_enable: false,
-        sim_interferer_angle_deg: 30,
-        sim_interferer_power_db: 0,
+        interferer_enable: false,
+        interferer_angle_deg: INTERFERER_ANGLE_DEG,
+        interferer_power_dbfs: INTERFERER_POWER_DBFS,
+        interferer_offset_hz: INTERFERER_OFFSET_HZ,
+        interferer_phase_deg: INTERFERER_PHASE_DEG,
         sweeping: false,
     };
 
     // When doSweep() last attached the spectrum; see HOLD_FFT_INTERVAL_MS.
     let lastFftMs = null;
+    // target_tone_hz: re-measured every sweep from pre-injection IQ.
+    let targetToneHz = null;
 
     const phaseCal = [...DEFAULT_PHASE_CAL];
     const gainCal = [...DEFAULT_GAIN_CAL];
@@ -231,6 +240,110 @@ export function createEngine(options = {}) {
         ];
     }
 
+    // --- synthetic interferer ---------------------------------------------
+
+    /**
+     * _interferer_channels' per-sub-array weights: the interferer's plane wave
+     * through the commanded (uncalibrated, i.e. ideal) analog stage. See the
+     * Python docstring for the model. Returns null when the interferer is off.
+     */
+    function interfererWeights(phDelta) {
+        if (!state.interferer_enable) return null;
+        const amp = (FULL_SCALE * Math.pow(10, state.interferer_power_dbfs / 20)) / 8;
+        const wavelength = C_M_PER_S / state.SignalFreq;
+        const sinTheta = Math.sin(state.interferer_angle_deg * DEG);
+        const w = [0, 0, 0, 0];
+        for (let k = 0; k < NUM_ELEMENTS; k++) {
+            const g = Math.max(0, Math.min(100, state.gainList[k])) / 100;
+            const ramp = pyRound((k * phDelta) / state.phase_step) * state.phase_step;
+            const psi = (ramp + state.phaseList[k]) * DEG;
+            const phi = 2 * Math.PI * ((k * state.d) / wavelength) * sinTheta;
+            const sub = k < 4 ? 0 : 1;
+            w[sub * 2] += amp * g * Math.cos(phi - psi);
+            w[sub * 2 + 1] += amp * g * Math.sin(phi - psi);
+        }
+        return w;
+    }
+
+    /**
+     * The interferer's tone, exp(j*(2*pi*f*t + phase)). Identical for every
+     * read in a sweep, so doSweep() builds it once rather than per read.
+     */
+    function interfererTone(n) {
+        const f = (targetToneHz ?? 0) + state.interferer_offset_hz;
+        const ph = state.interferer_phase_deg * DEG;
+        const re = new Float64Array(n);
+        const im = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            const a = (2 * Math.PI * f * i) / SAMPLE_RATE_HZ + ph;
+            re[i] = Math.cos(a);
+            im[i] = Math.sin(a);
+        }
+        return { re, im };
+    }
+
+    /**
+     * _adaptive_pattern: the whole array's response (analog stage + digital
+     * weights w) against angle, for the beam held at phDelta, beside equal
+     * weights [0.5, 0.5]. Both / (sum(g)/2), floored at -80 dB.
+     */
+    function adaptivePattern(phDelta, w) {
+        const angles = [];
+        for (let i = 0; i <= 360; i++) angles.push(-90 + i * 0.5);
+        const wavelength = C_M_PER_S / state.SignalFreq;
+
+        // Per element: taper and commanded phase, as interfererWeights.
+        const g = [];
+        const psi = [];
+        let gSum = 0;
+        for (let k = 0; k < NUM_ELEMENTS; k++) {
+            g.push(Math.max(0, Math.min(100, state.gainList[k])) / 100);
+            gSum += g[k];
+            const ramp = pyRound((k * phDelta) / state.phase_step) * state.phase_step;
+            psi.push((ramp + state.phaseList[k]) * DEG);
+        }
+        const norm = Math.max(gSum / 2, 1e-12);
+        const db = (re, im) => 20 * Math.log10(Math.max(Math.hypot(re, im) / norm, 1e-4));
+
+        const adaptive = [];
+        const conventional = [];
+        for (const ang of angles) {
+            const sinT = Math.sin(ang * DEG);
+            let a0re = 0, a0im = 0, a1re = 0, a1im = 0;
+            for (let k = 0; k < NUM_ELEMENTS; k++) {
+                const ph = 2 * Math.PI * ((k * state.d) / wavelength) * sinT - psi[k];
+                if (k < 4) { a0re += g[k] * Math.cos(ph); a0im += g[k] * Math.sin(ph); }
+                else { a1re += g[k] * Math.cos(ph); a1im += g[k] * Math.sin(ph); }
+            }
+            // conj(w0)*a0 + conj(w1)*a1
+            const yRe = w[0].re * a0re + w[0].im * a0im + w[1].re * a1re + w[1].im * a1im;
+            const yIm = w[0].re * a0im - w[0].im * a0re + w[1].re * a1im - w[1].im * a1re;
+            adaptive.push(db(yRe, yIm));
+            conventional.push(db(0.5 * (a0re + a1re), 0.5 * (a0im + a1im)));
+        }
+        return { angles, adaptive_db: adaptive, conventional_db: conventional };
+    }
+
+    /** _measure_target_tone: strongest bin of the pre-injection sum, in Hz. */
+    function measureTargetTone(raw) {
+        const n = raw.re.length;
+        const win = blackman(n);
+        const re = new Float64Array(n);
+        const im = new Float64Array(n);
+        for (let j = 0; j < n; j++) {
+            re[j] = raw.re[j] * win[j];
+            im[j] = raw.im[j] * win[j];
+        }
+        fft(re, im);
+        let best = 0;
+        let bestMag = -1;
+        for (let j = 0; j < n; j++) {
+            const m = Math.hypot(re[j], im[j]);
+            if (m > bestMag) { bestMag = m; best = j; }
+        }
+        return fftfreq(n, 1 / SAMPLE_RATE_HZ)[best];
+    }
+
     // --- the sweep ---------------------------------------------------------
 
     /** do_sweep(). Returns the same payload shape the WebSocket broadcasts. */
@@ -278,6 +391,13 @@ export function createEngine(options = {}) {
         const phaseList = applyPhaseCal(state.phaseList);
         const averages = Math.max(1, state.Averages | 0);
 
+        // Loudest pre-injection buffer of this sweep; feeds targetToneHz.
+        let bestRaw = null;
+        let bestRawPow = -1;
+        let tone = null;
+        // Last MVDR weights; behind the adaptive pattern of a held beam.
+        let lastW = null;
+
         for (let i = 0; i < phaseValues.length; i++) {
             adarSetPhase(array, phaseValues[i], state.phase_step, phaseList);
 
@@ -287,8 +407,28 @@ export function createEngine(options = {}) {
             let lastSum = null;
 
             for (let a = 0; a < averages; a++) {
-                const [c0, c1] = sdr.rx();
+                let [c0, c1] = sdr.rx();
                 const n = c0.re.length;
+
+                let rawPow = 0;
+                for (let j = 0; j < n; j++) {
+                    const r = c0.re[j] + c1.re[j];
+                    const m = c0.im[j] + c1.im[j];
+                    rawPow += r * r + m * m;
+                }
+                if (rawPow > bestRawPow) {
+                    bestRawPow = rawPow;
+                    bestRaw = [c0, c1];
+                }
+
+                // Inject before any digital weights, so MVDR sees the
+                // interferer in its covariance like any received signal.
+                const iw = interfererWeights(phaseValues[i]);
+                if (iw) {
+                    if (!tone || tone.re.length !== n) tone = interfererTone(n);
+                    c0 = addTone(c0, tone, iw[0], iw[1]);
+                    c1 = addTone(c1, tone, iw[2], iw[3]);
+                }
 
                 let sumRe, sumIm, deltaRe, deltaIm;
 
@@ -298,6 +438,7 @@ export function createEngine(options = {}) {
                     // cheaper than K separate reads and mathematically the same.
                     const k = Math.min(state.mvdrK | 0, n);
                     const w = mvdrWeights(c0, c1, k);
+                    lastW = w;
                     sumRe = new Float64Array(n);
                     sumIm = new Float64Array(n);
                     // y = w^H x
@@ -336,29 +477,50 @@ export function createEngine(options = {}) {
                     }
                 }
 
-                // Peak in the sum channel.
-                let maxIndex = 0;
-                let maxAbs = -1;
-                for (let j = 0; j < n; j++) {
-                    const m = sumRe[j] * sumRe[j] + sumIm[j] * sumIm[j];
-                    if (m > maxAbs) { maxAbs = m; maxIndex = j; }
+                let sv;
+                let dv;
+                let bpRe;
+                let bpIm;
+                if (state.interferer_enable) {
+                    // Two tones beat, so "the peak sample" is a tie decided
+                    // by rounding. In-band RMS instead, and the phase of the
+                    // sum/delta cross-correlation -- see do_sweep().
+                    let ps = 0, pd = 0;
+                    bpRe = 0;
+                    bpIm = 0;
+                    for (let j = 0; j < n; j++) {
+                        ps += sumRe[j] * sumRe[j] + sumIm[j] * sumIm[j];
+                        pd += deltaRe[j] * deltaRe[j] + deltaIm[j] * deltaIm[j];
+                        // sum * conj(delta)
+                        bpRe += sumRe[j] * deltaRe[j] + sumIm[j] * deltaIm[j];
+                        bpIm += sumIm[j] * deltaRe[j] - sumRe[j] * deltaIm[j];
+                    }
+                    sv = { re: Math.sqrt(ps / n), im: 0 };
+                    dv = { re: Math.sqrt(pd / n), im: 0 };
+                } else {
+                    // Peak in the sum channel.
+                    let maxIndex = 0;
+                    let maxAbs = -1;
+                    for (let j = 0; j < n; j++) {
+                        const m = sumRe[j] * sumRe[j] + sumIm[j] * sumIm[j];
+                        if (m > maxAbs) { maxAbs = m; maxIndex = j; }
+                    }
+                    sv = { re: sumRe[maxIndex], im: sumIm[maxIndex] };
+                    dv = { re: deltaRe[maxIndex], im: deltaIm[maxIndex] };
+                    bpRe = sv.re * dv.re + sv.im * dv.im;
+                    bpIm = sv.im * dv.re - sv.re * dv.im;
                 }
 
-                const sMagSum = Math.max(Math.hypot(sumRe[maxIndex], sumIm[maxIndex]), 1e-15);
+                const sMagSum = Math.max(Math.hypot(sv.re, sv.im), 1e-15);
                 const sDbfsSum = 20 * Math.log10(sMagSum / FULL_SCALE);
 
-                const sMagDelta = Math.max(
-                    Math.hypot(deltaRe[maxIndex], deltaIm[maxIndex]), 1e-15);
+                const sMagDelta = Math.max(Math.hypot(dv.re, dv.im), 1e-15);
                 const sDbfsDelta = 20 * Math.log10(sMagDelta / FULL_SCALE);
 
                 // angle(sum * conj(delta)) -- see the long note in
                 // phaser_headless.py's do_sweep(). Subtracting the two angles
                 // instead spans (-2pi, 2pi) and makes sign() depend on which
                 // side of the branch cut they land, which is decided by noise.
-                const bpRe = sumRe[maxIndex] * deltaRe[maxIndex]
-                           + sumIm[maxIndex] * deltaIm[maxIndex];
-                const bpIm = sumIm[maxIndex] * deltaRe[maxIndex]
-                           - sumRe[maxIndex] * deltaIm[maxIndex];
                 const beamPhase = Math.atan2(bpIm, bpRe);
 
                 totalSum += sDbfsSum;
@@ -391,6 +553,18 @@ export function createEngine(options = {}) {
             }
         }
 
+        if (bestRaw) {
+            const [r0, r1] = bestRaw;
+            const n = r0.re.length;
+            const re = new Float64Array(n);
+            const im = new Float64Array(n);
+            for (let j = 0; j < n; j++) {
+                re[j] = r0.re[j] + r1.re[j];
+                im[j] = r0.im[j] + r1.im[j];
+            }
+            targetToneHz = measureTargetTone({ re, im });
+        }
+
         const result = {
             ArrayGain: gain,
             ArrayDelta: deltaGain,
@@ -402,7 +576,16 @@ export function createEngine(options = {}) {
             peak_angle_deg: peakAngleCentroid(angles, gain),
             sweep_mode: state.sweep_mode,
             hold_angle_deg: state.hold_angle,
+            target_tone_hz: targetToneHz,
+            interferer_freq_hz: state.interferer_enable
+                ? (targetToneHz ?? 0) + state.interferer_offset_hz
+                : null,
         };
+
+        if (HOLD_MODES.includes(state.sweep_mode) && lastW) {
+            // Every held update, not throttled with the spectrum.
+            result.adaptive_pattern = adaptivePattern(phaseValues[0], lastW);
+        }
 
         const now = Date.now();
         if (!HOLD_MODES.includes(state.sweep_mode) || lastFftMs === null
@@ -484,26 +667,21 @@ export function createEngine(options = {}) {
             state.mvdrDiagLoad = Math.max(0, patch.mvdrDiagLoad);
         }
 
-        let interfChanged = false;
-        if ('sim_interferer_enable' in patch) {
-            state.sim_interferer_enable = !!patch.sim_interferer_enable;
-            interfChanged = true;
+        // Synthetic interferer; doSweep() reads it at the next read.
+        if ('interferer_enable' in patch) state.interferer_enable = !!patch.interferer_enable;
+        if (Number.isFinite(patch.interferer_angle_deg)) {
+            state.interferer_angle_deg = Math.max(-90, Math.min(90, patch.interferer_angle_deg));
         }
-        if (Number.isFinite(patch.sim_interferer_angle_deg)) {
-            state.sim_interferer_angle_deg =
-                Math.max(-90, Math.min(90, patch.sim_interferer_angle_deg));
-            interfChanged = true;
+        if (Number.isFinite(patch.interferer_power_dbfs)) {
+            state.interferer_power_dbfs = Math.max(-80, Math.min(0, patch.interferer_power_dbfs));
         }
-        if (Number.isFinite(patch.sim_interferer_power_db)) {
-            state.sim_interferer_power_db = patch.sim_interferer_power_db;
-            interfChanged = true;
+        if (Number.isFinite(patch.interferer_offset_hz)) {
+            const lim = SAMPLE_RATE_HZ / 4;
+            state.interferer_offset_hz = Math.max(-lim, Math.min(lim, patch.interferer_offset_hz));
         }
-        if (interfChanged) {
-            sdr.setInterferer({
-                enable: state.sim_interferer_enable,
-                angleDeg: state.sim_interferer_angle_deg,
-                powerDb: state.sim_interferer_power_db,
-            });
+        if (Number.isFinite(patch.interferer_phase_deg)) {
+            // Python's % takes the sign of the divisor; JS's of the dividend.
+            state.interferer_phase_deg = ((patch.interferer_phase_deg % 360) + 360) % 360;
         }
 
         // Phase LSB and steering resolution are independent knobs. ignore_res
@@ -546,6 +724,18 @@ export function createEngine(options = {}) {
         // Exposed for tests/test_sim_parity.py.
         _internal: { array, sdr, convertPhaseToSteerAngle, applyGainCal, applyPhaseCal },
     };
+}
+
+/** chan + (wRe + j*wIm) * tone, as a new channel; never mutates chan. */
+function addTone(chan, tone, wRe, wIm) {
+    const n = chan.re.length;
+    const re = new Float64Array(n);
+    const im = new Float64Array(n);
+    for (let j = 0; j < n; j++) {
+        re[j] = chan.re[j] + wRe * tone.re[j] - wIm * tone.im[j];
+        im[j] = chan.im[j] + wRe * tone.im[j] + wIm * tone.re[j];
+    }
+    return { re, im };
 }
 
 /** np.arange — half-open, and tolerant of float step accumulation. */

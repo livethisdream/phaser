@@ -13,7 +13,6 @@
 // --- Scene -----------------------------------------------------------------
 export const TARGET_ANGLE_DEG = 0.0;
 export const TARGET_IF_HZ = 1000000.0;
-export const INTERFERER_IF_HZ = 1000000.0;
 
 // --- Synthesis -------------------------------------------------------------
 export const AMP_SCALE = 60.0;
@@ -46,6 +45,12 @@ export const BW_MHZ = 0;
 export const BF_MODE = 'manual';
 export const MVDR_K = 128;
 export const MVDR_DIAG_LOAD = 0.001;
+
+// --- Synthetic interferer (injected in do_sweep) ---------------------------
+export const INTERFERER_ANGLE_DEG = -20.0;
+export const INTERFERER_POWER_DBFS = -10.0;
+export const INTERFERER_OFFSET_HZ = 100000.0;
+export const INTERFERER_PHASE_DEG = 0.0;
 export const B0_GAIN = 1.0;
 export const B1_GAIN = 1.0;
 export const BEAM0_PHASE_DEG = 0.0;
