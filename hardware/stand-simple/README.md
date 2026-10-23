@@ -64,12 +64,13 @@ eventually.
 
 | Item | Qty | Build | Where |
 |---|---|---|---|
-| M5 × 16 countersunk (flat-head) screw | 1 | both | retainer → platter post |
+| M4 × 16 countersunk (flat-head) screw | 1 | both | retainer → platter post |
 | M4 × 12 screw | 3 | mast | mast → platter |
 | 1/4-20 × 3/4" hex bolt | 1 | mast | stud the Phaser threads onto |
 | 1/4-20 hex nut | 1 | mast | pressed into the lock wheel |
 
-The tripod build needs only the M5 screw.
+The tripod build needs only the M4 screw. (Early prints used M5; it was too
+tight in the printed pilot hole.)
 
 The screws cut their own threads in the printed pilot holes, so no inserts
 or tapping are needed. Optional extras: 12 mm stick-on feet, which have
@@ -82,7 +83,7 @@ For the tripod build, do steps 2–3, then follow "Tripod top" above.
 1. Press the 1/4-20 nut into the lock wheel.
 2. Lower the platter onto the base so the post drops through the center hole
    and the skirt drops into the channel.
-3. Flip the stand over. Put the retainer on the post and drive the M5 screw
+3. Flip the stand over. Put the retainer on the post and drive the M4 screw
    in until it's snug, then back it off about a quarter turn so the platter
    spins freely.
 4. Slide the 1/4-20 bolt head into the slot at the back of the mast top, then
