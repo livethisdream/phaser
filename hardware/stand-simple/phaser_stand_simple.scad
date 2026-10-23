@@ -8,7 +8,9 @@
 // Frame: Z up, rotation axis = Z, +Y = boresight (patch face looks toward +Y
 // when the pointer reads 0).
 //
-//   openscad -D 'part="base"' -o stl/base.stl phaser_stand_simple.scad
+//   openscad -D 'part="base"' -o stl/common/base.stl phaser_stand_simple.scad
+// (common/: base, retainer; tripod/: platter_tripod; mast/: platter, mast,
+// lock_wheel. README.md has the full list.)
 // Parts: base, platter, platter_tripod, retainer, mast, lock_wheel,
 // assembly (preview).
 //
