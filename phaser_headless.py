@@ -369,12 +369,33 @@ class PhaserHeadless:
         self.mvdr_K = 128         # snapshots for covariance estimate
         self.mvdr_diag_load = 1e-3  # diagonal loading factor
 
-        # Simulator interferer knobs (sim mode only). Frontend hides these
-        # unless ?instructor=1 is set, so students don't see them; the
-        # instructor can still enable/tune from the URL-guarded panel.
-        self.sim_interferer_enable = False
-        self.sim_interferer_angle_deg = 30.0
-        self.sim_interferer_power_db = 0.0  # relative to target amplitude
+        # Synthetic interferer, injected into the received IQ inside
+        # do_sweep() -- on real hardware and in --sim alike. One HB100 is a
+        # target; a second one as a jammer is not something a lab can
+        # reliably set up, so the jammer is computed instead. See
+        # _interferer_channels() for the model.
+        #   power_dbfs -- level the sum beam reads when pointed straight at
+        #                 it with a uniform full taper. Absolute, because the
+        #                 real target's level is not known in advance.
+        #   offset_hz  -- from the tracked target tone. 0 makes it coherent
+        #                 with the target over the MVDR snapshot window,
+        #                 which is the case MVDR handles badly.
+        #   phase_deg  -- start phase. Only meaningful against the simulated
+        #                 target; a real HB100's phase is not ours to set.
+        #   angle_deg  -- default clear of +/-30 deg. The two sub-arrays sit
+        #                 ~2 wavelengths apart, so where sin(angle) differs
+        #                 from the look's by ~0.5 (+/-30 deg at boresight) a
+        #                 jammer looks almost like the look direction to the
+        #                 digital stage, and MVDR can only null it with huge
+        #                 weights.
+        self.interferer_enable = False
+        self.interferer_angle_deg = -20.0
+        self.interferer_power_dbfs = -10.0
+        self.interferer_offset_hz = 100e3
+        self.interferer_phase_deg = 0.0
+        # Baseband frequency of the real target tone, re-measured every sweep
+        # from the pre-injection IQ. None until the first sweep has run.
+        self.target_tone_hz = None
 
         print("Hardware Initialization Complete.")
 
@@ -483,6 +504,108 @@ class PhaserHeadless:
         w = numer / denom
         return w.ravel()
 
+    def _interferer_channels(self, PhDelta, n):
+        """The synthetic interferer as the two sub-array outputs would see it.
+
+        Returns (chan0, chan1) to add to SDR_getData()'s two channels, or None
+        when the interferer is off.
+
+        The real target has already been through the ADAR phase shifters and
+        the analog sub-array sums before we get its IQ, so an interferer added
+        after the fact has to go through the same analog stage or MVDR would
+        be nulling something no array could receive. Per element k (k=0..7):
+
+            a_k = A * g_k * exp(j*(2*pi*k*d/lambda*sin(theta) - psi_k))
+
+        summed over k=0..3 into chan0 and k=4..7 into chan1, times the tone.
+        g_k is the commanded taper (0..1) and psi_k the commanded steering
+        ramp plus the user's Phase Control offset -- the same ramp
+        ADAR_set_Phase loads, but WITHOUT the phase/gain calibration. The cal
+        exists to cancel each real element's own error, so a calibrated array
+        behaves like an ideal one, and the ideal one is what is modeled here.
+        Working from commanded values also avoids reading eight registers back
+        over IIO at every sweep point.
+
+        A = 2**11 * 10**(power_dbfs/20) / 8, so a uniform full-taper beam
+        steered onto the interferer reads power_dbfs in the sum channel.
+
+        PORTED TO JAVASCRIPT in frontend/src/sim/engine.js (interfererWeights,
+        interfererTone).
+        """
+        if not self.interferer_enable:
+            return None
+        amp = (2**11) * 10.0 ** (self.interferer_power_dbfs / 20.0) / 8.0
+        wavelength = self.c / self.SignalFreq
+        sin_theta = np.sin(np.radians(self.interferer_angle_deg))
+
+        w = [0j, 0j]
+        for k in range(8):
+            g = max(0.0, min(100.0, float(self.gainList[k]))) / 100.0
+            ramp = round(k * PhDelta / self.phase_step) * self.phase_step
+            psi = np.radians(ramp + float(self.phaseList[k]))
+            phi = 2 * np.pi * (k * self.d / wavelength) * sin_theta
+            w[0 if k < 4 else 1] += amp * g * np.exp(1j * (phi - psi))
+
+        f = (self.target_tone_hz or 0.0) + self.interferer_offset_hz
+        t = np.arange(n) / float(self.SampleRate)
+        tone = np.exp(1j * (2 * np.pi * f * t + np.radians(self.interferer_phase_deg)))
+        return w[0] * tone, w[1] * tone
+
+    def _adaptive_pattern(self, PhDelta, w):
+        """Response of the whole array -- analog stage plus digital weights --
+        against arrival angle, for the beam held at PhDelta.
+
+        The MVDR weights only exist as two complex numbers, which say nothing
+        to a student until they are turned back into a pattern: this is where
+        the null on the interferer becomes visible. Same element model as
+        _interferer_channels(): commanded taper and ramp, no calibration.
+
+        Returns angles (deg), adaptive_db for weights `w` and conventional_db
+        for equal weights [0.5, 0.5] -- what MVDR's distortionless constraint
+        reduces to with nothing to null. Both are divided by the mean
+        sub-array gain sum(g)/2, so each reads ~0 dB at the look direction,
+        and floored at -80 dB.
+
+        PORTED TO JAVASCRIPT in frontend/src/sim/engine.js (adaptivePattern).
+        """
+        angles = np.arange(-90.0, 90.5, 0.5)
+        wavelength = self.c / self.SignalFreq
+        sin_t = np.sin(np.radians(angles))
+        a = np.zeros((2, len(angles)), dtype=np.complex128)
+        g_sum = 0.0
+        for k in range(8):
+            g = max(0.0, min(100.0, float(self.gainList[k]))) / 100.0
+            g_sum += g
+            ramp = round(k * PhDelta / self.phase_step) * self.phase_step
+            psi = np.radians(ramp + float(self.phaseList[k]))
+            phi = 2 * np.pi * (k * self.d / wavelength) * sin_t
+            a[0 if k < 4 else 1] += g * np.exp(1j * (phi - psi))
+        norm = max(g_sum / 2, 1e-12)
+
+        def db(y):
+            return (20 * np.log10(np.maximum(np.abs(y) / norm, 1e-4))).tolist()
+
+        return {
+            "angles": angles.tolist(),
+            "adaptive_db": db(np.conj(w[0]) * a[0] + np.conj(w[1]) * a[1]),
+            "conventional_db": db(0.5 * (a[0] + a[1])),
+        }
+
+    def _measure_target_tone(self, raw):
+        """Baseband frequency of the strongest tone in `raw`, in Hz.
+
+        `raw` is the pre-injection sum (chan0 + chan1) from the loudest point
+        of the sweep, so the interferer can never measure itself -- which
+        would walk it off by offset_hz every sweep.
+
+        Bin resolution (fs/N, ~183 Hz) is plenty: at offset 0 a half-bin
+        error turns the interferer through 0.004 cycles over a 128-snapshot
+        MVDR window, which is still coherent for every purpose here.
+        """
+        n = len(raw)
+        sp = np.abs(np.fft.fft(raw * np.blackman(n)))
+        return float(np.fft.fftfreq(n, 1 / float(self.SampleRate))[int(np.argmax(sp))])
+
     def do_sweep(self):
         """Perform one beam sweep and return data including monopulse delta/error
 
@@ -538,6 +661,13 @@ class PhaserHeadless:
         # steering ramp per element.
         phaseList = self._apply_phase_cal(self.phaseList)
 
+        # Loudest pre-injection buffer of this sweep; feeds target_tone_hz.
+        best_raw = None
+        best_raw_pow = -1.0
+        # Last MVDR weights computed; a held beam has one point, so these are
+        # the weights behind the adaptive pattern.
+        last_w = None
+
         for i, PhDelta in enumerate(PhaseValues):
             ADAR_set_Phase(self.array, PhDelta, self.phase_step, phaseList)
 
@@ -550,6 +680,19 @@ class PhaserHeadless:
                 data = SDR_getData(self.sdr)
                 chan1 = np.asarray(data[0])
                 chan2 = np.asarray(data[1])
+
+                raw = chan1 + chan2
+                raw_pow = float(np.vdot(raw, raw).real)
+                if raw_pow > best_raw_pow:
+                    best_raw_pow = raw_pow
+                    best_raw = raw
+
+                # Inject before any digital weights, so MVDR sees the
+                # interferer in its covariance like any received signal.
+                interf = self._interferer_channels(PhDelta, len(chan1))
+                if interf is not None:
+                    chan1 = chan1 + interf[0]
+                    chan2 = chan2 + interf[1]
 
                 # Compute digital beamforming weights (2 complex scalars,
                 # one per digital sub-array). Manual: user-set sliders.
@@ -565,6 +708,7 @@ class PhaserHeadless:
                     K = int(min(self.mvdr_K, len(chan1)))
                     X = np.vstack([chan1[:K], chan2[:K]]).astype(np.complex128)
                     w = self._mvdr_weights(X)
+                    last_w = w
                     # Apply weights: y = w^H · x, per-sample
                     sum_chan = np.conj(w[0]) * chan1 + np.conj(w[1]) * chan2
                     # MVDR produces one optimal beam; no natural delta output.
@@ -579,15 +723,35 @@ class PhaserHeadless:
                     sum_chan = chan1 + chan2
                     delta_chan = chan1 - chan2
 
-                # Find peak in sum channel
-                max_index = np.argmax(np.abs(sum_chan))
+                if self.interferer_enable:
+                    # Two tones beat, so the sum channel's envelope repeats
+                    # and "the peak sample" becomes a tie decided by
+                    # rounding. Use in-band RMS instead: the same level as
+                    # the peak sample for a lone constant-envelope tone, and
+                    # it counts the interferer, which is the point -- the
+                    # jammer has to show in the beam pattern for MVDR to
+                    # visibly remove it. (Reading only the target's FFT bin
+                    # would filter an off-frequency jammer out entirely.)
+                    # The monopulse phase becomes that of the sum/delta
+                    # cross-correlation, which a lone tone reads identically.
+                    n_s = len(sum_chan)
+                    cross = np.vdot(delta_chan, sum_chan) / n_s
+                    s_val = np.sqrt(np.vdot(sum_chan, sum_chan).real / n_s)
+                    d_val = np.sqrt(np.vdot(delta_chan, delta_chan).real / n_s)
+                    beam_phase_src = cross
+                else:
+                    # Find peak in sum channel
+                    max_index = np.argmax(np.abs(sum_chan))
+                    s_val = sum_chan[max_index]
+                    d_val = delta_chan[max_index]
+                    beam_phase_src = s_val * np.conj(d_val)
 
                 # Sum beam magnitude
-                s_mag_sum = max(np.abs(sum_chan[max_index]), 1e-15)
+                s_mag_sum = max(np.abs(s_val), 1e-15)
                 s_dbfs_sum = 20 * np.log10(s_mag_sum / (2**11))
 
                 # Delta beam magnitude
-                s_mag_delta = max(np.abs(delta_chan[max_index]), 1e-15)
+                s_mag_delta = max(np.abs(d_val), 1e-15)
                 s_dbfs_delta = 20 * np.log10(s_mag_delta / (2**11))
 
                 # Phase difference between sum and delta.
@@ -612,7 +776,7 @@ class PhaserHeadless:
                 # product and only the sub-array geometry survives. Exactly so
                 # with no noise; with noise the value still jitters by ~0.03 rad
                 # sample to sample, but continuously, with no 2pi steps.
-                beam_phase = np.angle(sum_chan[max_index] * np.conj(delta_chan[max_index]))
+                beam_phase = np.angle(beam_phase_src)
 
                 total_sum += s_dbfs_sum
                 total_delta += s_dbfs_delta
@@ -644,6 +808,9 @@ class PhaserHeadless:
                 max_signal = avg_sum
                 data_fft = sum_chan
 
+        if best_raw is not None:
+            self.target_tone_hz = self._measure_target_tone(best_raw)
+
         result = {
             "ArrayGain": [float(x) for x in gain],
             "ArrayDelta": [float(x) for x in delta_gain],
@@ -659,7 +826,19 @@ class PhaserHeadless:
             # spot a backend too old to know the mode.
             "sweep_mode": self.sweep_mode,
             "hold_angle_deg": float(self.hold_angle),
+            # Measured from pre-injection IQ, so it is the real target even
+            # with the interferer on. The FFT plot marks both tones from these.
+            "target_tone_hz": self.target_tone_hz,
+            "interferer_freq_hz": (
+                (self.target_tone_hz or 0.0) + self.interferer_offset_hz
+                if self.interferer_enable else None
+            ),
         }
+
+        if self.sweep_mode in HOLD_MODES and last_w is not None:
+            # Every held update, not throttled with the spectrum: it is 361
+            # points, and it should move as the weights do.
+            result["adaptive_pattern"] = self._adaptive_pattern(PhaseValues[0], last_w)
 
         now = time.monotonic()
         last_fft = getattr(self, "_last_fft_t", None)
@@ -846,9 +1025,11 @@ class PhaserHeadless:
                 "mvdrK": self.mvdr_K,
                 "mvdrDiagLoad": self.mvdr_diag_load,
                 "sim_mode": self.sim_mode,
-                "sim_interferer_enable": self.sim_interferer_enable,
-                "sim_interferer_angle_deg": self.sim_interferer_angle_deg,
-                "sim_interferer_power_db": self.sim_interferer_power_db,
+                "interferer_enable": self.interferer_enable,
+                "interferer_angle_deg": self.interferer_angle_deg,
+                "interferer_power_dbfs": self.interferer_power_dbfs,
+                "interferer_offset_hz": self.interferer_offset_hz,
+                "interferer_phase_deg": self.interferer_phase_deg,
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
                 # Lets the UI hide the affordance where it would only fail.
@@ -1205,26 +1386,23 @@ class PhaserHeadless:
                 self.mvdr_K = max(8, int(state["mvdrK"]))
             if "mvdrDiagLoad" in state:
                 self.mvdr_diag_load = max(0.0, float(state["mvdrDiagLoad"]))
-            # Simulator interferer fields: ignored on real hardware; in sim
-            # mode we forward them to SimSDR so the next SDR read reflects
-            # the new configuration.
-            interf_changed = False
-            if "sim_interferer_enable" in state:
-                self.sim_interferer_enable = bool(state["sim_interferer_enable"])
-                interf_changed = True
-            if "sim_interferer_angle_deg" in state:
-                v = float(state["sim_interferer_angle_deg"])
-                self.sim_interferer_angle_deg = max(-90.0, min(90.0, v))
-                interf_changed = True
-            if "sim_interferer_power_db" in state:
-                self.sim_interferer_power_db = float(state["sim_interferer_power_db"])
-                interf_changed = True
-            if interf_changed and self.sim_mode and hasattr(self.sdr, "set_interferer"):
-                self.sdr.set_interferer(
-                    enable=self.sim_interferer_enable,
-                    angle_deg=self.sim_interferer_angle_deg,
-                    power_db=self.sim_interferer_power_db,
-                )
+            # Synthetic interferer. Read by do_sweep() at the next SDR read,
+            # on hardware and in sim alike; nothing to push anywhere.
+            if "interferer_enable" in state:
+                self.interferer_enable = bool(state["interferer_enable"])
+            if "interferer_angle_deg" in state:
+                v = float(state["interferer_angle_deg"])
+                self.interferer_angle_deg = max(-90.0, min(90.0, v))
+            if "interferer_power_dbfs" in state:
+                v = float(state["interferer_power_dbfs"])
+                self.interferer_power_dbfs = max(-80.0, min(0.0, v))
+            if "interferer_offset_hz" in state:
+                # Inside the +/- fs/2 baseband, with room for the target tone.
+                lim = float(self.SampleRate) / 4
+                v = float(state["interferer_offset_hz"])
+                self.interferer_offset_hz = max(-lim, min(lim, v))
+            if "interferer_phase_deg" in state:
+                self.interferer_phase_deg = float(state["interferer_phase_deg"]) % 360.0
             # Phase LSB and steering resolution are independent knobs, so
             # take both whenever the frontend sends them. ignore_res only
             # decides which one drives the sweep -- it must not make the
