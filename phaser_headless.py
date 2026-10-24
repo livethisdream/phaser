@@ -58,6 +58,7 @@ from phaser_functions import load_hb100_cal, rx_freq_source
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
+import phaser_fmcw_radar  # FMCW radar helpers (C0: capability probe only)
 from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additive)
 
 
@@ -306,6 +307,15 @@ class PhaserHeadless:
             self.Rx_gain + self.channel_cal[0],
             self.Rx_gain + self.channel_cal[1],
         )
+
+        # Ask once whether this kit can run FMCW, so the radar UI can say why
+        # not instead of showing an empty plot. Read-only, and never raises.
+        self.fmcw_capability = self._probe_fmcw()
+        if self.fmcw_capability["available"]:
+            print(f"[FMCW] available ({self.fmcw_capability['ramp']}, "
+                  f"{self.fmcw_capability['source']})")
+        if self.fmcw_capability["reason"]:
+            print(f"[FMCW] {self.fmcw_capability['reason']}")
 
         # Default taper (all elements equal). Through _apply_gain_cal, or the
         # array runs on uncalibrated element gains until someone happens to
@@ -946,6 +956,24 @@ class PhaserHeadless:
                 return {"status": "error", "message": str(e)}
         return {"status": "ok", "params": self.cw_params}
 
+    def _probe_fmcw(self):
+        """Run the FMCW capability probe against the contexts already open."""
+        return phaser_fmcw_radar.probe_fmcw(
+            adi,
+            sdr_ctx=getattr(self.sdr, "_ctx", None),
+            rpi_ctx=getattr(self.gpios, "_ctx", None),
+            sim=self.sim_mode,
+        )
+
+    def get_radar_capabilities(self):
+        """Which radar modes this kit can run. CW needs nothing beyond the
+        stock kit; FMCW is whatever the startup probe found."""
+        fmcw = getattr(self, "fmcw_capability", None) or {
+            "available": False, "ramp": None, "source": "hardware",
+            "reason": "not probed yet", "checks": [],
+        }
+        return {"status": "ok", "data": {"fmcw": fmcw}}
+
     def get_cw_radar_state(self):
         """Return current CW radar config and mode."""
         cfg = {**phaser_cw_radar.DEFAULTS, **(self.cw_params or {})}
@@ -1025,6 +1053,7 @@ class PhaserHeadless:
                 "mvdrK": self.mvdr_K,
                 "mvdrDiagLoad": self.mvdr_diag_load,
                 "sim_mode": self.sim_mode,
+                "fmcw": self.get_radar_capabilities()["data"]["fmcw"],
                 "interferer_enable": self.interferer_enable,
                 "interferer_angle_deg": self.interferer_angle_deg,
                 "interferer_power_dbfs": self.interferer_power_dbfs,
@@ -1468,6 +1497,8 @@ class PhaserHeadless:
 
         elif cmd == "get_cw_radar_state":
             return self.get_cw_radar_state()
+        elif cmd == "get_radar_capabilities":
+            return self.get_radar_capabilities()
 
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}
