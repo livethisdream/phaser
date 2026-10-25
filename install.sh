@@ -49,7 +49,7 @@ HTTP_PORT=8080
 BACKEND_FILES=(
   phaser_headless.py phaser_cal_headless.py phaser_find_hb100_headless.py
   phaser_characterize_headless.py phaser_gain_curve_headless.py
-  phaser_cw_radar.py phaser_radar_dsp.py ADAR_pyadi_functions.py SDR_functions.py phaser_functions.py
+  phaser_cw_radar.py phaser_radar_dsp.py phaser_fmcw_radar.py ADAR_pyadi_functions.py SDR_functions.py phaser_functions.py
   phaser_ctf.py
   LTE5_MHz.ftr LTE10_MHz.ftr LTE20_MHz.ftr
 )
