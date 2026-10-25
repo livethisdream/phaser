@@ -390,6 +390,9 @@ export function createEngine(options = {}) {
         const phaseList = applyPhaseCal(state.phaseList);
         const averages = Math.max(1, state.Averages | 0);
 
+        // The interferer sits off the tone measured on the LAST sweep, so
+        // report that one; see do_sweep() for why it matters on a kit.
+        const injectedToneHz = targetToneHz;
         // Loudest pre-injection buffer of this sweep; feeds targetToneHz.
         let bestRaw = null;
         let bestRawPow = -1;
@@ -440,14 +443,17 @@ export function createEngine(options = {}) {
                     lastW = w;
                     sumRe = new Float64Array(n);
                     sumIm = new Float64Array(n);
-                    // y = w^H x
+                    // y = Nr w^H x. The Nr matches Manual's scale: the
+                    // distortionless weights sum to 1 where Manual's [1, 1]
+                    // sum to 2, so unscaled MVDR read 6 dB low.
+                    const nr = w.length;
                     for (let j = 0; j < n; j++) {
-                        sumRe[j] =
+                        sumRe[j] = nr * (
                             w[0].re * c0.re[j] + w[0].im * c0.im[j] +
-                            w[1].re * c1.re[j] + w[1].im * c1.im[j];
-                        sumIm[j] =
+                            w[1].re * c1.re[j] + w[1].im * c1.im[j]);
+                        sumIm[j] = nr * (
                             w[0].re * c0.im[j] - w[0].im * c0.re[j] +
-                            w[1].re * c1.im[j] - w[1].im * c1.re[j];
+                            w[1].re * c1.im[j] - w[1].im * c1.re[j]);
                     }
                     // MVDR produces one optimal beam; no natural delta output.
                     deltaRe = new Float64Array(n);
@@ -577,7 +583,7 @@ export function createEngine(options = {}) {
             hold_angle_deg: state.hold_angle,
             target_tone_hz: targetToneHz,
             interferer_freq_hz: state.interferer_enable
-                ? (targetToneHz ?? 0) + state.interferer_offset_hz
+                ? (injectedToneHz ?? 0) + state.interferer_offset_hz
                 : null,
         };
 

@@ -1454,6 +1454,9 @@ function toneLevelDbfs(data, hz) {
     return best;
 }
 
+const SUPPRESSION_TITLE = 'How much lower Interferer vs Target reads under MVDR than under Manual, '
+    + 'same Steer Angle and settings.';
+
 function updateInterfererReadout(data) {
     const ratioEl = document.getElementById('interferer-ratio');
     const supEl = document.getElementById('interferer-suppression');
@@ -1481,7 +1484,7 @@ function updateInterfererReadout(data) {
     } else if (!held) {
         // A sweep's spectrum comes from its loudest angle, which may be the
         // interferer's own direction -- not a fair comparison.
-        msg = 'Hold the beam on the target (Static Phase or Signal vs Time) to measure suppression.';
+        msg = 'Set Mode to Signal vs Time to hold the beam on the target and measure suppression.';
     }
 
     if (msg) {
@@ -1497,11 +1500,15 @@ function updateInterfererReadout(data) {
     } else {
         supEl.textContent = '-- dB';
         if (!msg) {
-            msg = `Now switch to ${state.bfMode === 'mvdr' ? 'Manual' : 'MVDR'} with the same settings `
-                + 'to compare.';
+            msg = `Now switch to ${state.bfMode === 'mvdr' ? 'Manual' : 'MVDR'} at this Steer Angle `
+                + 'to compare. Changing the angle, taper, phases or interferer starts the comparison over.';
         }
     }
     if (hint) hint.textContent = msg;
+    // The tile sits under the plot, far from the pane's hint; say why it is
+    // empty where the student is looking.
+    const supBox = document.getElementById('interferer-suppression-box');
+    if (supBox) supBox.title = msg || SUPPRESSION_TITLE;
 }
 
 /* FFT tone markers. The FFT x axis is negated (see updateFftChart), so the
