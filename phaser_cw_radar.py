@@ -1,18 +1,20 @@
-"""
-CW (continuous-wave) Doppler radar helpers for the Phaser headless backend.
+"""CW (continuous-wave) Doppler radar helpers for the Phaser headless backend.
 
 Mode is enter/exit only — the caller (phaser_headless.py) drives the per-frame
-capture in its main loop. All functions here are pure / SDR-poking helpers; this
+capture in its main loop. All functions here are SDR/array-poking helpers; this
 module never touches the WebSocket, ZMQ, or the headless object's state
-directly.
+directly. The signal processing and the configuration tables live in
+phaser_radar_dsp.py, which imports no hardware and so stays testable; the names
+are re-exported here for callers that already import them from this module.
 
 Hardware contract:
   - The SDR object is an `adi.ad9361` already initialized by SDR_init().
   - The ADAR1000 array is already configured for Rx beamforming.
   - On `enter_cw_mode`, the SDR is reconfigured for the requested CW capture
-    parameters (sample rate, FFT/buffer size, IF tone) and a cyclic Tx tone is
-    started. The previous SDR config is captured into `saved_state` so
-    `exit_cw_mode` can restore it.
+    parameters (sample rate, FFT/buffer size, IF tone), the Phaser's ADF4159 LO
+    is moved to the CW mixing frequency, the requested taper is latched into
+    the array, and a cyclic Tx tone is started. The previous configuration is
+    captured into `saved_state` so `exit_cw_mode` can restore it.
 
 Defaults follow radar/CW_RADAR_Waterfall.py:
   sample_rate = 600 kHz, fft_size = 64K, signal_freq = 100 kHz IF tone,
@@ -21,50 +23,72 @@ Defaults follow radar/CW_RADAR_Waterfall.py:
 """
 
 import time
-import numpy as np
 
-from SDR_functions import SDR_getData
+from ADAR_pyadi_functions import ADAR_set_Taper
+from SDR_functions import SDR_getData, SDR_LO_init
 
+# Re-exported so `from phaser_cw_radar import process_cw_frame, DEFAULTS` and
+# the other historical import sites keep resolving.
+from phaser_radar_dsp import (  # noqa: F401
+    C,
+    DEFAULTS,
+    TAPER_PRESETS,
+    build_iq_tone,
+    cw_lo_freq,
+    process_cw_frame,
+    resolve_taper,
+    window,
+    _window,
+)
 
-# Defaults lifted from radar/CW_RADAR_Waterfall.py
-DEFAULTS = {
-    "sample_rate": 600_000,
-    "fft_size": 1024 * 64,
-    "signal_freq": 100_000,
-    "output_freq": 12.2e9,
-    "center_freq": 2.2e9,
-    "rx_gain": 30,
-    "tx_gain": 0,
-    "fft_window": "blackman",
-    "taper": "blackman",  # Blackman ADAR1000 taper
-}
-
-TAPER_PRESETS = {
-    "rect":     [127, 127, 127, 127, 127, 127, 127, 127],
-    "hann":     [12,  43,  77,  100, 100, 77,  43,  12],
-    # Match radar/CW_RADAR_Waterfall.py exactly:
-    "blackman": [8,   34,  84,  127, 127, 84,  34,  8],
-}
+# Historical private name for the tone builder.
+_build_iq_tone = build_iq_tone
 
 
-def _build_iq_tone(fs, n, signal_freq, scale=2**14):
-    """Build a cyclic IQ tone at the requested IF frequency, snapped to bin."""
-    fc_bin = round(signal_freq / fs * n)
-    fc_exact = fc_bin * fs / n
-    ts = 1.0 / fs
-    t = np.arange(0, n * ts, ts)
-    i = np.cos(2 * np.pi * t * fc_exact) * scale
-    q = np.sin(2 * np.pi * t * fc_exact) * scale
-    return i + 1j * q
+def apply_taper(array, taper):
+    """Latch a taper into the ADAR1000 array. Returns the gains actually sent.
+
+    Returns None when there is no array to write to (sim mode passes one, but
+    a caller that has not got that far can pass None).
+    """
+    gains = resolve_taper(taper)
+    if array is None:
+        return None
+    try:
+        ADAR_set_Taper(array, gains)
+    except Exception as e:
+        print(f"[CW] Warning: could not apply taper {gains}: {e}")
+        return None
+    return gains
 
 
-def enter_cw_mode(sdr, params, saved_state=None):
-    """Reconfigure the SDR for CW radar capture.
+def _tx_channel_count(sdr):
+    """How many Tx channels this SDR actually has enabled.
+
+    SDR_init falls back to a single-channel map when the device mapping does
+    not support two, so the Tx payload has to match or pyadi raises.
+    """
+    try:
+        enabled = sdr.tx_enabled_channels
+    except Exception:
+        return 2
+    try:
+        return max(1, len(enabled))
+    except TypeError:
+        return 1
+
+
+def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None):
+    """Reconfigure the SDR, LO and array for CW radar capture.
 
     Args:
         sdr: pyadi adi.ad9361 instance
         params: dict (any DEFAULTS keys); missing keys filled from DEFAULTS
-        saved_state: dict to populate with prior SDR settings for restoration
+        saved_state: dict to populate with prior settings for restoration
+        array: ADAR1000 array, so the CW taper can be latched. Optional.
+        rpi_ip: Phaser's IP, so the ADF4159 can be moved to the CW mixing
+            frequency. Optional — pass None (as sim mode does) to leave the LO
+            alone.
 
     Returns:
         Effective params dict (with defaults applied) — caller stores this.
@@ -94,6 +118,32 @@ def enter_cw_mode(sdr, params, saved_state=None):
         except Exception as e:
             print(f"[CW] Warning: could not snapshot SDR state: {e}")
 
+    # Move the Phaser's ADF4159 to the CW mixing frequency.
+    #
+    # This is not optional housekeeping. Without it the LO stays wherever the
+    # beamforming path left it -- at (SignalFreq + Rx_freq), the frequency that
+    # receives the HB100 -- so the CW tone was transmitted nowhere near
+    # `output_freq`, while process_cw_frame went on dividing the Doppler shift
+    # by `output_freq` to get velocity. The mode ran, drew a spectrum, and
+    # reported velocities against a carrier the hardware was not using.
+    if rpi_ip:
+        lo = cw_lo_freq(cfg)
+        if saved_state is not None:
+            saved_state["restore_lo"] = True
+        try:
+            SDR_LO_init(rpi_ip, lo)
+            print(f"[CW] LO set to {lo/1e9:.6f} GHz "
+                  f"(output {float(cfg['output_freq'])/1e9:.3f} GHz)")
+        except Exception as e:
+            print(f"[CW] Warning: could not set LO: {e}")
+
+    # Latch the CW taper into the array. The taper was previously carried in
+    # DEFAULTS and pushed by the frontend, but nothing ever wrote it to the
+    # ADAR1000 -- the array kept whatever the beamforming sweep last latched.
+    gains = apply_taper(array, cfg.get("taper"))
+    if gains is not None:
+        print(f"[CW] Taper applied: {gains}")
+
     # Configure SDR for CW
     sdr.sample_rate = fs
     sdr.rx_rf_bandwidth = fs
@@ -121,7 +171,7 @@ def enter_cw_mode(sdr, params, saved_state=None):
             pass
 
     # Build cyclic IQ tone
-    iq = _build_iq_tone(fs, n, sig_freq)
+    iq = build_iq_tone(fs, n, sig_freq)
     try:
         sdr._ctx.set_timeout(0)
     except Exception:
@@ -133,18 +183,41 @@ def enter_cw_mode(sdr, params, saved_state=None):
     except Exception:
         pass
 
-    sdr.tx([iq * 0.5, iq])  # ch0 reduced (it's gain-disabled anyway), ch1 full
+    # Match the payload to the enabled Tx map: a single-channel fallback
+    # rejects a two-element list.
+    if _tx_channel_count(sdr) > 1:
+        sdr.tx([iq * 0.5, iq])  # ch0 reduced (it's gain-disabled anyway), ch1 full
+    else:
+        sdr.tx(iq)
 
     time.sleep(0.2)
     return cfg
 
 
-def exit_cw_mode(sdr, saved_state):
-    """Restore SDR to its pre-CW configuration. Tolerant of a missing snapshot."""
+def exit_cw_mode(sdr, saved_state, array=None, rpi_ip=None, restore_taper=None,
+                 restore_lo_freq=None):
+    """Restore the SDR, LO and array to their pre-CW configuration.
+
+    Tolerant of a missing snapshot: a half-entered mode still has to be
+    leavable, or a failed enter strands the hardware in CW config.
+    """
     try:
         sdr.tx_destroy_buffer()
     except Exception:
         pass
+
+    # Put the LO back where the beamforming path expects it, otherwise the
+    # next sweep runs against the CW mixing frequency and sees nothing.
+    if rpi_ip and restore_lo_freq and (saved_state or {}).get("restore_lo"):
+        try:
+            SDR_LO_init(rpi_ip, restore_lo_freq)
+            print(f"[CW] LO restored to {float(restore_lo_freq)/1e9:.6f} GHz")
+        except Exception as e:
+            print(f"[CW] Warning: could not restore LO: {e}")
+
+    # Put the beamforming taper back, for the same reason.
+    if array is not None and restore_taper is not None:
+        apply_taper(array, restore_taper)
 
     if not saved_state:
         return
@@ -178,89 +251,7 @@ def exit_cw_mode(sdr, saved_state):
         print(f"[CW] Warning: SDR restore failed: {e}")
 
 
-def _window(name, n):
-    name = (name or "").lower()
-    if name in ("hann", "hanning"):
-        return np.hanning(n)
-    if name == "hamming":
-        return np.hamming(n)
-    if name == "rect" or name == "none":
-        return np.ones(n)
-    return np.blackman(n)  # default
-
-
 def capture_cw_frame(sdr):
     """Pull one Rx buffer; return summed IQ (channel 0 + channel 1)."""
     data = SDR_getData(sdr)
     return data[0] + data[1]
-
-
-def process_cw_frame(iq, fs, signal_freq, output_freq, fft_window="blackman",
-                     downsample_iq=512):
-    """Compute Doppler spectrum, velocity axis, and stats for one CW frame.
-
-    The CW radar transmits at signal_freq above DC (the IF tone). A moving
-    target reflects with a Doppler shift around that tone; we shift the spectrum
-    so the IF appears at 0 Hz, then convert that residual frequency to velocity:
-
-        v = c * f_doppler / (2 * f_carrier)
-
-    where f_carrier is the actual transmitted carrier (== output_freq for the
-    CN0566 CW path).
-    """
-    n = int(len(iq))
-    if n == 0:
-        raise ValueError("Empty IQ buffer")
-
-    win = _window(fft_window, n)
-    sp = np.abs(np.fft.fft(iq * win))
-    sp = np.fft.fftshift(sp)
-    mag = np.maximum(sp / np.sum(win), 1e-15)
-    spectrum_db = 20 * np.log10(mag / (2 ** 11))
-
-    freq = np.fft.fftshift(np.fft.fftfreq(n, 1.0 / fs))
-
-    # Doppler frequency = freq - signal_freq (IF tone moves to 0 after shift)
-    doppler_hz = freq - signal_freq
-
-    c = 299_792_458.0
-    f_carrier = float(output_freq) if output_freq else 1.0
-    velocity = c * doppler_hz / (2.0 * f_carrier)
-
-    # Crop to a reasonable Doppler window so the frontend isn't sent 64k bins.
-    # Default: ±20 m/s (covers normal indoor speeds well). Frontend can request
-    # a wider window in v2.
-    vel_max = 30.0  # m/s (slightly larger than UI default to give headroom)
-    mask = np.abs(velocity) <= vel_max
-    if not np.any(mask):  # safety: keep at least the central 1024 bins
-        center = n // 2
-        half = min(512, center)
-        mask = np.zeros(n, dtype=bool)
-        mask[center - half:center + half] = True
-
-    velocity_out = velocity[mask]
-    spectrum_out = spectrum_db[mask]
-
-    peak_idx = int(np.argmax(spectrum_out))
-    peak_velocity = float(velocity_out[peak_idx])
-    peak_magnitude_db = float(spectrum_out[peak_idx])
-
-    # Optional downsampled |IQ| for the time-domain tab — keep it small.
-    iq_mag = None
-    if downsample_iq and n > downsample_iq:
-        step = max(1, n // downsample_iq)
-        iq_mag = np.abs(iq[::step])[:downsample_iq]
-
-    out = {
-        "velocity_axis": velocity_out.astype(np.float32).tolist(),
-        "spectrum_db": spectrum_out.astype(np.float32).tolist(),
-        "peak_velocity": peak_velocity,
-        "peak_magnitude_db": peak_magnitude_db,
-        "n_samples": n,
-        "sample_rate": float(fs),
-        "signal_freq": float(signal_freq),
-        "output_freq": float(output_freq),
-    }
-    if iq_mag is not None:
-        out["iq_mag"] = iq_mag.astype(np.float32).tolist()
-    return out

@@ -1,10 +1,18 @@
-"""Synthetic test for phaser_cw_radar.process_cw_frame() — no hardware needed.
+"""Synthetic tests for the CW radar DSP — no hardware needed.
 
 Builds a CW IQ signal at 100 kHz IF plus a Doppler-shifted echo, runs the same
 processing the live backend will run, and verifies:
   - velocity axis is symmetric and has expected resolution
   - peak velocity matches the simulated Doppler shift
   - no NaN/Inf, output JSON-serializable
+  - the vel_max crop is honoured
+  - taper requests resolve to sane ADAR1000 gain codes
+  - the CW mixing LO is the sum the RF chain actually needs
+
+Imports phaser_radar_dsp, not phaser_cw_radar. That is the point of the split:
+the old import pulled in SDR_functions -> adi, so on any machine without
+pyadi-iio this whole file skipped itself and the suite went green having
+asserted nothing about the radar at all.
 """
 
 import json
@@ -25,16 +33,14 @@ try:
 except ImportError:
     pytest = None
 
-try:
-    from phaser_cw_radar import process_cw_frame, DEFAULTS
-except Exception as exc:  # noqa: BLE001 - libiio absent or ABI-mismatched
-    # pyadi-iio binds libiio at import; where that is missing or a different
-    # ABI (a container without the matching .so, say) the failure is an
-    # AttributeError rather than ImportError, so importorskip does not help.
-    # Skip the module rather than failing collection for the whole suite.
-    if pytest is None:
-        raise
-    pytest.skip(f"phaser_cw_radar unavailable: {exc}", allow_module_level=True)
+from phaser_radar_dsp import (
+    DEFAULTS,
+    TAPER_PRESETS,
+    build_iq_tone,
+    cw_lo_freq,
+    process_cw_frame,
+    resolve_taper,
+)
 
 
 def synthesize(fs, n, signal_freq, doppler_velocity_mps, output_freq, snr_db=20):
@@ -101,8 +107,101 @@ if pytest is not None:
         run_case(velocity, f"v={velocity:+.1f}")
 
 
+if pytest is not None:
+    @pytest.mark.parametrize("vel_max", [5.0, 20.0, 60.0])
+    def test_vel_max_controls_the_returned_window(vel_max):
+        """The UI's Velocity Max slider has to reach the crop, not just the axis.
+
+        process_cw_frame used to crop at a hardcoded 30 m/s while the frontend
+        offered a slider up to 200, so asking for a wider window silently got
+        you the same bins and a wider, emptier plot.
+        """
+        np.random.seed(0)
+        fs, n = DEFAULTS["sample_rate"], DEFAULTS["fft_size"]
+        iq = synthesize(fs, n, DEFAULTS["signal_freq"], 2.0, DEFAULTS["output_freq"])
+        result = process_cw_frame(
+            iq, fs=fs, signal_freq=DEFAULTS["signal_freq"],
+            output_freq=DEFAULTS["output_freq"], vel_max=vel_max,
+        )
+        v = np.array(result["velocity_axis"])
+        assert np.all(np.abs(v) <= vel_max + 1e-6), "returned bins outside the requested window"
+        # And the window is actually filled, not merely bounded: the widest
+        # available bin has to be close to the limit we asked for.
+        df = fs / n
+        dv = 299_792_458.0 * df / (2 * DEFAULTS["output_freq"])
+        assert np.max(np.abs(v)) > vel_max - 2 * dv, "window narrower than requested"
+
+    def test_wider_window_returns_more_bins():
+        np.random.seed(0)
+        fs, n = DEFAULTS["sample_rate"], DEFAULTS["fft_size"]
+        iq = synthesize(fs, n, DEFAULTS["signal_freq"], 2.0, DEFAULTS["output_freq"])
+        kw = dict(fs=fs, signal_freq=DEFAULTS["signal_freq"],
+                  output_freq=DEFAULTS["output_freq"])
+        narrow = process_cw_frame(iq, vel_max=10.0, **kw)
+        wide = process_cw_frame(iq, vel_max=50.0, **kw)
+        assert len(wide["velocity_axis"]) > len(narrow["velocity_axis"])
+
+    @pytest.mark.parametrize("name", sorted(TAPER_PRESETS))
+    def test_taper_presets_resolve_to_eight_valid_gain_codes(name):
+        gains = resolve_taper(name)
+        assert gains == TAPER_PRESETS[name]
+        assert len(gains) == 8
+        assert all(0 <= g <= 127 for g in gains), "outside the ADAR1000 7-bit field"
+
+    def test_taper_accepts_an_explicit_list_and_clamps_it():
+        assert resolve_taper([0, 50, 127, 200, -5, 10, 20, 30]) == [
+            0, 50, 127, 127, 0, 10, 20, 30
+        ]
+
+    @pytest.mark.parametrize("bad", [None, "nonsense", [], "", ["a", "b"]])
+    def test_taper_falls_back_to_blackman_rather_than_raising(bad):
+        """A bad taper should cost a sidelobe, not the whole radar mode."""
+        assert resolve_taper(bad) == TAPER_PRESETS["blackman"]
+
+    def test_taper_pads_a_short_list_to_eight():
+        assert resolve_taper([127, 127]) == [127, 127, 0, 0, 0, 0, 0, 0]
+
+    def test_cw_lo_is_the_sum_the_rf_chain_needs():
+        """LO = output_freq + signal_freq + center_freq.
+
+        The Pluto transmits signal_freq of baseband on center_freq; the mixer
+        has to put that on output_freq and bring the echo back to center_freq.
+        Only the sum satisfies both, and enter_cw_mode never programmed it at
+        all before -- the LO stayed on the HB100 receive frequency while the
+        velocity math divided by output_freq.
+        """
+        cfg = dict(DEFAULTS)
+        lo = cw_lo_freq(cfg)
+        assert lo == cfg["output_freq"] + cfg["signal_freq"] + cfg["center_freq"]
+        # Downconverting the echo with that LO lands it on the Pluto's Rx LO
+        # plus the IF tone, which is what process_cw_frame expects to find.
+        assert lo - cfg["output_freq"] == cfg["center_freq"] + cfg["signal_freq"]
+
+    def test_tone_is_cyclic_and_the_requested_length():
+        """A tone that is not a whole number of cycles per buffer smears when
+        the hardware wraps the cyclic buffer."""
+        fs, n, sig = 600_000, 8192, 100_000
+        iq = build_iq_tone(fs, n, sig)
+        assert len(iq) == n
+        cycles = round(sig / fs * n)
+        assert abs(iq[0] - iq[-1] * np.exp(1j * 2 * np.pi * cycles / n)) < 1e-6 * abs(iq[0]) + 1e-6
+
+    def test_recovered_velocity_tracks_the_carrier():
+        """Velocity is c*f_d/(2*f_carrier), so the same Doppler line read
+        against a different carrier must report a different speed. This is why
+        the LO has to actually be where output_freq says it is."""
+        np.random.seed(0)
+        fs, n, sig = DEFAULTS["sample_rate"], DEFAULTS["fft_size"], DEFAULTS["signal_freq"]
+        out_f = DEFAULTS["output_freq"]
+        iq = synthesize(fs, n, sig, 4.0, out_f)
+        right = process_cw_frame(iq, fs=fs, signal_freq=sig, output_freq=out_f)
+        wrong = process_cw_frame(iq, fs=fs, signal_freq=sig, output_freq=out_f / 2)
+        assert abs(right["peak_velocity"] - 4.0) < 0.2
+        assert abs(wrong["peak_velocity"] - 8.0) < 0.4
+
+
 def main():
-    print("phaser_cw_radar.process_cw_frame() synthetic test")
+    print("phaser_radar_dsp.process_cw_frame() synthetic test")
     print("-" * 60)
     print(f"  fs={DEFAULTS['sample_rate']} Hz, fft={DEFAULTS['fft_size']}, "
           f"sig_freq={DEFAULTS['signal_freq']} Hz, output_freq={DEFAULTS['output_freq']/1e9} GHz")
