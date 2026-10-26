@@ -103,20 +103,7 @@ def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None):
     tx_gain = int(cfg["tx_gain"])
 
     if saved_state is not None:
-        try:
-            saved_state["sample_rate"] = int(sdr.sample_rate)
-            saved_state["rx_rf_bandwidth"] = int(sdr.rx_rf_bandwidth)
-            saved_state["rx_buffer_size"] = int(sdr.rx_buffer_size)
-            saved_state["rx_lo"] = int(sdr.rx_lo)
-            saved_state["tx_lo"] = int(sdr.tx_lo)
-            saved_state["rx_hardwaregain_chan0"] = int(sdr.rx_hardwaregain_chan0)
-            saved_state["tx_hardwaregain_chan0"] = int(sdr.tx_hardwaregain_chan0)
-            if hasattr(sdr, "rx_hardwaregain_chan1"):
-                saved_state["rx_hardwaregain_chan1"] = int(sdr.rx_hardwaregain_chan1)
-            if hasattr(sdr, "tx_hardwaregain_chan1"):
-                saved_state["tx_hardwaregain_chan1"] = int(sdr.tx_hardwaregain_chan1)
-        except Exception as e:
-            print(f"[CW] Warning: could not snapshot SDR state: {e}")
+        snapshot_sdr(sdr, saved_state, tag="CW")
 
     # Move the Phaser's ADF4159 to the CW mixing frequency.
     #
@@ -222,33 +209,66 @@ def exit_cw_mode(sdr, saved_state, array=None, rpi_ip=None, restore_taper=None,
     if not saved_state:
         return
 
+    restore_sdr(sdr, saved_state, tag="CW")
+
+
+# The integer SDR settings a radar mode changes and has to put back. Shared by
+# CW and FMCW so the two modes cannot drift apart on what "restored" means.
+_SDR_SNAPSHOT_KEYS = (
+    "sample_rate",
+    "rx_rf_bandwidth",
+    "rx_buffer_size",
+    "rx_lo",
+    "tx_lo",
+    "rx_hardwaregain_chan0",
+    "tx_hardwaregain_chan0",
+)
+_SDR_SNAPSHOT_OPTIONAL = ("rx_hardwaregain_chan1", "tx_hardwaregain_chan1")
+
+
+def snapshot_sdr(sdr, saved_state, tag="radar"):
+    """Record the SDR settings a radar mode is about to change.
+
+    All-or-nothing for the required keys, as it always was in enter_cw_mode:
+    a partial snapshot is restored key by key, so what did get read still
+    goes back. tx_cyclic_buffer is recorded separately because FMCW turns it
+    on and the beamforming path never has to know.
+    """
     try:
-        if "sample_rate" in saved_state:
-            sdr.sample_rate = int(saved_state["sample_rate"])
-        if "rx_rf_bandwidth" in saved_state:
-            sdr.rx_rf_bandwidth = int(saved_state["rx_rf_bandwidth"])
-        if "rx_buffer_size" in saved_state:
-            sdr.rx_buffer_size = int(saved_state["rx_buffer_size"])
-        if "rx_lo" in saved_state:
-            sdr.rx_lo = int(saved_state["rx_lo"])
-        if "tx_lo" in saved_state:
-            sdr.tx_lo = int(saved_state["tx_lo"])
-        if "rx_hardwaregain_chan0" in saved_state:
-            sdr.rx_hardwaregain_chan0 = int(saved_state["rx_hardwaregain_chan0"])
-        if "rx_hardwaregain_chan1" in saved_state and hasattr(sdr, "rx_hardwaregain_chan1"):
-            try:
-                sdr.rx_hardwaregain_chan1 = int(saved_state["rx_hardwaregain_chan1"])
-            except Exception:
-                pass
-        if "tx_hardwaregain_chan0" in saved_state:
-            sdr.tx_hardwaregain_chan0 = int(saved_state["tx_hardwaregain_chan0"])
-        if "tx_hardwaregain_chan1" in saved_state and hasattr(sdr, "tx_hardwaregain_chan1"):
-            try:
-                sdr.tx_hardwaregain_chan1 = int(saved_state["tx_hardwaregain_chan1"])
-            except Exception:
-                pass
+        for key in _SDR_SNAPSHOT_KEYS:
+            saved_state[key] = int(getattr(sdr, key))
+        for key in _SDR_SNAPSHOT_OPTIONAL:
+            if hasattr(sdr, key):
+                saved_state[key] = int(getattr(sdr, key))
     except Exception as e:
-        print(f"[CW] Warning: SDR restore failed: {e}")
+        print(f"[{tag}] Warning: could not snapshot SDR state: {e}")
+    try:
+        if hasattr(sdr, "tx_cyclic_buffer"):
+            saved_state["tx_cyclic_buffer"] = bool(sdr.tx_cyclic_buffer)
+    except Exception:
+        pass
+    return saved_state
+
+
+def restore_sdr(sdr, saved_state, tag="radar"):
+    """Put back whatever snapshot_sdr recorded, and nothing else."""
+    try:
+        for key in _SDR_SNAPSHOT_KEYS:
+            if key in saved_state:
+                setattr(sdr, key, int(saved_state[key]))
+        for key in _SDR_SNAPSHOT_OPTIONAL:
+            if key in saved_state and hasattr(sdr, key):
+                try:
+                    setattr(sdr, key, int(saved_state[key]))
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[{tag}] Warning: SDR restore failed: {e}")
+    if "tx_cyclic_buffer" in saved_state:
+        try:
+            sdr.tx_cyclic_buffer = bool(saved_state["tx_cyclic_buffer"])
+        except Exception:
+            pass
 
 
 def capture_cw_frame(sdr):
