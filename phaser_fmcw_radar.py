@@ -10,8 +10,8 @@ triggered, and the plot shows noise:
 
   - pyadi-iio with `adi.tddn` (the Pluto's new TDD engine driver)
   - Pluto firmware v0.39 or later (the TDD engine itself)
-  - the Pluto's `tdd_ext_sync` / `phaser_enable` GPIOs and the Phaser's
-    `burst` GPIO, which together trigger one capture per chirp
+  - the Pluto's `phaser_enable` GPIO and the Phaser's `burst` GPIO, which
+    together trigger one capture per chirp
   - an ADF4159 driver that exposes the frequency-ramp attributes
 
 So the backend asks once, at startup, and reports the answer with a reason,
@@ -30,7 +30,15 @@ MIN_PLUTO_FW = (0, 39)
 
 TDD_DEVICE = "iio-axi-tdd-0"
 GPIO_DEVICE = "one-bit-adc-dac"
-PLUTO_SYNC_GPIOS = ("tdd_ext_sync", "phaser_enable")
+PLUTO_SYNC_GPIOS = ("phaser_enable",)
+# The lab scripts also set gpio_tdd_ext_sync, but Pluto v0.39 has no such
+# channel (only phaser_enable and muxout), and chirp sync works without it:
+# Range_Doppler_Plot.py was run on a v0.39 kit on 2026-10-26 and produced a
+# live range-Doppler map. On that firmware the scripts' write is a silent
+# no-op -- pyadi-iio only makes gpio_<label> properties for channels that
+# exist, so the assignment just sets a plain Python attribute. Reported when
+# present, never required; the mode must only write it when it exists.
+PLUTO_OPTIONAL_GPIOS = ("tdd_ext_sync",)
 PHASER_BURST_GPIO = "burst"
 ADF4159_DEVICE = "adf4159"
 ADF4159_CHANNEL = "altvoltage0"
@@ -148,7 +156,9 @@ def probe_fmcw(adi_module, sdr_ctx, rpi_ctx, sim=False):
         missing = [g for g in PLUTO_SYNC_GPIOS if g not in labels]
         if missing:
             return False, "Pluto GPIOs missing: " + ", ".join(missing)
-        return True, "Pluto sync GPIOs present"
+        optional = [g for g in PLUTO_OPTIONAL_GPIOS if g in labels]
+        return True, "Pluto sync GPIOs present" + (
+            " (+ " + ", ".join(optional) + ")" if optional else "")
 
     def phaser_burst():
         labels = _gpio_labels(rpi_ctx)
