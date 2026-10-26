@@ -538,3 +538,284 @@ def apply_cfar(spectrum_db, threshold_db, floor_db=None):
         floor_db = float(np.min(spectrum_db)) if len(spectrum_db) else 0.0
     masked = np.where(spectrum_db > threshold_db, spectrum_db, floor_db)
     return masked, detections
+
+
+# ---------------------------------------------------------------------------
+# FMCW hardware plans (Phase C1).
+#
+# What to write to the ADF4159 and the Pluto TDD engine, and where the chirps
+# land in the Rx buffer. Still pure: phaser_fmcw_radar.py does the writes, and
+# everything it writes is computed here, where it can be checked against the
+# lab scripts without a kit. Ground truth is Range_Doppler_Plot.py and the
+# *_ChirpSync.py scripts from jonkraft/PhaserRadarLabs, which are what the
+# 2025 labs run.
+# ---------------------------------------------------------------------------
+
+
+# The two ramps the labs use. The synced sawtooth, retriggered by the Pluto TDD
+# engine on every chirp, is the one code path; the free-running triangle needs
+# no TDD and is the fallback when the probe finds none.
+RAMP_SYNCED = "single_sawtooth_burst"
+RAMP_FREE_RUNNING = "continuous_triangular"
+RAMP_MODES = (RAMP_SYNCED, RAMP_FREE_RUNNING)
+
+# The ramp time to hand the c/(2*S) range functions above, as a fraction of the
+# ADF4159's freq_dev_time. RADAR_FFT_Waterfall.py ranges its triangle with
+# c/(4*S) and the sawtooth scripts use c/(2*S); the reading here is that the
+# triangle sweeps the full B in each half of freq_dev_time, which also makes
+# the lab's "about 6.7 kHz per metre" right for that ramp. Unverified until
+# bench step C5.3 -- if it is wrong, this table is the one number to change.
+RANGE_TIME_SCALE = {RAMP_SYNCED: 1.0, RAMP_FREE_RUNNING: 0.5}
+
+# The CN0566 divides the LO by 4 ahead of the ADF4159's RFIN, so every
+# frequency written to the chip is a quarter of the one the mixer sees.
+CN0566_LO_DIVIDER = 4
+
+# Rx buffer bounds in TDD burst mode. The Pluto takes 2**23, but the scripts
+# cap burst mode at 2**22, and start their search at 2**13.
+MIN_RX_BUFFER = 2 ** 13
+MAX_BURST_BUFFER = 2 ** 22
+
+# The start of every ramp is discarded while the synthesizer settles.
+RAMP_SETTLE_FRACTION = 0.1
+
+# TDD channel timing the scripts program on channels 0-2, in raw ticks.
+TDD_ON_RAW = 0
+TDD_OFF_RAW = 10
+
+# Keys the hardware path needs that the Phase B DSP defaults do not carry.
+FMCW_HW_DEFAULTS = {
+    "pri_guard_ms": 1.0,   # PRI = ramp + this; the scripts use 0.2 or 1.0
+    "fft_size": 4096,      # free-running Rx buffer (RADAR_FFT_Waterfall.py)
+}
+
+# One preset per lab. Values come from the script the lab runs, except where
+# the lab text disagrees, where the lab wins. center_freq is deliberately in
+# none of them: it is the kit's characterized IF, which differs per unit (see
+# docs/calibration-bugs.md), and the scripts' 2.1 GHz is above some kits'.
+FMCW_PRESETS = {
+    # Lab pp. 29-31, RADAR_FFT_Waterfall.py. The script ramps for 1.2 ms; the
+    # lab states T_s = 1 ms and derives its 3.3 kHz/m from that, so 1 ms.
+    "range": {
+        "sample_rate": 600_000,
+        "output_freq": 12.145e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 1e-3,
+        "num_chirps": 1,
+        "pri_guard_ms": 1.0,
+        "fft_size": 4096,
+        "rx_gain": 30,
+        "tx_gain": 0,
+    },
+    # FMCW_RADAR_Waterfall_ChirpSync.py. The lab gives no values for it.
+    "range_sync": {
+        "sample_rate": 5_000_000,
+        "output_freq": 10e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 500e-6,
+        "num_chirps": 1,
+        "pri_guard_ms": 1.0,
+        "rx_gain": 20,
+        "tx_gain": 0,
+    },
+    # Lab p. 38, CFAR_RADAR_Waterfall_ChirpSync.py (the lab names the script
+    # but gives no values).
+    "cfar": {
+        "sample_rate": 2_000_000,
+        "output_freq": 10e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 500e-6,
+        "num_chirps": 1,
+        "pri_guard_ms": 1.0,
+        "rx_gain": 20,
+        "tx_gain": 0,
+    },
+    # Lab pp. 33-36, Range_Doppler_Plot.py; the lab confirms 4 MHz, 300 us,
+    # 256 chirps and a 0.5 ms PRI.
+    "range_doppler": {
+        "sample_rate": 4_000_000,
+        "output_freq": 9.9e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 300e-6,
+        "num_chirps": 256,
+        "pri_guard_ms": 0.2,
+        "rx_gain": 60,
+        "tx_gain": 0,
+    },
+}
+
+
+def fmcw_config(params=None, preset=None):
+    """FMCW_DEFAULTS <- FMCW_HW_DEFAULTS <- preset <- params, in that order."""
+    cfg = {**FMCW_DEFAULTS, **FMCW_HW_DEFAULTS}
+    if preset is not None:
+        if preset not in FMCW_PRESETS:
+            raise ValueError(
+                f"unknown FMCW preset {preset!r}; expected one of {sorted(FMCW_PRESETS)}")
+        cfg.update(FMCW_PRESETS[preset])
+    cfg.update(params or {})
+    return cfg
+
+
+def _check_ramp_mode(ramp_mode):
+    if ramp_mode not in RAMP_MODES:
+        raise ValueError(f"unknown ramp mode {ramp_mode!r}; expected one of {RAMP_MODES}")
+
+
+def to_adf4159_hz(freq_hz):
+    """A mixer-side frequency, as the ADF4159 register wants it (/4)."""
+    return int(float(freq_hz) / CN0566_LO_DIVIDER)
+
+
+def ramp_time_us(cfg):
+    """The requested ramp, in the whole microseconds freq_dev_time takes."""
+    us = int(round(float(cfg["ramp_time"]) * 1e6))
+    if us < 1:
+        raise ValueError(f"ramp_time {cfg['ramp_time']} s is under 1 us")
+    return us
+
+
+def ramp_registers(cfg, ramp_mode):
+    """The ADF4159 writes for one ramp, as an ordered list of (attr, value).
+
+    Order is upstream's, and it matters at the end: `enable = 0` is what
+    latches every other register, so it is written last. Returning a list
+    rather than writing makes that a property of the data, which a test can
+    see. Attribute names are pyadi-iio's adi.adf4159 properties.
+
+    One step per microsecond, as the scripts recommend.
+    """
+    _check_ramp_mode(ramp_mode)
+    ramp_us = ramp_time_us(cfg)
+    bw = float(cfg["chirp_bw"])
+    if bw <= 0:
+        raise ValueError("chirp_bw must be positive")
+    num_steps = ramp_us
+    return [
+        ("frequency", to_adf4159_hz(cw_lo_freq(cfg))),
+        ("freq_dev_range", to_adf4159_hz(bw)),
+        ("freq_dev_step", int((bw / CN0566_LO_DIVIDER) / num_steps)),
+        ("freq_dev_time", ramp_us),
+        ("delay_word", 4095),
+        ("delay_clk", "PFD"),
+        ("delay_start_en", 0),
+        ("ramp_delay_en", 0),
+        ("trig_delay_en", 0),
+        ("ramp_mode", ramp_mode),
+        ("sing_ful_tri", 0),
+        ("tx_trig_en", 1 if ramp_mode == RAMP_SYNCED else 0),
+        ("enable", 0),
+    ]
+
+
+def chirp_plan(cfg, ramp_mode, actual_ramp_us, on_ms=0.0):
+    """Where the chirps are, given the ramp the ADF4159 actually runs.
+
+    `actual_ramp_us` is freq_dev_time read back after the write: the chip
+    rounds it, and both the PRI and the range scale have to use what it runs,
+    not what was asked for.
+
+    The synced arithmetic is Range_Doppler_Plot.py's, expression for
+    expression, so the golden test can hold it to the script's numbers:
+        PRI_ms        = ramp_us/1e3 + guard
+        frame_samples = int(PRI_s * fs)
+        good samples  = int((ramp_s - 10% of ramp_s) * fs)
+        start offset  = int((on_ms/1e3 + 10% of ramp_s) * fs)
+        buffer        = smallest 2**p, p >= 13, holding PRI_ms * chirps
+    One difference: the script stops growing the buffer at its cap and goes
+    on to slice past the end of it. This raises instead.
+
+    For the free-running ramp nothing is triggered and nothing sliced: the
+    buffer is `fft_size` samples of whatever the triangle is doing.
+    """
+    _check_ramp_mode(ramp_mode)
+    fs = float(cfg["sample_rate"])
+    ramp_us = float(actual_ramp_us)
+    if fs <= 0:
+        raise ValueError("sample_rate must be positive")
+    if ramp_us <= 0:
+        raise ValueError("the ADF4159 reported a ramp time of 0")
+    ramp_s = ramp_us / 1e6
+
+    plan = {
+        "ramp_mode": ramp_mode,
+        "synced": ramp_mode == RAMP_SYNCED,
+        "sample_rate": fs,
+        "ramp_time": ramp_s,
+        "effective_ramp_time": ramp_s * RANGE_TIME_SCALE[ramp_mode],
+    }
+
+    if ramp_mode == RAMP_FREE_RUNNING:
+        n = int(cfg["fft_size"])
+        if n < 2:
+            raise ValueError("fft_size must be at least 2")
+        plan.update({
+            "num_chirps": 1,
+            "pri_ms": None,
+            "rx_buffer_size": n,
+            "frame_samples": n,
+            "start_offset_samples": 0,
+            "good_ramp_samples": n,
+        })
+        return plan
+
+    num_chirps = int(cfg["num_chirps"])
+    if num_chirps < 1:
+        raise ValueError("num_chirps must be >= 1")
+    guard_ms = float(cfg["pri_guard_ms"])
+    if guard_ms < 0:
+        raise ValueError("pri_guard_ms cannot be negative")
+
+    pri_ms = ramp_us / 1e3 + guard_ms
+    pri_s = pri_ms / 1e3
+    frame_samples = int(pri_s * fs)
+    begin_offset_time = RAMP_SETTLE_FRACTION * ramp_s
+    good_ramp_samples = int((ramp_s - begin_offset_time) * fs)
+    start_offset_samples = int((float(on_ms) / 1e3 + begin_offset_time) * fs)
+    if good_ramp_samples < 2:
+        raise ValueError(f"{ramp_us:g} us at {fs:g} S/s leaves under 2 samples per chirp")
+    if start_offset_samples + good_ramp_samples > frame_samples:
+        raise ValueError("the chirp window runs past its PRI slot; raise pri_guard_ms")
+
+    total_ms = pri_ms * num_chirps
+    power = 13
+    buffer_size = 2 ** power
+    while buffer_size / fs * 1000 < total_ms:
+        power += 1
+        buffer_size = 2 ** power
+        if buffer_size > MAX_BURST_BUFFER:
+            raise ValueError(
+                f"{num_chirps} chirps x {pri_ms:g} ms at {fs:g} S/s needs more than "
+                f"{MAX_BURST_BUFFER} samples; fewer chirps or a lower sample rate")
+
+    plan.update({
+        "num_chirps": num_chirps,
+        "pri_ms": pri_ms,
+        "rx_buffer_size": buffer_size,
+        "frame_samples": frame_samples,
+        "start_offset_samples": start_offset_samples,
+        "good_ramp_samples": good_ramp_samples,
+    })
+    return plan
+
+
+def slice_chirps(iq, plan):
+    """Cut the settled part of each chirp out of a synced capture.
+
+    Chirp m occupies [start + m*frame, start + m*frame + good). Returns the
+    samples x chirps matrix chirp_matrix() returns, so mti_filter() and
+    range_doppler_map() take it as they are. A free-running capture comes
+    back unchanged, for range_profile().
+    """
+    iq = np.asarray(iq)
+    if not plan["synced"]:
+        return iq
+    m = int(plan["num_chirps"])
+    frame = int(plan["frame_samples"])
+    start = int(plan["start_offset_samples"])
+    good = int(plan["good_ramp_samples"])
+    end = start + (m - 1) * frame + good
+    if end > len(iq):
+        raise ValueError(f"capture of {len(iq)} samples is shorter than the {end} the plan needs")
+    idx = start + frame * np.arange(m)[:, None] + np.arange(good)[None, :]
+    return iq[idx].T
