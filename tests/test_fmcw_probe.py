@@ -172,6 +172,21 @@ def test_missing_pluto_sync_gpio_is_named():
     assert "phaser_enable" in r["reason"]
 
 
+def test_tdd_ext_sync_is_optional():
+    """What a real v0.39 Pluto lists: phaser_enable and muxout, no
+    tdd_ext_sync -- and chirp sync works on it. It must not cost the kit
+    range-Doppler."""
+    r = _probe(pluto_gpios=("muxout", "phaser_enable"))
+    assert r["ramp"] == fm.RAMP_SYNCED
+    assert r["reason"] == ""
+    assert "tdd_ext_sync" not in _check(r, "pluto_sync_gpios")["detail"]
+
+
+def test_tdd_ext_sync_is_reported_when_present():
+    r = _probe()
+    assert "tdd_ext_sync" in _check(r, "pluto_sync_gpios")["detail"]
+
+
 def test_missing_phaser_burst_gpio_is_named():
     r = _probe(burst=False)
     assert r["ramp"] == fm.RAMP_FREE_RUNNING

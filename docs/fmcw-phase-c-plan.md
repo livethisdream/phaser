@@ -33,7 +33,11 @@ port of the simulator are Phase D.
    - Read back `freq_dev_time`. The chip rounds it, and the actual value is
      what range math must use.
 2. **Pluto TDD** (`adi.tddn(sdr_ip)`, `adi.one_bit_adc_dac(sdr_ip)`):
-   - `gpio_tdd_ext_sync = True`, `gpio_phaser_enable = True`.
+   - `gpio_phaser_enable = True`. Also `gpio_tdd_ext_sync = True`, but
+     **only if the channel exists**: Pluto v0.39 has none (only
+     `phaser_enable` and `muxout`), and chirp sync works without it. Bench
+     result 2026-10-26: `Range_Doppler_Plot.py` gave a live range-Doppler map
+     on a v0.39 kit, where the script's `tdd_ext_sync` write is a silent no-op.
    - `tdd.enable = False` → `sync_external = True`,
      `frame_length_ms = PRI`, `burst_count = num_chirps`, channels 0–2
      `on_raw=0, off_raw=10` → `tdd.enable = True`.
@@ -47,7 +51,7 @@ port of the simulator are Phase D.
    `start_offset = on_ms + 10% of ramp` into its PRI slot, skipping the ramp's
    settling start. The result feeds `chirp_matrix()` → `mti_filter()` →
    `range_doppler_map()` / `range_profile()` → `ca_cfar()`.
-5. **Exit**: `tdd.enable = False`, `gpio_tdd_ext_sync = False`,
+5. **Exit**: `tdd.enable = False`, `gpio_tdd_ext_sync = False` (if present),
    `ramp_mode = "disabled"`, `tx_destroy_buffer()`, restore the beamforming LO,
    taper and SDR snapshot. This is the same unwind contract as `exit_cw_mode`,
    including tolerating a half-entered mode.
