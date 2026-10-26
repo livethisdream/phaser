@@ -209,3 +209,50 @@ def test_a_buffer_that_is_not_whole_chirps_still_produces_a_frame():
     c0, c1 = sdr.rx()
     assert len(c0) == SPC * 8 + 37
     assert np.all(np.isfinite(np.abs(c0 + c1)))
+
+
+# --- plan-driven layout (C2) ---------------------------------------------
+
+def _planned_sdr(targets, num_chirps=4):
+    """A SimSDR laid out by a synced chirp_plan, as the FMCW mode does it."""
+    from phaser_radar_dsp import RAMP_SYNCED, chirp_plan, fmcw_config, ramp_time_us
+    cfg = fmcw_config({"center_freq": 2.1e9, "num_chirps": num_chirps}, preset="range_sync")
+    plan = chirp_plan(cfg, RAMP_SYNCED, ramp_time_us(cfg))
+    array = make_stub_array()
+    ADAR_set_Taper(array, resolve_taper("rect"))
+    sdr = SimSDR(array, signal_freq=10.5e9, element_spacing=0.014,
+                 sample_rate=plan["sample_rate"], buffer_size=plan["rx_buffer_size"])
+    sdr.set_fmcw_mode(True, plan=plan, chirp_bw=cfg["chirp_bw"],
+                      signal_freq=cfg["signal_freq"], output_freq=cfg["output_freq"],
+                      targets=targets)
+    return cfg, plan, sdr
+
+
+def test_a_plan_puts_each_chirp_in_its_pri_slot():
+    """The beat lasts the ramp, and the rest of each PRI is only noise."""
+    _, plan, sdr = _planned_sdr([(3.0, 0.0, 0.0, 1.0)])
+    power = np.abs(capture(sdr)) ** 2
+    ramp_n = int(plan["ramp_time"] * plan["sample_rate"])
+    frame = plan["frame_samples"]
+    for k in range(plan["num_chirps"]):
+        on = power[k * frame: k * frame + ramp_n].mean()
+        off = power[k * frame + ramp_n: (k + 1) * frame].mean()
+        assert on > 100 * off, f"chirp {k}: no gap after the ramp"
+
+
+@pytest.mark.parametrize("target_range", [2.0, 6.0])
+def test_slicing_a_planned_capture_recovers_the_range(target_range):
+    from phaser_radar_dsp import slice_chirps
+    cfg, plan, sdr = _planned_sdr([(target_range, 0.0, 0.0, 1.0)])
+    chirps = slice_chirps(capture(sdr), plan)
+    assert chirps.shape == (plan["good_ramp_samples"], plan["num_chirps"])
+    prof = range_profile(chirps[:, -1], plan["sample_rate"], cfg["chirp_bw"],
+                         plan["effective_ramp_time"],
+                         zero_range_freq=cfg["signal_freq"], range_max=20.0)
+    assert prof["peak_range"] == pytest.approx(target_range, abs=0.4)
+
+
+def test_leaving_fmcw_drops_the_plan():
+    _, _, sdr = _planned_sdr([(3.0, 0.0, 0.0, 1.0)])
+    sdr.set_fmcw_mode(False)
+    assert sdr._fmcw_plan is None

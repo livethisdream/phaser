@@ -645,9 +645,22 @@ FMCW_PRESETS = {
 }
 
 
+# Processing-only keys the backend's frame uses, all live-updatable.
+FMCW_PROC_DEFAULTS = {
+    "vel_max": None,        # m/s; None = the full unambiguous span
+    "cfar": False,
+    "cfar_guard": 4,
+    "cfar_ref": 16,
+    "cfar_bias_db": 6.0,
+}
+
+# The first FMCW lab, and what start_fmcw_radar runs when no preset is named.
+FMCW_DEFAULT_PRESET = "range"
+
+
 def fmcw_config(params=None, preset=None):
-    """FMCW_DEFAULTS <- FMCW_HW_DEFAULTS <- preset <- params, in that order."""
-    cfg = {**FMCW_DEFAULTS, **FMCW_HW_DEFAULTS}
+    """Defaults <- preset <- params, in that order."""
+    cfg = {**FMCW_DEFAULTS, **FMCW_HW_DEFAULTS, **FMCW_PROC_DEFAULTS}
     if preset is not None:
         if preset not in FMCW_PRESETS:
             raise ValueError(
