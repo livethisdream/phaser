@@ -4,7 +4,8 @@ Status, 2026-10-26:
 - **C0 is done.** The probe passes on phaser-01 (Pluto v0.39), reporting
   `single_sawtooth_burst`.
 - **The open questions are decided** (see *Decisions* at the end).
-- **C1 is planned in detail** below, and is not implemented yet.
+- **C1 is done.** Merged to `radar-dev` as PR #57.
+- **C2 is planned in detail** below, and is not implemented yet.
 
 Phase B (`phaser_radar_dsp.py`, the FMCW scene in `phaser_sim.py`) gives us the
 math. Phase C makes the kit produce data for it: program the ADF4159 ramp,
@@ -234,16 +235,138 @@ the move.
   separate from this work.
 
 ### C2. Mode dispatcher
-- Add `fmcw_radar` to `_set_mode`, and generalize the CW enter/exit/unwind into
-  one per-mode table, so CW → FMCW goes through a full restore and not a
-  half-swap.
-- Commands: `start_fmcw_radar`, `stop_fmcw_radar`, `set_fmcw_radar_params`,
-  `get_fmcw_radar_state`. Processing-only params (MTI, CFAR, window,
-  `zero_range_freq`, `range_max`) apply live. Ramp/TDD params need a
-  stop/start, as CW already does.
-- Calibration runs tear FMCW down first, as they already do for CW.
-- `--sim`: route through `SimSDR.set_fmcw_mode`, which already exists, so the
-  whole mode path runs in CI without a kit.
+
+Detailed 2026-10-26, after C1 merged (PR #57). C2 makes FMCW a mode the
+backend can enter, run and leave, on the kit and under `--sim`. It changes
+`phaser_headless.py` and `phaser_sim.py` only. The browser simulator keeps
+answering FMCW as unavailable: porting FMCW to JS is Phase D, and the parity
+test has no FMCW cases to break.
+
+**1. One table for mode transitions.** `_set_mode` today has CW wired in as
+an if-chain. It becomes a table, `{mode: (enter, exit)}`, holding `cw_radar`
+and `fmcw_radar` (`idle` and `sweep` need neither).
+- A transition always runs the old mode's exit before the new mode's enter.
+  So CW → FMCW goes through a full restore, never a half-swap.
+- A failed enter runs that mode's own exit as the unwind, then lands in
+  `idle` and returns the error. This is CW's existing contract, made
+  general.
+- The CW code moves into `_enter_cw` / `_exit_cw` and otherwise stays the
+  same. The CW tests guard the move.
+- `stop()` and calibration already drop to `idle` through `_set_mode`
+  (calibration for any mode; `stop()` only for CW today). Both cover FMCW
+  once the table does.
+
+**2. Frames hold the mode lock.** The main loop captures CW frames without
+`cw_lock`, so a stop arriving from the WebSocket thread can tear the SDR
+down underneath a capture in progress. FMCW makes that worse: a
+range-Doppler capture is a triggered 128 ms burst, and exit turns the TDD
+off. So each radar frame's capture runs under the lock:
+- `cw_lock` is renamed `mode_lock`, keeping `cw_lock` as an alias.
+- A transition then waits at most one frame. This fixes the same race for
+  CW.
+
+**3. Entering `fmcw_radar`** (`_enter_fmcw`):
+- **Refuse when unavailable.** If the startup probe says FMCW is
+  unavailable, refuse with the probe's `reason`.
+- **Ramp mode** comes from the probe: synced sawtooth, or the free-running
+  triangle.
+- **Preset fit.** A preset with `num_chirps > 1` on a kit with no TDD is
+  refused, with a message saying range-Doppler needs chirp sync.
+- **Config** = `fmcw_config(self.fmcw_params, preset)`.
+  - `preset` comes from the client's params and defaults to `range`, the
+    first FMCW lab.
+  - `center_freq` defaults to `self.Rx_freq`, the kit's characterized IF.
+    A value the client sends wins.
+- **Hardware.**
+  - On a kit: `FmcwHardware.open(adi, self.rpi_ip, self.sdr_ip,
+    self.gpios, synced)`.
+  - Under `--sim`: new stubs from `phaser_sim`: an ADF4159 that reads
+    back `freq_dev_time`, a TDD with three channels, and Pluto pins
+    labelled `phaser_enable` only, like v0.39. So `--sim` runs the same
+    `enter_fmcw_mode` / `exit_fmcw_mode` code a kit runs, not a shortcut
+    around it.
+- **Then** `enter_fmcw_mode(...)` stores `(cfg, plan)` and hands the plan
+  to the simulator.
+- **Exit**: `exit_fmcw_mode` with the beamforming taper
+  (`_apply_gain_cal(gainList)`, as CW does) and `restore_lo_freq =
+  self.LO_freq`. Then the simulator is switched back to the beamforming
+  scene.
+
+**4. `SimSDR` follows the plan.** `set_fmcw_mode(True, plan=plan, ...)`
+makes `_synthesize_fmcw` put chirp `m` at `m × frame_samples`. The beat
+tone is present only for the ramp's length, with noise for the rest of the
+PRI. That makes `--sim` exercise `slice_chirps` and its offsets. Called
+with no plan, it keeps today's back-to-back layout, so `test_fmcw_sim.py`
+and any other existing callers are unchanged.
+
+**5. Frames** (`do_fmcw_radar_frame`, in the main loop as
+`fmcw_radar_frame`):
+- Capture with `capture_fmcw_frame`.
+- **One chirp, or the free-running ramp:** `range_profile` on the plan's
+  `effective_ramp_time`. `zero_range_freq` falls back to `signal_freq`.
+- **Several chirps:** `mti_filter` then `range_doppler_map`, with
+  `pri = pri_ms / 1e3`.
+- **CFAR**, when enabled, runs on the single-chirp range profile only, as
+  the CFAR lab does. Whether and how it runs on a range-Doppler map is a
+  C3 decision.
+- **The C2 payload is scalars:** peak range, peak velocity, peak dB,
+  detection count, the plan summary, and `capture_ms` / `process_ms`. The
+  arrays and their encoding are C3. Scalars are enough to check the mode
+  on a kit with a script, and the timings measure the 5 fps budget.
+
+**6. Commands.**
+- **`start_fmcw_radar(params)`** merges `params` (which may include
+  `preset`) and enters.
+- **`stop_fmcw_radar`** goes to `idle`.
+- **`set_fmcw_radar_params(params)`**:
+  - **Live on the next frame:** `mti`, `fft_window`, `range_max`,
+    `vel_max`, `zero_range_freq`, and the CFAR keys.
+  - **Live as writes:** `taper` (array write); `rx_gain` / `tx_gain` (SDR
+    writes, as CW does).
+  - **Anything else** (preset, ramp, timing, frequencies, `num_chirps`)
+    changes the plan. While running, the backend re-enters the mode
+    itself: exit then enter, under the lock. The response says so. CW
+    makes the client stop and start; FMCW has too many such knobs for
+    that to be pleasant.
+- **`get_fmcw_radar_state`** returns the mode, whether it's running, the
+  effective cfg, the current plan, the probe result, and the preset names.
+- **Defaults:** CFAR keys (`cfar`, `cfar_guard`, `cfar_ref`,
+  `cfar_bias_db`) join the FMCW defaults in `phaser_radar_dsp`.
+
+**7. Browser simulator.** `start_fmcw_radar` gets the same explicit
+"not available in the browser simulator" error that `start_cw_radar`
+already gets in `frontend/src/sim/worker.js`. Today it falls through to
+the unknown-command path.
+
+**Tests** (`tests/test_fmcw_radar_headless.py`, built like the CW headless
+tests on a sim-mode backend with no sockets):
+- **Ranging:** starting with the `range_sync` and `range_doppler` presets
+  gives frames whose peak range matches the sim's default target, through
+  the real slicing.
+- **Restore:**
+  - Stop puts back the SDR settings, the taper, and the LO written through
+    the stub ADF4159.
+  - A beamforming sweep runs normally afterwards.
+- **Transitions:** CW → FMCW → CW → idle restores fully at every step.
+- **Refusals:**
+  - An unavailable probe refuses with its reason and stays `idle`.
+  - A free-running probe refuses `range_doppler` but runs `range`.
+- **Failed enter:** a failure injected in the stub hardware during enter
+  leaves the backend `idle` and the hardware restored.
+- **`center_freq`:** defaults to `Rx_freq`; an explicit one wins.
+- **Params:**
+  - A processing param applies with no re-enter.
+  - A ramp param re-enters, and the plan changes.
+- **Calibration and shutdown:** starting a calibration from `fmcw_radar`
+  tears it down first (subprocess mocked), and so does `stop()`.
+- **Frame lock:** a transition requested during a frame waits for it.
+  This is checked with a capture that blocks on an event.
+- **`test_fmcw_sim.py`:** plan-driven layout puts chirps in their PRI
+  slots and slicing recovers the range; no-plan layout is unchanged.
+
+**Not in C2:** arrays in the payload and their size budget (C3); any UI
+(C4); a kit run (C5, though once C2 lands, a script over the WebSocket can
+try FMCW on phaser-01).
 
 ### C3. Payload
 A 256-chirp × ~1200-sample range-Doppler map is too big to send at frame
