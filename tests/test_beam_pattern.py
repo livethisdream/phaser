@@ -158,7 +158,7 @@ def test_phase_bits_do_not_coarsen_the_sweep():
 
     They were the same attribute, so dropping to a 3-bit phase shifter (a
     45 deg LSB) also dropped the sweep to 45 deg steps -- five points across
-    the whole scan, which plots as nothing recognisable.
+    the whole scan, which plots as nothing recognizable.
     """
     h = _headless()
     h.handle_command({"cmd": "set_state", "state": {
@@ -269,6 +269,53 @@ def test_taper_reaches_full_scale():
     h.gain_cal = [1.0] * 8
     assert h._apply_gain_cal([100] * 8) == [127] * 8
     assert h._apply_gain_cal([0] * 8) == [0] * 8
+
+
+def test_taper_percent_is_voltage():
+    """Slider % is percent of full-scale voltage, through the register's curve.
+
+    The register goes as (code/127)**0.68 in voltage, so a linear % -> code
+    map put one element at 50% at -3.8 dB instead of -6.0.
+    """
+    from ADAR_pyadi_functions import RX_GAIN_AMPLITUDE
+
+    h = _headless()
+    h.gain_cal = [1.0] * 8
+    for pct in range(0, 101):
+        code = h._apply_gain_cal([pct] * 8)[0]
+        nearest = min(range(128), key=lambda c: abs(RX_GAIN_AMPLITUDE[c] - pct / 100))
+        assert abs(RX_GAIN_AMPLITUDE[code] - pct / 100) == pytest.approx(
+            abs(RX_GAIN_AMPLITUDE[nearest] - pct / 100)), pct
+    half = RX_GAIN_AMPLITUDE[h._apply_gain_cal([50] * 8)[0]]
+    assert 20 * np.log10(half) == pytest.approx(-6.02, abs=0.1)
+
+
+def test_gain_cal_scales_amplitude_before_the_curve():
+    """gcal is an amplitude ratio: 100% at gcal 0.5 is the same code as 50%."""
+    h = _headless()
+    h.gain_cal = [1.0] * 8
+    fifty = h._apply_gain_cal([50] * 8)
+    h.gain_cal = [0.5] * 8
+    assert h._apply_gain_cal([100] * 8) == fifty
+
+
+@pytest.mark.parametrize("taper,ref,expected_db", [
+    # One element at 50% against the same element at 100%.
+    ([50, 0, 0, 0, 0, 0, 0, 0], [100, 0, 0, 0, 0, 0, 0, 0], -6.02),
+    # Hann preset against uniform: 20*log10(4.64/8). It read 3.7 dB on
+    # phaser-00 before the register curve was inverted.
+    ([12, 43, 77, 100, 100, 77, 43, 12], [100] * 8, -4.73),
+])
+def test_sim_taper_peak_drop_is_linear_in_percent(monkeypatch, taper, ref, expected_db):
+    import phaser_sim
+    monkeypatch.setattr(phaser_sim.SimSDR, "NOISE_SIGMA", 0.0)
+    h = _headless()
+
+    def peak(t):
+        h.set_taper(t)
+        return float(np.max(_sweep(h)[0]))
+
+    assert peak(taper) - peak(ref) == pytest.approx(expected_db, abs=0.1)
 
 
 def test_coarse_phase_bits_do_not_quantize_the_calibration():
@@ -386,3 +433,85 @@ def test_beam_phase_does_not_depend_on_which_sample_the_peak_lands_on():
         "the legacy expression no longer shows the branch-cut jumps; "
         "this test is no longer guarding anything"
     )
+
+
+# --- Signal vs Time: hold one steering angle ---------------------------
+
+@pytest.mark.parametrize("mode", ["Signal vs Time", "Static Phase"])
+@pytest.mark.parametrize("ignore_res", [True, False])
+def test_hold_modes_hold_one_angle_whatever_ignore_res(mode, ignore_res):
+    """Legacy checks the mode AFTER res_bits, so the mode wins.
+
+    Preset 7 inherits ignore_res=True from the base preset; when the headless
+    port let that win, Signal vs Time kept sweeping and the L21 Lab could not
+    run.
+    """
+    h = _headless()
+    h.handle_command({"cmd": "set_state", "state": {
+        "ignore_res": ignore_res, "mode": mode, "hold_angle": 30.0,
+    }})
+    data = h.do_sweep()
+    assert data["ArrayAngle"] == [30.0]
+    assert len(data["ArrayGain"]) == 1
+    assert data["sweep_mode"] == mode
+    assert data["hold_angle_deg"] == 30.0
+
+
+def test_held_beam_points_where_the_sweep_plots_it(monkeypatch):
+    """A held +theta is the sweep's +theta point: same side, never mirrored.
+
+    The sim's source sits at boresight, so a linear element phase error stands
+    in for an off-axis source: the sweep then peaks off boresight on one side.
+    Holding at that peak must read the peak, and holding at its mirror must
+    not. Noise is off so the held point and the sweep point, which write
+    identical phases, read identical levels.
+    """
+    import phaser_sim
+    monkeypatch.setattr(phaser_sim.SimSDR, "NOISE_SIGMA", 0.0)
+
+    h = _headless()
+    h.array.element_phase_error = [k * 60.0 for k in range(8)]
+    h.handle_command({"cmd": "set_state", "state": {
+        "ignore_res": False, "steer_res": 1.0,
+    }})
+    gain, angle = _sweep(h)
+    peak = float(angle[int(np.argmax(gain))])
+    assert abs(peak) > 10, f"source stand-in landed at {peak} deg, too near boresight"
+    at = dict(zip(np.round(angle).astype(int), gain))
+
+    h.handle_command({"cmd": "set_state", "state": {
+        "mode": "Signal vs Time", "hold_angle": peak,
+    }})
+    held_peak = h.do_sweep()["ArrayGain"][0]
+    h.handle_command({"cmd": "set_state", "state": {"hold_angle": -peak}})
+    held_mirror = h.do_sweep()["ArrayGain"][0]
+
+    assert abs(held_peak - gain.max()) < 1e-6
+    assert abs(held_mirror - at[int(round(-peak))]) < 1e-6
+    assert held_peak - held_mirror > 10
+
+
+def test_leaving_signal_vs_time_resumes_the_sweep():
+    """Any non-hold mode sweeps -- including lab labels such as 'Tracking'."""
+    h = _headless()
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Signal vs Time"}})
+    assert len(h.do_sweep()["ArrayGain"]) == 1
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Tracking"}})
+    assert len(h.do_sweep()["ArrayGain"]) > 20
+
+
+def test_hold_modes_send_the_spectrum_only_a_few_times_a_second():
+    """One point per update makes the 16k-bin FFT the whole payload.
+
+    At ~600 KB of JSON a frame it, not the radio, would set the Signal vs
+    Time update rate. The first update carries it so the FFT tab is never
+    blank; the next one, immediately after, must not. A sweep always does.
+    """
+    h = _headless()
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Signal vs Time"}})
+    first, second = h.do_sweep(), h.do_sweep()
+    assert "max_gain" in first and "xf" in first
+    assert "max_gain" not in second and "xf" not in second
+
+    h.handle_command({"cmd": "set_state", "state": {"mode": "Beam Sweep"}})
+    assert "max_gain" in h.do_sweep() and "max_gain" in h.do_sweep()

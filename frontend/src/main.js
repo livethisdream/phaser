@@ -5,7 +5,9 @@ import { autoBackendWsUrl, getBackendUrlOverride, setBackendUrlOverride } from '
 const state = {
     Tx_mode: "Transmit Disabled",
     SignalFreq: 10.0 * 1e9,
-    Rx_freq: 2.4e9, 
+    Rx_freq: 1.7e9,          // bootstrap only; the backend sends the measured value
+    Rx_freq_source: null,
+    Rx_freq_warnings: [],
     Rx_gain: 0,
     Tx_gain: -40,
     gainList: [100, 100, 100, 100, 100, 100, 100, 100],
@@ -16,6 +18,7 @@ const state = {
     PhaseValues: Array.from({length: 181}, (_, i) => i - 90),
     BW: 10,
     mode: "Beam Sweep",
+    hold_angle: 0,          // deg; where Signal vs Time holds the beam
     B0_Gain: 1.0,
     B1_Gain: 1.0,
     Beam0_Phase: 0,
@@ -26,10 +29,13 @@ const state = {
     mvdrK: 128,             // MVDR snapshot count
     mvdrDiagLoad: 0.001,    // MVDR diagonal loading factor
 
-    // Simulator interferer (instructor-only, sim mode only; hidden by default)
-    sim_interferer_enable: false,
-    sim_interferer_angle_deg: 30,
-    sim_interferer_power_db: 0,
+    // Computed interferer, added to the received IQ by the backend (real
+    // hardware and simulator alike) for the MVDR lab. Interferer pane.
+    interferer_enable: false,
+    interferer_angle_deg: -20,
+    interferer_power_dbfs: -10,
+    interferer_offset_hz: 100e3,
+    interferer_phase_deg: 0,
 };
 
 /* Read a `?name=1` flag from the URL, matching the parameter name
@@ -49,12 +55,8 @@ function urlFlag(name) {
     return false;
 }
 
-// Instructor mode: adds ?instructor=1 to the URL to reveal the
-// Simulator Interferer accordion. Students never see it.
-const instructorMode = urlFlag('instructor');
-
-// CTF mode: ?ctf=1 reveals the GRCon26 sector-sequence panel. Unlike
-// instructor mode this parameter is UI convenience only, NOT a secret —
+// CTF mode: ?ctf=1 reveals the GRCon26 sector-sequence panel. This
+// parameter is UI convenience only, NOT a secret —
 // the sequence check and the flag live in the backend, because this bundle
 // is served to every browser that connects and a CTF player's whole job is
 // to go looking. Everything below only displays what the backend reports.
@@ -65,6 +67,12 @@ const ctfMode = urlFlag('ctf');
 // updateCharts() reads them on every sweep.
 state.ctfSectors = [];
 state.ctfSectorLines = true;
+
+// Adaptive tab: newest held-beam update carrying adaptive_pattern, and the
+// one last drawn. Up here, not by the chart, because setSweepMode() can clear
+// them before that part of the module has run.
+let adaptiveLatest = null;
+let adaptiveDrawn = null;
 
 // When switching Manual -> MVDR, we zero B0/B1 so residual manual weights
 // don't fight the adaptive algorithm. These snapshots restore them on the
@@ -83,9 +91,29 @@ const BACKEND_PROBE_TIMEOUT_MS = 2000;
 const BACKEND_PROBE_RETRY_MS = 2000;
 const MAX_BACKEND_PROBE_RETRIES = 6;
 
-// Internal tracking for history
+// Internal tracking for history. Parallel arrays, one entry per sweep, capped
+// at TRACK_HISTORY_MAX; the Tracking tab plots the first two and Export CSV
+// writes all of them.
+const TRACK_HISTORY_MAX = 100;
 let timeHistory = [];
 let angleHistory = [];
+let centroidHistory = [];   // backend peak_angle_deg; null when it sent none
+let peakGainHistory = [];   // peak array gain, dB
+let stampHistory = [];      // browser clock, ms since epoch
+
+// Signal vs Time keeps its own history: peak amplitude of the held beam
+// against time. Legacy kept 100 points; this keeps the last SVT_WINDOW_S
+// seconds instead, so a 10-15 s walk around the array fits whatever the update
+// rate turns out to be. SVT_HISTORY_MAX only bounds memory.
+const HOLD_MODES = ['Static Phase', 'Signal vs Time'];
+const SVT_WINDOW_S = 30;
+const SVT_HISTORY_MAX = 20000;
+let svtT0 = null;           // browser clock, ms, of the first sample since reset
+let svtTime = [];           // s since svtT0
+let svtGain = [];           // peak amplitude, dBFS
+let svtStamp = [];          // browser clock, ms since epoch
+let svtHold = [];           // hold angle the backend reported, deg
+let svtNoEchoWarned = false;
 let autoSweepInterval = null;
 const THEME_KEY = 'phaser_theme';
 const runtimeLogs = [];
@@ -429,6 +457,8 @@ const accordionIcons = [
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M4.5 18.5h15"></path><path d="M6 16l4-5 3 2 5-6"></path><circle cx="6" cy="16" r="1"></circle><circle cx="10" cy="11" r="1"></circle><circle cx="13" cy="13" r="1"></circle><circle cx="18" cy="7" r="1"></circle></svg>',
     // 6. Lab Presets
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M9 3h6"></path><path d="M10 3v6.2L6 17a2 2 0 0 0 1.78 2.9h8.44A2 2 0 0 0 18 17l-4-7.8V3"></path><path d="M7.5 15h9"></path></svg>',
+    // 7. Interferer
+    '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"></path></svg>',
 ];
 
 // Populate accordion icons
@@ -481,6 +511,11 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         document.getElementById(targetId).classList.add('active');
 
         updateMemoryButtons();
+        const exportBtn = document.getElementById('btn-export-tracking');
+        if (exportBtn) {
+            exportBtn.hidden = targetId !== 'tab-tracking';
+            exportBtn.disabled = !(isHoldMode() ? svtTime.length : timeHistory.length);
+        }
 
         // Defer resize until after the browser has painted the newly-visible tab,
         // preventing the one-frame layout jump that occurs when Plotly measures
@@ -832,12 +867,23 @@ document.getElementById('btn-zero-phase').addEventListener('click', () => {
 /* --- Beam Steering: compute per-element phase ramp for a chosen angle --- */
 const steerAngleSlider = document.getElementById('steer-angle');
 const steerAngleInput = document.getElementById('val-steer-angle');
+// The Steer Angle is also where Signal vs Time holds the beam. There it takes
+// effect as it moves -- no Apply -- so the beam cannot sit somewhere other than
+// what the field says.
+function setHoldAngleFromInput(raw) {
+    const theta = parseFloat(raw);
+    if (!Number.isFinite(theta)) return;
+    state.hold_angle = Math.max(-90, Math.min(90, theta));
+    if (isHoldMode()) syncStateToBackend();
+}
 if (steerAngleSlider && steerAngleInput) {
     steerAngleSlider.addEventListener('input', (e) => {
         steerAngleInput.value = e.target.value;
+        setHoldAngleFromInput(e.target.value);
     });
     steerAngleInput.addEventListener('input', (e) => {
         steerAngleSlider.value = e.target.value;
+        setHoldAngleFromInput(e.target.value);
     });
 }
 
@@ -866,9 +912,50 @@ document.getElementById('btn-apply-steer')?.addEventListener('click', () => {
     const gains = STEER_TAPERS[taperKey] || STEER_TAPERS.uniform;
 
     applyTaper(gains.slice());  // syncs backend
-    applyPhaseList(ramp);
+    if (isHoldMode()) {
+        // The backend already applies the +k*PhDelta ramp for hold_angle. The
+        // -k*PhDelta offsets above would cancel it and leave the beam at
+        // boresight, so Phase Control is zeroed instead.
+        state.hold_angle = Math.max(-90, Math.min(90, theta_deg));
+        applyPhaseList([0, 0, 0, 0, 0, 0, 0, 0]);
+    } else {
+        applyPhaseList(ramp);
+    }
     syncStateToBackend();
 });
+
+/* --- Sweep mode (legacy Mode menu) --- */
+function isHoldMode() {
+    return HOLD_MODES.includes(state.mode);
+}
+
+const sweepModeSelect = document.getElementById('sweep-mode');
+sweepModeSelect?.addEventListener('change', (e) => {
+    setSweepMode(e.target.value);
+    syncStateToBackend();
+});
+
+// Switch modes from the UI side: a fresh Signal vs Time history every time the
+// mode is entered (legacy resets Gain_time in mode_select), and the Tracking
+// tab brought forward, as legacy adds and selects its plot tab.
+function setSweepMode(mode, { selectTab = true } = {}) {
+    state.mode = mode;
+    resetSvtHistory();
+    if (!isHoldMode()) clearAdaptivePattern();
+    syncSweepModeControls();
+    if (selectTab && state.mode === 'Signal vs Time') {
+        document.querySelector('[data-target="tab-tracking"]')?.click();
+    }
+}
+
+function syncSweepModeControls() {
+    if (sweepModeSelect) {
+        sweepModeSelect.value = isHoldMode() ? 'Signal vs Time' : 'Beam Sweep';
+    }
+    const note = document.getElementById('svt-steer-note');
+    if (note) note.hidden = !isHoldMode();
+    configureTrackingChart();
+}
 
 /* --- Digital Beam Forming mode toggle --- */
 function setBeamformerMode(mode) {
@@ -906,6 +993,7 @@ function setBeamformerMode(mode) {
     state.bfMode = mode;
     document.getElementById('bf-panel-manual').hidden = (mode !== 'manual');
     document.getElementById('bf-panel-mvdr').hidden = (mode !== 'mvdr');
+    syncAdaptiveTab();
     syncStateToBackend();
 }
 
@@ -953,18 +1041,6 @@ if (mvdrDiagInput) {
             syncStateToBackend();
         }
     });
-}
-
-/* --- Simulator Interferer (instructor mode only) ---
-   The accordion stays hidden unless BOTH conditions are met:
-     1. URL contains ?instructor=1 (see instructorMode above)
-     2. Backend reports sim_mode: true (revealSimInterfererIfEligible())
-   Students loading the app normally never see or reach this panel. */
-function revealSimInterfererIfEligible(serverState) {
-    const el = document.getElementById('accordion-sim-interferer');
-    if (!el) return;
-    const showIt = instructorMode && !!serverState?.sim_mode;
-    el.hidden = !showIt;
 }
 
 /* --- CTF Mode (GRCon26) ---
@@ -1249,31 +1325,222 @@ function wireHoldToCommit(el, holdMs, onCommit) {
 // already watching during a run.
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
 
-const simInterfererEnable = document.getElementById('sim-interferer-enable');
-if (simInterfererEnable) {
-    simInterfererEnable.addEventListener('change', (e) => {
-        state.sim_interferer_enable = !!e.target.checked;
-        syncStateToBackend();
-    });
+/* --- Interferer ---
+   The backend computes a jammer and adds it to the received IQ before the
+   digital beamformer (phaser_headless._interferer_channels), on the kit and
+   in the simulator alike. This pane drives it; the badge over the plots and
+   the two stat-row readouts show it is on. */
+const interfererBtn = document.getElementById('btn-interferer');
+const interfererCoherent = document.getElementById('interferer-coherent');
+// The offset the slider holds while "Coherent" pins the backend's to 0 Hz.
+let interfererOffsetKhz = state.interferer_offset_hz / 1e3;
+
+// Interferer-vs-target ratio last measured under each beamformer mode, for
+// the suppression readout. Only comparable under identical settings, so any
+// change that moves either tone or the beam clears both.
+const interfererRatio = { manual: null, mvdr: null };
+let interfererRatioKey = null;
+
+function interfererSettingsKey() {
+    return JSON.stringify([
+        state.interferer_angle_deg, state.interferer_power_dbfs,
+        state.interferer_offset_hz, state.interferer_phase_deg,
+        state.mode, state.hold_angle, state.gainList, state.phaseList,
+    ]);
 }
 
-// Angle: slider <-> number input, both write into state
-function linkInterfererPair(slId, inId, stateKey) {
+function applyInterfererUi() {
+    const on = !!state.interferer_enable;
+    if (interfererBtn) {
+        interfererBtn.setAttribute('aria-pressed', String(on));
+        interfererBtn.textContent = on ? 'Interferer ON · click to stop' : 'Inject Interferer';
+    }
+    const coherent = state.interferer_offset_hz === 0;
+    if (interfererCoherent) interfererCoherent.checked = coherent;
+    document.getElementById('interferer-phase-group').hidden = !coherent;
+    for (const id of ['interferer-offset', 'val-interferer-offset']) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = coherent;
+    }
+    document.getElementById('interferer-badge').hidden = !on;
+    document.getElementById('interferer-ratio-box').hidden = !on;
+    document.getElementById('interferer-suppression-box').hidden = !on;
+    if (!on) {
+        interfererRatio.manual = null;
+        interfererRatio.mvdr = null;
+        clearFftToneMarkers();
+    }
+}
+
+function setInterfererPair(slId, inId, value) {
+    const sl = document.getElementById(slId);
+    const inp = document.getElementById(inId);
+    if (sl) sl.value = value;
+    if (inp) inp.value = value;
+}
+
+interfererBtn?.addEventListener('click', () => {
+    state.interferer_enable = !state.interferer_enable;
+    applyInterfererUi();
+    syncStateToBackend();
+});
+
+interfererCoherent?.addEventListener('change', (e) => {
+    state.interferer_offset_hz = e.target.checked ? 0 : interfererOffsetKhz * 1e3;
+    applyInterfererUi();
+    syncStateToBackend();
+});
+
+// Slider <-> number input, both write into state (times `scale`).
+function linkInterfererPair(slId, inId, stateKey, scale = 1, onValue = null) {
     const sl = document.getElementById(slId);
     const inp = document.getElementById(inId);
     if (!sl || !inp) return;
     const onChange = (raw) => {
         const v = parseFloat(raw);
         if (Number.isFinite(v)) {
-            state[stateKey] = v;
+            state[stateKey] = v * scale;
+            if (onValue) onValue(v);
             syncStateToBackend();
         }
     };
     sl.addEventListener('input', (e) => { inp.value = e.target.value; onChange(e.target.value); });
     inp.addEventListener('input', (e) => { sl.value = e.target.value; onChange(e.target.value); });
 }
-linkInterfererPair('sim-interferer-angle', 'val-sim-interferer-angle', 'sim_interferer_angle_deg');
-linkInterfererPair('sim-interferer-power', 'val-sim-interferer-power', 'sim_interferer_power_db');
+linkInterfererPair('interferer-angle', 'val-interferer-angle', 'interferer_angle_deg');
+linkInterfererPair('interferer-power', 'val-interferer-power', 'interferer_power_dbfs');
+linkInterfererPair('interferer-offset', 'val-interferer-offset', 'interferer_offset_hz', 1e3,
+    (khz) => { interfererOffsetKhz = khz; });
+linkInterfererPair('interferer-phase', 'val-interferer-phase', 'interferer_phase_deg');
+
+/** Hydrate the pane from get_state. */
+function loadInterfererState(data) {
+    if (typeof data.interferer_enable === 'boolean') state.interferer_enable = data.interferer_enable;
+    if (Number.isFinite(data.interferer_angle_deg)) {
+        state.interferer_angle_deg = data.interferer_angle_deg;
+        setInterfererPair('interferer-angle', 'val-interferer-angle', data.interferer_angle_deg);
+    }
+    if (Number.isFinite(data.interferer_power_dbfs)) {
+        state.interferer_power_dbfs = data.interferer_power_dbfs;
+        setInterfererPair('interferer-power', 'val-interferer-power', data.interferer_power_dbfs);
+    }
+    if (Number.isFinite(data.interferer_offset_hz)) {
+        state.interferer_offset_hz = data.interferer_offset_hz;
+        // Coherent (0 Hz) leaves the slider on its default to return to.
+        if (data.interferer_offset_hz !== 0) {
+            interfererOffsetKhz = data.interferer_offset_hz / 1e3;
+            setInterfererPair('interferer-offset', 'val-interferer-offset', interfererOffsetKhz);
+        }
+    }
+    if (Number.isFinite(data.interferer_phase_deg)) {
+        state.interferer_phase_deg = data.interferer_phase_deg;
+        setInterfererPair('interferer-phase', 'val-interferer-phase', Math.round(data.interferer_phase_deg));
+    }
+    applyInterfererUi();
+}
+
+/** Peak dBFS within a few bins of `hz` -- the tone's level on the FFT. */
+function toneLevelDbfs(data, hz) {
+    let best = -Infinity;
+    let bestDist = Infinity;
+    let idx = -1;
+    for (let i = 0; i < data.xf.length; i++) {
+        const dist = Math.abs(data.xf[i] - hz);
+        if (dist < bestDist) { bestDist = dist; idx = i; }
+    }
+    for (let i = Math.max(0, idx - 3); i <= Math.min(data.xf.length - 1, idx + 3); i++) {
+        best = Math.max(best, data.max_gain[i]);
+    }
+    return best;
+}
+
+const SUPPRESSION_TITLE = 'How much lower Interferer vs Target reads under MVDR than under Manual, '
+    + 'same Steer Angle and settings.';
+
+function updateInterfererReadout(data) {
+    const ratioEl = document.getElementById('interferer-ratio');
+    const supEl = document.getElementById('interferer-suppression');
+    const hint = document.getElementById('interferer-hint');
+    if (!state.interferer_enable || !ratioEl) return;
+
+    const key = interfererSettingsKey();
+    if (key !== interfererRatioKey) {
+        interfererRatioKey = key;
+        interfererRatio.manual = null;
+        interfererRatio.mvdr = null;
+    }
+
+    const held = HOLD_MODES.includes(data.sweep_mode);
+    const tgt = data.target_tone_hz;
+    const intf = data.interferer_freq_hz;
+    const binHz = data.xf.length > 1 ? Math.abs(data.xf[1] - data.xf[0]) : 0;
+    let msg = '';
+    if (!Number.isFinite(tgt) || !Number.isFinite(intf)) {
+        msg = 'Waiting for a sweep to find the target tone.';
+    } else if (Math.abs(intf - tgt) < 8 * binHz) {
+        // Coherent, or nearly: one peak on the FFT, nothing to tell apart.
+        msg = 'Coherent: the two tones overlap on the FFT, so they cannot be measured apart. '
+            + 'Watch the beam pattern instead.';
+    } else if (!held) {
+        // A sweep's spectrum comes from its loudest angle, which may be the
+        // interferer's own direction -- not a fair comparison.
+        msg = 'Set Mode to Signal vs Time to hold the beam on the target and measure suppression.';
+    }
+
+    if (msg) {
+        ratioEl.textContent = '-- dB';
+    } else {
+        const ratio = toneLevelDbfs(data, intf) - toneLevelDbfs(data, tgt);
+        interfererRatio[state.bfMode === 'mvdr' ? 'mvdr' : 'manual'] = ratio;
+        ratioEl.textContent = `${ratio.toFixed(1)} dB`;
+    }
+
+    if (interfererRatio.manual !== null && interfererRatio.mvdr !== null) {
+        supEl.textContent = `${(interfererRatio.manual - interfererRatio.mvdr).toFixed(1)} dB`;
+    } else {
+        supEl.textContent = '-- dB';
+        if (!msg) {
+            msg = `Now switch to ${state.bfMode === 'mvdr' ? 'Manual' : 'MVDR'} at this Steer Angle `
+                + 'to compare. Changing the angle, taper, phases or interferer starts the comparison over.';
+        }
+    }
+    if (hint) hint.textContent = msg;
+    // The tile sits under the plot, far from the pane's hint; say why it is
+    // empty where the student is looking.
+    const supBox = document.getElementById('interferer-suppression-box');
+    if (supBox) supBox.title = msg || SUPPRESSION_TITLE;
+}
+
+/* FFT tone markers. The FFT x axis is negated (see updateFftChart), so the
+   markers are too. */
+function fftToneShapes(data) {
+    const line = (hz, color) => ({
+        type: 'line', xref: 'x', yref: 'paper', x0: -hz / 1e6, x1: -hz / 1e6, y0: 0, y1: 1,
+        line: { color, width: 1.5, dash: 'dot' },
+    });
+    const label = (hz, text, color, y) => ({
+        xref: 'x', yref: 'paper', x: -hz / 1e6, y, text, showarrow: false,
+        font: { color, size: 11 },
+    });
+    const shapes = [];
+    const annotations = [];
+    if (Number.isFinite(data.target_tone_hz)) {
+        shapes.push(line(data.target_tone_hz, '#10b981'));
+        annotations.push(label(data.target_tone_hz, 'Target', '#10b981', 1.0));
+    }
+    if (Number.isFinite(data.interferer_freq_hz)) {
+        shapes.push(line(data.interferer_freq_hz, '#f59e0b'));
+        annotations.push(label(data.interferer_freq_hz, 'Interferer', '#f59e0b', 0.93));
+    }
+    return { shapes, annotations };
+}
+
+let fftMarkersShown = false;
+function clearFftToneMarkers() {
+    if (!fftMarkersShown || !document.getElementById('chart-fft')?.data) return;
+    fftMarkersShown = false;
+    Plotly.relayout('chart-fft', { shapes: [], annotations: [] });
+}
 
 /* --- Base Config Events --- */
 const freqInput = document.getElementById('freq');
@@ -1375,6 +1642,38 @@ function updateBeamSquintDisplay() {
 }
 
 document.getElementById('opt-show-squint')?.addEventListener('change', updateBeamSquintDisplay);
+
+/* --- Angle stat: one box, tap to switch between peak and centroid ---
+   Both values update every sweep so the switch is instant. The choice is a
+   per-viewer convenience, so it lives in localStorage and the box still works
+   when storage is blocked. */
+const ANGLE_MODE_KEY = 'phaser_angle_stat';
+const ANGLE_TITLES = {
+    peak: 'Peak: the angle of the strongest point in the pattern. Tap for Centroid.',
+    centroid: 'Centroid: power-weighted center of the mainlobe (within 3 dB of the peak). '
+        + 'Steadier than Peak when the peak is clipped flat. Tap for Peak.',
+};
+const angleStats = { peak: '-- °', centroid: '-- °' };
+let angleMode = 'peak';
+try {
+    if (localStorage.getItem(ANGLE_MODE_KEY) === 'centroid') angleMode = 'centroid';
+} catch { /* storage blocked: default to peak */ }
+
+function renderAngleStat() {
+    const box = document.getElementById('stat-angle-box');
+    if (!box) return;
+    document.getElementById('stat-angle-label').textContent =
+        angleMode === 'peak' ? 'Angle · Peak' : 'Angle · Centroid';
+    document.getElementById('stat-angle').innerText = angleStats[angleMode];
+    box.title = ANGLE_TITLES[angleMode];
+}
+
+document.getElementById('stat-angle-box')?.addEventListener('click', () => {
+    angleMode = angleMode === 'peak' ? 'centroid' : 'peak';
+    try { localStorage.setItem(ANGLE_MODE_KEY, angleMode); } catch { /* ignore */ }
+    renderAngleStat();
+});
+renderAngleStat();
 
 /* --- Show Logs Tab toggle --- */
 const LOGS_TAB_KEY = 'phaser_show_logs_tab';
@@ -1480,6 +1779,23 @@ function applyInitialStateToControls() {
         ignoreRes.checked = Boolean(state.ignore_res);
     }
 
+    // Digital beam weights. A preset or a server reload that changes them
+    // otherwise leaves the sliders showing the old values.
+    for (const [slId, inId, key] of [
+        ['b0_gain', 'val-b0g', 'B0_Gain'], ['b1_gain', 'val-b1g', 'B1_Gain'],
+        ['b0_phase', 'val-b0p', 'Beam0_Phase'], ['b1_phase', 'val-b1p', 'Beam1_Phase'],
+    ]) {
+        const sl = document.getElementById(slId), inp = document.getElementById(inId);
+        if (sl) sl.value = String(state[key]);
+        if (inp) inp.value = String(state[key]);
+    }
+
+    if (steerAngleSlider && steerAngleInput && isHoldMode()) {
+        steerAngleSlider.value = String(state.hold_angle);
+        steerAngleInput.value = String(state.hold_angle);
+    }
+    syncSweepModeControls();
+
     // Update beam squint display based on current BW
     updateBeamSquintDisplay();
 }
@@ -1506,7 +1822,8 @@ function armShutdownIfPermitted(available) {
     pill.classList.add('btn-hold');
     pill.setAttribute('role', 'button');
     pill.setAttribute('tabindex', '0');
-    pill.title = 'Hold to shut the Phaser down cleanly.';
+    shutdownArmed = true;
+    pill.title = connectionPillTitle();
 
     wireHoldToCommit(pill, SHUTDOWN_HOLD_MS, async () => {
         try {
@@ -1526,22 +1843,48 @@ function armShutdownIfPermitted(available) {
         }
         return false;
     });
-    shutdownArmed = true;
 }
 
-function updateHardwareConnectionStatus(connected) {
+/* One pill says what the data is coming from. Real hardware reads Connected
+   (green); either simulator reads Simulated (amber), so simulated data never
+   looks like a live kit -- the Pi's --sim backend used to show a plain green
+   Connected. The tooltip tells the two simulators apart. */
+const CONNECTION_DOT = { ok: 'connected', sim: 'warn', down: 'disconnected' };
+let backendSimMode = false;
+let connectionInfo = '';
+
+function connectionPillTitle() {
+    const hold = shutdownArmed ? 'Hold to shut the Phaser down cleanly.' : '';
+    return [connectionInfo, hold].filter(Boolean).join('\n');
+}
+
+function setConnectionPill(text, tone, title) {
     const dot = document.getElementById('connection-dot');
-    const text = document.getElementById('connection-text');
+    const label = document.getElementById('connection-text');
+    if (dot) {
+        dot.classList.remove('connected', 'warn', 'disconnected');
+        dot.classList.add(CONNECTION_DOT[tone]);
+    }
+    if (label) label.innerText = text;
+    connectionInfo = title || '';
+    const pill = document.getElementById('connection-pill');
+    if (pill) pill.title = connectionPillTitle();
+}
+
+function updateHardwareConnectionStatus(connected, simMode) {
+    if (simMode !== undefined) backendSimMode = !!simMode;
     console.log('[HW] updateHardwareConnectionStatus:', connected);
     addRuntimeLog('info', 'HW', `Hardware connected: ${connected}`);
-    if (connected) {
-        dot?.classList.remove('disconnected');
-        dot?.classList.add('connected');
-        if (text) text.innerText = 'Connected';
+    if (!connected) {
+        setConnectionPill('Hardware Offline', 'down', 'The backend is up but cannot reach the Phaser.');
+    } else if (resolveTransportMode() === 'sim') {
+        setConnectionPill('Simulated', 'sim',
+            'Simulated data from the in-browser simulator. No Phaser hardware is connected.');
+    } else if (backendSimMode) {
+        setConnectionPill('Simulated', 'sim',
+            "Simulated data from the Pi's simulator (--sim). No Phaser hardware is connected.");
     } else {
-        dot?.classList.remove('connected');
-        dot?.classList.add('disconnected');
-        if (text) text.innerText = 'Hardware Offline';
+        setConnectionPill('Connected', 'ok', 'Connected to the Phaser hardware.');
     }
 }
 
@@ -1553,41 +1896,23 @@ async function loadStateFromServer() {
         backendStateLoaded = true;
         if (Number.isFinite(msg.data.SignalFreq)) state.SignalFreq = msg.data.SignalFreq;
         if (Number.isFinite(msg.data.Rx_freq)) state.Rx_freq = msg.data.Rx_freq;
+        if (msg.data.Rx_freq_source !== undefined) state.Rx_freq_source = msg.data.Rx_freq_source;
+        if (msg.data.Rx_freq_warnings !== undefined) state.Rx_freq_warnings = msg.data.Rx_freq_warnings;
+        updateIfStatus();
         if (Number.isFinite(msg.data.Rx_gain)) state.Rx_gain = msg.data.Rx_gain;
         if (Number.isFinite(msg.data.Tx_gain)) state.Tx_gain = msg.data.Tx_gain;
         if (Number.isFinite(msg.data.Averages)) state.Averages = msg.data.Averages;
         if (Number.isFinite(msg.data.d)) state.d = msg.data.d;
         if (Number.isFinite(msg.data.BW)) state.BW = msg.data.BW;
+        if (typeof msg.data.sweep_mode === 'string') state.mode = msg.data.sweep_mode;
+        if (Number.isFinite(msg.data.hold_angle)) state.hold_angle = msg.data.hold_angle;
 
         // Update hardware connection indicator
-        updateHardwareConnectionStatus(msg.data.hardware_connected ?? false);
+        updateHardwareConnectionStatus(msg.data.hardware_connected ?? false, msg.data.sim_mode);
         armShutdownIfPermitted(msg.data.shutdown_available === true);
 
-        // Reveal the instructor-only interferer panel iff (a) URL has
-        // ?instructor=1 AND (b) backend is running in sim mode. Also
-        // hydrate the panel's controls from the current server state.
-        revealSimInterfererIfEligible(msg.data);
         revealCtfIfEligible();
-        if (typeof msg.data.sim_interferer_enable === 'boolean') {
-            state.sim_interferer_enable = msg.data.sim_interferer_enable;
-            const el = document.getElementById('sim-interferer-enable');
-            if (el) el.checked = msg.data.sim_interferer_enable;
-        }
-        if (Number.isFinite(msg.data.sim_interferer_angle_deg)) {
-            state.sim_interferer_angle_deg = msg.data.sim_interferer_angle_deg;
-            const s = document.getElementById('sim-interferer-angle');
-            const n = document.getElementById('val-sim-interferer-angle');
-            if (s) s.value = msg.data.sim_interferer_angle_deg;
-            if (n) n.value = msg.data.sim_interferer_angle_deg;
-        }
-        if (Number.isFinite(msg.data.sim_interferer_power_db)) {
-            state.sim_interferer_power_db = msg.data.sim_interferer_power_db;
-            const s = document.getElementById('sim-interferer-power');
-            const n = document.getElementById('val-sim-interferer-power');
-            if (s) s.value = msg.data.sim_interferer_power_db;
-            if (n) n.value = msg.data.sim_interferer_power_db;
-        }
-
+        loadInterfererState(msg.data);
         applyInitialStateToControls();
     } catch (err) {
         console.warn('Failed to load initial state from server:', err);
@@ -1674,6 +1999,12 @@ function applyPlotTheme() {
     });
 
     Plotly.relayout('chart-tracking', {
+        ...common,
+        'xaxis.gridcolor': palette.gridColor,
+        'yaxis.gridcolor': palette.gridColor,
+    });
+
+    Plotly.relayout('chart-adaptive', {
         ...common,
         'xaxis.gridcolor': palette.gridColor,
         'yaxis.gridcolor': palette.gridColor,
@@ -1771,13 +2102,125 @@ Plotly.newPlot('chart-fft', [{
     yaxis: { title: 'Amplitude (dBFS)', range: [-100, 0], gridcolor: getPlotPalette().gridColor, griddash: 'dash' }
 }), {displayModeBar: false, responsive: true});
 
+/* --- Adaptive tab: the array's response with the MVDR weights -------------
+   The weights are two complex numbers, which say nothing until they are turned
+   back into a pattern; this is where the null on the interferer shows. Only a
+   held beam has one set of weights (a sweep re-solves them at every angle),
+   so the backend attaches adaptive_pattern only then, and the tab is only
+   offered in MVDR mode. */
+Plotly.newPlot('chart-adaptive', [
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Conventional',
+      line: { color: '#94a3b8', width: 2, dash: 'dash' } },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'MVDR',
+      line: { color: '#6366f1', width: 3 } },
+], Object.assign({}, getLayoutBase(), {
+    xaxis: { title: 'Arrival Angle (°)', range: [-90, 90], gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Response (dB, 0 = look direction)', range: [-60, 5], gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    showlegend: true,
+    legend: { x: 1, xanchor: 'right', y: 1 },
+    annotations: [adaptiveEmptyNote()],
+}), {displayModeBar: false, responsive: true});
+
+function adaptiveEmptyNote() {
+    return {
+        xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false,
+        text: 'Hold the beam (Mode: Signal vs Time) in MVDR to see the adaptive pattern.',
+        font: { size: 13, color: getPlotPalette().fontColor },
+    };
+}
+
+function syncAdaptiveTab() {
+    const btn = document.getElementById('tab-btn-adaptive');
+    if (!btn) return;
+    const show = state.bfMode === 'mvdr';
+    btn.hidden = !show;
+    if (!show && btn.classList.contains('active')) {
+        document.querySelector('[data-target="tab-rect"]')?.click();
+    }
+    if (!show) clearAdaptivePattern();
+}
+
+/** Back to the empty note: the last pattern no longer describes the beam. */
+function clearAdaptivePattern() {
+    adaptiveLatest = null;
+    adaptiveDrawn = null;
+    if (!document.getElementById('chart-adaptive')?.data) return;
+    Plotly.update('chart-adaptive', { x: [[], []], y: [[], []] },
+        { shapes: [], annotations: [adaptiveEmptyNote()] });
+}
+
+function drawAdaptivePattern() {
+    if (!adaptiveLatest || adaptiveLatest === adaptiveDrawn) return;
+    adaptiveDrawn = adaptiveLatest;
+    const pat = adaptiveLatest.adaptive_pattern;
+    const look = adaptiveLatest.hold_angle_deg;
+    const marker = (x, color, text, y) => ({
+        shape: {
+            type: 'line', x0: x, x1: x, y0: 0, y1: 1, yref: 'paper',
+            line: { color, width: 1.5, dash: 'dot' },
+        },
+        note: { x, y, xref: 'x', yref: 'paper', text, showarrow: false, font: { color, size: 11 } },
+    });
+    const marks = [];
+    // Below the top centre, where the Interferer badge sits.
+    if (Number.isFinite(look)) marks.push(marker(look, '#10b981', 'Look', 0.9));
+    if (state.interferer_enable) {
+        marks.push(marker(state.interferer_angle_deg, '#f59e0b', 'Interferer', 0.85));
+    }
+    // MVDR can rise well above 0 dB away from the look direction -- a jammer
+    // near the sub-arrays' grating ambiguity (+/-30 deg at boresight) takes
+    // large weights to null -- so the top follows the data.
+    const top = Math.max(5, Math.ceil(Math.max(...pat.adaptive_db) / 5) * 5 + 5);
+    Plotly.update('chart-adaptive', {
+        x: [pat.angles, pat.angles],
+        y: [pat.conventional_db, pat.adaptive_db],
+    }, {
+        shapes: marks.map((m) => m.shape),
+        annotations: marks.map((m) => m.note),
+        'yaxis.range': [-60, top],
+    });
+}
+
 Plotly.newPlot('chart-tracking', [{
-    x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#ef4444', width: 3 }
+    x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#ef4444', width: 3 },
+    hovertemplate: 'Sweep %{x}<br>%{y:.1f}°<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
     xaxis: { title: 'Sweep Count', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
     yaxis: { title: 'Steering Angle (°)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-90, 90] }
 }), {displayModeBar: false, responsive: true});
 
+// The Tracking tab is two plots in one: peak steering angle per sweep in Beam
+// Sweep, and peak amplitude against time in Signal vs Time.
+function configureTrackingChart() {
+    // applyInitialStateToControls() first runs before this chart exists.
+    if (!document.getElementById('chart-tracking')?.data) return;
+    const held = isHoldMode();
+    Plotly.restyle('chart-tracking', {
+        x: [held ? svtTime : timeHistory],
+        y: [held ? svtGain : angleHistory],
+        hovertemplate: held
+            ? '%{x:.2f} s<br>%{y:.2f} dBFS<extra></extra>'
+            : 'Sweep %{x}<br>%{y:.1f}°<extra></extra>',
+    });
+    Plotly.relayout('chart-tracking', held ? {
+        'xaxis.title.text': 'Time (s)',
+        'xaxis.autorange': false,
+        'xaxis.range': svtXRange(),
+        'yaxis.title.text': 'Peak Amplitude (dBFS)',
+        'yaxis.autorange': true,
+        'title.text': svtTitle(),
+        'title.font.size': 13,
+        'margin.t': 40,
+    } : {
+        'xaxis.title.text': 'Sweep Count',
+        'xaxis.autorange': true,
+        'yaxis.title.text': 'Steering Angle (°)',
+        'yaxis.autorange': false,
+        'yaxis.range': [-90, 90],
+        'title.text': '',
+        'margin.t': 20,
+    });
+}
 
 function updatePlotLimits() {
     const xMin = parseFloat(document.getElementById('val-xmin').value);
@@ -1809,6 +2252,10 @@ let sweepCounter = 0;
 
 const transport = createTransport({
     onMessage: (msg) => {
+        if (msg.type === 'hardware_missing') {
+            showHardwareMissing(msg.data || {});
+            return;
+        }
         if (msg.type === 'backend-ready' && msg.state) {
             // Initial state from backend - mark as ready and load state
             if (msg.state.status === 'ok' && msg.state.data) {
@@ -1818,12 +2265,19 @@ const transport = createTransport({
                 backendStateLoaded = true;
                 if (Number.isFinite(data.SignalFreq)) state.SignalFreq = data.SignalFreq;
                 if (Number.isFinite(data.Rx_freq)) state.Rx_freq = data.Rx_freq;
+                if (data.Rx_freq_source !== undefined) state.Rx_freq_source = data.Rx_freq_source;
+                if (data.Rx_freq_warnings !== undefined) state.Rx_freq_warnings = data.Rx_freq_warnings;
+                updateIfStatus();
                 if (Number.isFinite(data.Rx_gain)) state.Rx_gain = data.Rx_gain;
                 if (Number.isFinite(data.Tx_gain)) state.Tx_gain = data.Tx_gain;
                 if (Number.isFinite(data.Averages)) state.Averages = data.Averages;
                 if (Number.isFinite(data.d)) state.d = data.d;
                 if (Number.isFinite(data.BW)) state.BW = data.BW;
-                updateHardwareConnectionStatus(data.hardware_connected ?? false);
+                // Adopt the backend's sweep mode and hold, or the first
+                // set_state would silently drop a held beam back to a sweep.
+                if (typeof data.sweep_mode === 'string') state.mode = data.sweep_mode;
+                if (Number.isFinite(data.hold_angle)) state.hold_angle = data.hold_angle;
+                updateHardwareConnectionStatus(data.hardware_connected ?? false, data.sim_mode);
                 armShutdownIfPermitted(data.shutdown_available === true);
                 applyInitialStateToControls();
                 setBackendStatus('ready', 'Backend: Ready');
@@ -1848,18 +2302,15 @@ const transport = createTransport({
     onConnectionStatus: (status) => {
         // Connection status update
         if (status.connected) {
-            document.getElementById('connection-dot')?.classList.replace('disconnected', 'connected');
-            document.getElementById('connection-text').innerText = 'Connected';
+            updateHardwareConnectionStatus(true);
         } else {
-            document.getElementById('connection-dot')?.classList.replace('connected', 'disconnected');
-            document.getElementById('connection-text').innerText = 'Disconnected';
+            setConnectionPill('Disconnected', 'down', 'Lost the link to the backend.');
         }
     },
     onOpen: () => {
         isConnected = true;
         // Don't set "Connected" here - let loadStateFromServer check hardware status
-        document.getElementById('connection-dot')?.classList.replace('connected', 'disconnected');
-        document.getElementById('connection-text').innerText = 'Checking...';
+        setConnectionPill('Checking...', 'down', 'Backend connected, checking the hardware.');
         addRuntimeLog('info', 'WS', 'Backend connected, checking hardware...');
         setBackendStatus('starting', 'Backend: Probing...');
         updateSweepAvailability();
@@ -1870,8 +2321,7 @@ const transport = createTransport({
         backendStateLoaded = false;
         backendProbeState.ready = false;
         backendProbeState.probing = false;
-        document.getElementById('connection-dot').classList.replace('connected', 'disconnected');
-        document.getElementById('connection-text').innerText = 'Disconnected - Retrying...';
+        setConnectionPill('Disconnected - Retrying...', 'down', 'Lost the link to the backend. Retrying every 2 s.');
         setBackendStatus('error', 'Backend: Offline');
         updateSweepAvailability();
         addRuntimeLog('warn', 'WS', 'Disconnected, retrying in 2s');
@@ -1886,8 +2336,8 @@ const transport = createTransport({
 });
 transport.connect();
 
-/* --- Transport Self-Check & Badge --- */
-(function initTransportBadge() {
+/* --- Transport Self-Check --- */
+(function logTransportMode() {
     // Ask the transport layer which mode it picked rather than re-deriving it
     // here. The old copy of this logic tested for an IPC bridge that no longer
     // exists, so it could only ever report "web".
@@ -1895,18 +2345,6 @@ transport.connect();
     addRuntimeLog('info', 'TRANSPORT', mode === 'sim'
         ? 'mode=sim  (in-browser simulator, no hardware)'
         : 'mode=web  (WebSocket + REST)');
-
-    // The badge is for non-default transports; plain web mode leaves it hidden.
-    const badgeEl = document.getElementById('transport-badge');
-    if (!badgeEl) return;
-    if (mode === 'sim') {
-        badgeEl.textContent = 'SIMULATION';
-        badgeEl.style.display = 'inline-flex';
-        badgeEl.title = 'Simulated data — no Phaser hardware is connected';
-        badgeEl.style.setProperty('--transport-badge-bg', 'rgba(245,158,11,0.15)');
-        badgeEl.style.setProperty('--transport-badge-color', '#f59e0b');
-        badgeEl.style.setProperty('--transport-badge-border', 'rgba(245,158,11,0.45)');
-    }
 })();
 
 function formatCalibrationStatus(data) {
@@ -1950,32 +2388,53 @@ function formatCalibrationSummary(data) {
     return 'Cal: Idle';
 }
 
-function setCalibrationButtonsBusy(running, taskName = null) {
-    const btnCal = document.getElementById('btn-calibrate-phaser');
-    const btnHb100 = document.getElementById('btn-find-hb100');
-    console.log('[CAL] setCalibrationButtonsBusy:', { running, taskName, btnCal: !!btnCal, btnHb100: !!btnHb100 });
-    if (!btnCal || !btnHb100) {
-        console.warn('[CAL] Buttons not found!');
-        return;
-    }
+// Idle label and running label for each calibration button, keyed by the
+// task that owns it. Driving all three from one table means adding a fourth
+// cannot leave a button live while another task holds the hardware.
+const CAL_BUTTONS = [
+    { id: 'btn-find-hb100', task: 'find_hb100', idle: 'Find HB100', busy: 'Scanning...' },
+    { id: 'btn-characterize', task: 'characterize', idle: 'Characterize IF', busy: 'Sweeping IF...' },
+    { id: 'btn-calibrate-phaser', task: 'phaser_cal', idle: 'Calibrate Phaser', busy: 'Calibrating...' },
+];
 
+function setCalibrationButtonsBusy(running, taskName = null) {
     const isRunning = Boolean(running);
     const task = String(taskName || '');
-
-    btnCal.disabled = isRunning;
-    btnHb100.disabled = isRunning;
-
-    if (isRunning && task === 'phaser_cal') {
-        btnCal.innerText = 'Calibrating...';
-        btnHb100.innerText = 'Find HB100';
-    } else if (isRunning && task === 'find_hb100') {
-        btnCal.innerText = 'Calibrate Phaser';
-        btnHb100.innerText = 'Scanning...';
-    } else {
-        btnCal.innerText = 'Calibrate Phaser';
-        btnHb100.innerText = 'Find HB100';
+    for (const spec of CAL_BUTTONS) {
+        const el = document.getElementById(spec.id);
+        if (!el) continue;
+        el.disabled = isRunning;
+        el.innerText = (isRunning && task === spec.task) ? spec.busy : spec.idle;
     }
-    console.log('[CAL] Button states after update:', { calText: btnCal.innerText, hb100Text: btnHb100.innerText });
+}
+
+// Pill next to the connection indicator. Without it a kit running on an
+// unverified IF -- the failure that cost a day on phaser-00 -- looks exactly
+// like a measured one. The pill stays short; the why goes in the tooltip.
+function updateIfStatus() {
+    const pill = document.getElementById('if-pill');
+    if (!pill) return;
+    const ghz = Number(state.Rx_freq) / 1e9;
+    const source = state.Rx_freq_source || '';
+    // Rx_freq has a bootstrap default, so wait for the backend to say where
+    // the value came from rather than showing a number nobody measured.
+    if (!source || !Number.isFinite(ghz)) { pill.style.display = 'none'; return; }
+
+    const simulated = /simulat/i.test(source);
+    const measured = simulated || /measured/i.test(source);
+    const label = simulated ? 'Simulated -- no kit to measure'
+        : /measured/i.test(source) ? 'Measured on this kit'
+        : (/override/i.test(source) ? 'Forced by config override' : 'Not measured on this kit');
+    document.getElementById('if-text').innerText = `IF ${ghz.toFixed(3)} GHz`;
+    const dot = document.getElementById('if-dot');
+    dot.classList.toggle('connected', measured);
+    dot.classList.toggle('warn', !measured);
+
+    const lines = [label, `Source: ${source}`];
+    for (const w of state.Rx_freq_warnings || []) lines.push(`Warning: ${w}`);
+    if (!measured) lines.push('Run Characterize IF once, with the HB100 aimed at the array.');
+    pill.title = lines.join('\n');
+    pill.style.display = '';
 }
 
 function updateCalibrationPill(data, fallbackText) {
@@ -2047,7 +2506,7 @@ async function refreshCalibrationStatus() {
             updateCalibrationModal(cal);
             trackCalibrationLogUpdates(cal);
             if (cal && !cal.running && cal.returncode === 0) {
-                const reloadableTasks = new Set(['find_hb100', 'phaser_cal']);
+                const reloadableTasks = new Set(['find_hb100', 'phaser_cal', 'characterize']);
                 if (reloadableTasks.has(cal.task)) {
                     const reloadKey = `${cal.task}:${cal.started_at}:${cal.returncode}`;
                     if (reloadKey !== calibrationLogState.lastReloadKey) {
@@ -2080,6 +2539,7 @@ function showCalibrationModal(taskName) {
 
     const taskLabels = {
         'find_hb100': 'Find HB100',
+        'characterize': 'Characterize IF',
         'phaser_cal': 'Calibrate Phaser',
     };
     if (titleEl) titleEl.innerText = taskLabels[taskName] || 'Calibration';
@@ -2175,7 +2635,7 @@ async function cancelCalibrationTask() {
     try {
         const msg = await transport.cancelCalibration();
         if (msg.status === 'ok') {
-            addRuntimeLog('info', 'CAL', 'Calibration cancelled');
+            addRuntimeLog('info', 'CAL', 'Calibration canceled');
             setCalibrationButtonsBusy(false);
             hideCalibrationModal();
         } else {
@@ -2210,9 +2670,158 @@ async function runCalibrationTask(taskName) {
 document.getElementById('btn-calibrate-phaser')?.addEventListener('click', () => runCalibrationTask('phaser_cal'));
 document.getElementById('btn-find-hb100')?.addEventListener('click', () => runCalibrationTask('find_hb100'));
 
+// An in-app confirmation instead of the browser's confirm(). The native dialog
+// carries the browser's own chrome and the page's address ("phaser-00.local:8080
+// says"), which reads as a security warning rather than as part of the app.
+// Resolves true on Continue, false on Cancel, Escape, or a click outside.
+function confirmInApp({ title, paragraphs = [], bullets = [], note = '', confirmLabel = 'Continue' }) {
+    const overlay = document.getElementById('confirm-modal');
+    const body = document.getElementById('confirm-modal-body');
+    const okBtn = document.getElementById('btn-confirm-ok');
+    const cancelBtn = document.getElementById('btn-confirm-cancel');
+    if (!overlay || !body || !okBtn || !cancelBtn) return Promise.resolve(window.confirm(title));
+
+    document.getElementById('confirm-modal-title').textContent = title;
+    body.replaceChildren();
+    for (const text of paragraphs) {
+        const p = document.createElement('p');
+        p.textContent = text;
+        body.appendChild(p);
+    }
+    if (bullets.length) {
+        const ul = document.createElement('ul');
+        for (const text of bullets) {
+            const li = document.createElement('li');
+            li.textContent = text;
+            ul.appendChild(li);
+        }
+        body.appendChild(ul);
+    }
+    if (note) {
+        const p = document.createElement('p');
+        p.className = 'confirm-note';
+        p.textContent = note;
+        body.appendChild(p);
+    }
+    okBtn.textContent = confirmLabel;
+    overlay.hidden = false;
+    okBtn.focus();
+
+    return new Promise((resolve) => {
+        const finish = (answer) => {
+            overlay.hidden = true;
+            okBtn.removeEventListener('click', onOk);
+            cancelBtn.removeEventListener('click', onCancel);
+            overlay.removeEventListener('click', onOverlay);
+            document.removeEventListener('keydown', onKey);
+            resolve(answer);
+        };
+        const onOk = () => finish(true);
+        const onCancel = () => finish(false);
+        const onOverlay = (e) => { if (e.target === overlay) finish(false); };
+        const onKey = (e) => { if (e.key === 'Escape') finish(false); };
+        okBtn.addEventListener('click', onOk);
+        cancelBtn.addEventListener('click', onCancel);
+        overlay.addEventListener('click', onOverlay);
+        document.addEventListener('keydown', onKey);
+    });
+}
+
+/* --- Hardware missing ---
+   The backend answers with hardware_missing when the hardware would not start
+   (HardwareMissingServer in phaser_headless.py). It watches for the Pluto and
+   restarts itself once it appears, so the card mostly just waits: the 2 s
+   reconnect brings up the full backend, and the next good probe hides it. */
+let hardwareMissingShown = false;
+
+function showHardwareMissing(info) {
+    const overlay = document.getElementById('hw-missing-modal');
+    if (!overlay) return;
+    const title = info.pluto_found ? 'Hardware did not start' : 'Pluto not found';
+    document.getElementById('hw-missing-title').textContent = title;
+    document.getElementById('hw-missing-message').textContent = info.message || '';
+    document.getElementById('hw-missing-detail').textContent = info.detail ? `Backend: ${info.detail}` : '';
+    document.getElementById('btn-hw-shutdown').hidden = info.shutdown_available !== true;
+    const retry = document.getElementById('btn-hw-retry');
+    retry.disabled = false;
+    retry.textContent = 'Retry';
+    overlay.hidden = false;
+    setConnectionPill(info.pluto_found ? 'Hardware Offline' : 'Pluto Not Found', 'down', title);
+    setBackendStatus('error', 'Backend: No Hardware');
+    if (!hardwareMissingShown) addRuntimeLog('error', 'HW', `${title}. ${info.detail || ''}`.trim());
+    hardwareMissingShown = true;
+}
+
+function hideHardwareMissing() {
+    const overlay = document.getElementById('hw-missing-modal');
+    if (overlay) overlay.hidden = true;
+    if (hardwareMissingShown) addRuntimeLog('info', 'HW', 'Hardware found');
+    hardwareMissingShown = false;
+}
+
+document.getElementById('btn-hw-retry')?.addEventListener('click', async () => {
+    const retry = document.getElementById('btn-hw-retry');
+    retry.disabled = true;
+    retry.textContent = 'Restarting...';
+    try {
+        await transport.invoke('retry_hardware', {});
+    } catch (err) {
+        addRuntimeLog('error', 'HW', 'Retry failed: ' + err);
+        retry.disabled = false;
+        retry.textContent = 'Retry';
+    }
+});
+
+document.getElementById('btn-hw-shutdown')?.addEventListener('click', async () => {
+    const ok = await confirmInApp({
+        title: 'Shut Down the Phaser',
+        paragraphs: ['Wait for the LEDs to go out before you pull the USB-C power.'],
+        confirmLabel: 'Shut Down',
+    });
+    if (!ok) return;
+    try {
+        const resp = await transport.invoke('power_off', {});
+        addRuntimeLog(resp?.status === 'ok' ? 'warn' : 'error', 'POWER', resp?.message || 'Shutdown refused');
+        if (resp?.status === 'ok') document.getElementById('hw-missing-message').textContent = 'Shutting down...';
+    } catch (err) {
+        addRuntimeLog('error', 'POWER', 'Could not shut down: ' + err);
+    }
+});
+
+// Characterization confirms first, unlike the other two. It is a once-per-kit
+// bench step rather than a routine one, it is worthless unless the HB100 is
+// actually set up, and it rewrites the IF the whole backend then runs at -- so
+// it is worth a sentence before a minute of sweeping.
+document.getElementById('btn-characterize')?.addEventListener('click', async () => {
+    const ok = await confirmInApp({
+        title: 'Characterize IF',
+        paragraphs: [
+            'Measure this kit\'s usable IF range. The sweep runs the receiver from '
+            + '1.2 to 2.6 GHz against the HB100, takes about a minute, and stores '
+            + 'the result for this kit only. You normally do it once, when the kit is new.',
+        ],
+        bullets: [
+            'The HB100 is powered and aimed at the array, at boresight.',
+            'Find HB100 has run first, so the stored source frequency is current.',
+        ],
+        note: 'Nothing is saved if the sweep hears nothing, so a bad run is safe.',
+        confirmLabel: 'Start',
+    });
+    if (!ok) {
+        addRuntimeLog('info', 'CAL', 'Characterize IF canceled before starting');
+        return;
+    }
+    runCalibrationTask('characterize');
+});
+
 document.getElementById('btn-reboot-phaser')?.addEventListener('click', async () => {
     const btn = document.getElementById('btn-reboot-phaser');
-    if (!confirm('Reboot the Phaser hardware? This will take about 30 seconds.')) return;
+    const ok = await confirmInApp({
+        title: 'Reboot the Phaser',
+        paragraphs: ['The Pi restarts and the page reconnects on its own in about 30 seconds.'],
+        confirmLabel: 'Reboot',
+    });
+    if (!ok) return;
     btn.disabled = true;
     btn.textContent = 'Rebooting...';
     addRuntimeLog('info', 'SYS', 'Sending reboot command to Phaser...');
@@ -2346,6 +2955,7 @@ function resizePlotsAfterSidebarTransition() {
       Plotly.Plots.resize(document.getElementById('chart-rect'));
       Plotly.Plots.resize(document.getElementById('chart-polar'));
       Plotly.Plots.resize(document.getElementById('chart-fft'));
+      Plotly.Plots.resize(document.getElementById('chart-adaptive'));
       Plotly.Plots.resize(document.getElementById('chart-tracking'));
   }, 300);
 }
@@ -2441,7 +3051,16 @@ function applyPhaseList(phases) {
 
 function applyLabPreset(preset) {
     if (!preset) return;
-    state.mode = preset.mode ?? state.mode;
+    // The preset's own ui_tab is clicked below, so no tab switch here. A hold
+    // mode holds at the current Steer Angle (preset 7: 0 unless moved).
+    setSweepMode(preset.mode ?? state.mode, { selectTab: false });
+    if (Number.isFinite(preset.hold_angle)) {
+        state.hold_angle = Math.max(-90, Math.min(90, preset.hold_angle));
+        if (steerAngleSlider && steerAngleInput) {
+            steerAngleSlider.value = String(state.hold_angle);
+            steerAngleInput.value = String(state.hold_angle);
+        }
+    }
     state.BW = Number.isFinite(preset.BW) ? preset.BW : state.BW;
     state.steer_res = Number.isFinite(preset.steer_res) ? preset.steer_res : state.steer_res;
     state.bits = Number.isFinite(preset.bits) ? preset.bits : state.bits;
@@ -2532,11 +3151,13 @@ function localLabPreset(labIdx) {
         case 5: return { ...base, BW: 500, ui_tab: 'tab-rect' };
 
         // Lab 6 — QUANTIZATION SIDELOBES (PDF p.21): PDF explicitly says
-        // "Blackman is the pre-programmed default for this lab" and sets
-        // steering angle to 15°. Uses Phase Shift Bits (not steer_res) as
-        // the quantization knob — set ignore_res=true so student's changes
-        // to the Bits slider drive the phase step.
-        case 6: return { ...base, ui_tab: 'tab-rect',
+        // "Blackman is the pre-programmed default for this lab", sets the
+        // steering angle to 15° and has the student carry the HB100 in an arc,
+        // then drop Phase Shift Bits to 2 and repeat. That is a walk with the
+        // beam held, so Signal vs Time, as legacy "Lab 6: Quantization" does.
+        // The Bits slider quantizes the held ramp as it does the sweep.
+        case 6: return { ...base, mode: 'Signal vs Time', hold_angle: 15,
+                         ui_tab: 'tab-tracking',
                          gainList: [6, 27, 66, 100, 100, 66, 27, 6],
                          ignore_res: true };
 
@@ -2546,11 +3167,15 @@ function localLabPreset(labIdx) {
         // the HB100 by hand and traces the pattern amplitude vs time.
         case 7: return { ...base, mode: 'Signal vs Time', ui_tab: 'tab-tracking' };
 
-        // Lab 8 — MONOPULSE TRACKING (PDF p.28): PDF selects Blackman taper
-        // and enables monopulse delta/error display. Tracking mode drives
-        // the closed-loop steering.
+        // Lab 8 — MONOPULSE TRACKING (PDF p.28): selecting the lab is step 1
+        // and choosing Blackman in the Gain tab is step 2, so the student
+        // applies the taper -- the preset loads uniform. Both digital beams
+        // start at 0 deg: the sum/delta pair assumes the two channels are in
+        // phase, and a Beam 1 Phase left over from Lab 4 skews the error
+        // function. Enables the monopulse delta/error display; Tracking mode
+        // drives the closed-loop steering.
         case 8: return { ...base, mode: 'Tracking', ui_tab: 'tab-rect',
-                         gainList: [6, 27, 66, 100, 100, 66, 27, 6],
+                         Beam0_Phase: 0, Beam1_Phase: 0,
                          showDelta: true, showError: true };
 
         default: return base;
@@ -2570,6 +3195,16 @@ async function fetchLabPreset(labIdx) {
 }
 
 function updateCharts(data) {
+    if (HOLD_MODES.includes(data.sweep_mode)) {
+        updateSignalVsTime(data);
+        return;
+    }
+    if (isHoldMode() && data.sweep_mode === undefined && !svtNoEchoWarned) {
+        // A backend from before this mode existed sweeps regardless.
+        svtNoEchoWarned = true;
+        addRuntimeLog('warn', 'SWEEP',
+            'Backend does not report a sweep mode, so it is still sweeping. Re-run install.sh on the Pi.');
+    }
     let peakIndex = 0;
     let peakValue = -1000;
     let xData = data.ArrayAngle || state.PhaseValues;
@@ -2675,16 +3310,33 @@ function updateCharts(data) {
         // Time tracking - show steering angle vs sweep count
         sweepCounter++;
         const peakAngle = xData[peakIndex];
+        const centroid = Number.isFinite(data.peak_angle_deg) ? data.peak_angle_deg : null;
         timeHistory.push(sweepCounter);
         angleHistory.push(peakAngle);
-        if(timeHistory.length > 100) { timeHistory.shift(); angleHistory.shift(); }
+        centroidHistory.push(centroid);
+        peakGainHistory.push(peakValue);
+        stampHistory.push(Date.now());
+        if(timeHistory.length > TRACK_HISTORY_MAX) {
+            timeHistory.shift(); angleHistory.shift(); centroidHistory.shift();
+            peakGainHistory.shift(); stampHistory.shift();
+        }
         Plotly.update('chart-tracking', {x: [timeHistory], y: [angleHistory]}, {});
+        const exportBtn = document.getElementById('btn-export-tracking');
+        if (exportBtn) exportBtn.disabled = false;
         
         // Update Stats displays
         document.getElementById('stat-peak').innerText = peakValue.toFixed(2) + " dB";
-        document.getElementById('stat-angle').innerText = xData[peakIndex].toFixed(1) + " °";
+        angleStats.peak = xData[peakIndex].toFixed(1) + " °";
+        // `+ 0` turns -0 into 0, so a centroid a hair below zero reads 0.0.
+        angleStats.centroid = centroid === null
+            ? "-- °" : (Number(centroid.toFixed(1)) + 0).toFixed(1) + " °";
+        renderAngleStat();
     }
-    
+
+    updateFftChart(data);
+}
+
+function updateFftChart(data) {
     // FFT data - apply same transforms as original Tkinter GUI (phaser_gui.py:2423)
     if(data.xf && data.max_gain) {
         // Debug: log FFT data range
@@ -2696,9 +3348,191 @@ function updateCharts(data) {
 
         // Negate and convert Hz to MHz to match original GUI behavior
         const xfMHz = data.xf.map(f => -f / 1e6);
-        Plotly.update('chart-fft', {x: [xfMHz], y: [data.max_gain]}, {});
+        let layout = {};
+        if (state.interferer_enable) {
+            layout = fftToneShapes(data);
+            fftMarkersShown = true;
+        } else if (fftMarkersShown) {
+            layout = { shapes: [], annotations: [] };
+            fftMarkersShown = false;
+        }
+        Plotly.update('chart-fft', {x: [xfMHz], y: [data.max_gain]}, layout);
+        updateInterfererReadout(data);
     }
 }
+
+/* --- Signal vs Time: peak amplitude of the held beam against time ---------- */
+function resetSvtHistory() {
+    svtT0 = null;
+    svtTime = []; svtGain = []; svtStamp = []; svtHold = [];
+}
+
+// Updates per second over the plotted window -- the number the L21 Lab text
+// quotes, so it is measured rather than assumed.
+function svtRate() {
+    const n = svtTime.length;
+    if (n < 2) return null;
+    const span = svtTime[n - 1] - svtTime[0];
+    return span > 0 ? (n - 1) / span : null;
+}
+
+function svtXRange() {
+    const last = svtTime.length ? svtTime[svtTime.length - 1] : 0;
+    const hi = Math.max(SVT_WINDOW_S, last);
+    return [hi - SVT_WINDOW_S, hi];
+}
+
+function svtTitle() {
+    const hold = svtHold.length ? svtHold[svtHold.length - 1] : state.hold_angle;
+    const rate = svtRate();
+    let title = `Beam held at ${Number(hold).toFixed(1)}°`;
+    title += rate === null ? '' : ` · ${rate.toFixed(1)} updates/s`;
+    if (state.phaseList.some((v) => Number(v) !== 0)) {
+        title += ' · Phase Control offsets active';
+    }
+    return title;
+}
+
+function updateSignalVsTime(data) {
+    const gain = data.ArrayGain;
+    if (!gain || !gain.length) return;
+    const peak = Math.max(...gain);
+    const hold = Number.isFinite(data.hold_angle_deg) ? data.hold_angle_deg : state.hold_angle;
+    const now = Date.now();
+    if (svtT0 === null) svtT0 = now;
+
+    svtTime.push((now - svtT0) / 1000);
+    svtGain.push(peak);
+    svtStamp.push(now);
+    svtHold.push(hold);
+    const last = svtTime[svtTime.length - 1];
+    while (svtTime.length > SVT_HISTORY_MAX
+           || (svtTime.length > 1 && last - svtTime[0] > SVT_WINDOW_S)) {
+        svtTime.shift(); svtGain.shift(); svtStamp.shift(); svtHold.shift();
+    }
+
+    // Every update is recorded, but drawn at most every SVT_DRAW_MS. One point
+    // per update means updates arrive as fast as the receiver can read, and
+    // redrawing the 16k-bin FFT and this trace for each one starved the page.
+    // In a hold mode the backend attaches the spectrum only a few times a
+    // second; keep the last one that had it.
+    if (data.xf && data.max_gain) svtLatestFft = data;
+    if (data.adaptive_pattern && state.bfMode === 'mvdr') adaptiveLatest = data;
+    if (svtDrawTimer === null) {
+        const wait = Math.max(0, SVT_DRAW_MS - (now - svtLastDraw));
+        svtDrawTimer = setTimeout(drawSignalVsTime, wait);
+    }
+}
+
+const SVT_DRAW_MS = 100;
+let svtLatestFft = null;
+let svtDrawnFft = null;
+let svtDrawTimer = null;
+let svtLastDraw = 0;
+
+function drawSignalVsTime() {
+    svtDrawTimer = null;
+    svtLastDraw = Date.now();
+    if (!svtGain.length) return;
+
+    if (isHoldMode()) {
+        Plotly.update('chart-tracking', { x: [svtTime], y: [svtGain] }, {
+            'xaxis.range': svtXRange(),
+            'title.text': svtTitle(),
+        });
+    }
+    const exportBtn = document.getElementById('btn-export-tracking');
+    if (exportBtn) exportBtn.disabled = false;
+
+    const peak = svtGain[svtGain.length - 1];
+    const hold = svtHold[svtHold.length - 1];
+    document.getElementById('stat-peak').innerText = peak.toFixed(2) + " dB";
+    angleStats.peak = Number(hold).toFixed(1) + " °";
+    angleStats.centroid = angleStats.peak;
+    renderAngleStat();
+    if (svtLatestFft && svtLatestFft !== svtDrawnFft) {
+        svtDrawnFft = svtLatestFft;
+        updateFftChart(svtLatestFft);
+    }
+    drawAdaptivePattern();
+}
+
+/* --- Tracking tab: Export CSV -----------------------------------------------
+ * Writes the history the tab keeps -- the last TRACK_HISTORY_MAX sweeps -- with
+ * no backend round trip, so it works the same against a Pi and in ?sim=1. The
+ * leading '#' lines record the settings in force at export time (not per row);
+ * most CSV readers take them as comments (pandas: comment='#').
+ */
+const csvFmt = (v, digits) => (Number.isFinite(v)
+    ? (Number(v.toFixed(digits)) + 0).toFixed(digits) : '');   // no "-0.000"
+
+// Signal vs Time: one row per update. The header records the held angle and
+// Signal Freq, which the L21 Lab needs to interpret the trace.
+function signalVsTimeCsv() {
+    const hold = svtHold.length ? svtHold[svtHold.length - 1] : state.hold_angle;
+    const rate = svtRate();
+    const lines = [
+        `# ADI Phaser Signal vs Time export, ${new Date().toISOString()}`,
+        `# mode=${state.mode} hold_angle_deg=${hold} signal_freq_hz=${state.SignalFreq}`
+            + ` rx_freq_hz=${state.Rx_freq} rx_gain_db=${state.Rx_gain}`
+            + ` | update_rate_per_s=${rate === null ? '' : rate.toFixed(2)}`
+            + ` | bits=${state.bits} averages=${state.Averages}`
+            + ` | gainList=${state.gainList.join(' ')} phaseList=${state.phaseList.join(' ')}`,
+        'sample,timestamp,t_s,hold_angle_deg,peak_dbfs',
+    ];
+    for (let i = 0; i < svtTime.length; i++) {
+        lines.push([
+            i + 1,
+            new Date(svtStamp[i]).toISOString(),
+            csvFmt(svtTime[i], 3),
+            csvFmt(svtHold[i], 1),
+            csvFmt(svtGain[i], 2),
+        ].join(','));
+    }
+    return lines.join('\n') + '\n';
+}
+
+function trackingCsv() {
+    const fmt = csvFmt;
+    const steer = state.ignore_res
+        ? `phase step = 1 LSB = ${360 / 2 ** state.bits} deg (ignore_res)`
+        : `steer_res ${state.steer_res} deg`;
+    const lines = [
+        `# ADI Phaser tracking export, ${new Date().toISOString()}`,
+        `# signal_freq_hz=${state.SignalFreq} rx_freq_hz=${state.Rx_freq} mode=${state.mode}`
+            + ` | sweep ${steer} | bits=${state.bits} averages=${state.Averages}`
+            + ` | gainList=${state.gainList.join(' ')} phaseList=${state.phaseList.join(' ')}`,
+        'sweep,timestamp,est_angle_deg,centroid_angle_deg,peak_gain_db',
+    ];
+    for (let i = 0; i < timeHistory.length; i++) {
+        lines.push([
+            timeHistory[i],
+            new Date(stampHistory[i]).toISOString(),
+            fmt(angleHistory[i], 3),
+            fmt(centroidHistory[i], 3),
+            fmt(peakGainHistory[i], 2),
+        ].join(','));
+    }
+    return lines.join('\n') + '\n';
+}
+
+document.getElementById('btn-export-tracking')?.addEventListener('click', () => {
+    const held = isHoldMode();
+    if (!(held ? svtTime.length : timeHistory.length)) {
+        addRuntimeLog('warn', 'ui', 'Export CSV: no sweeps recorded yet.');
+        return;
+    }
+    const blob = new Blob([held ? signalVsTimeCsv() : trackingCsv()], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const kind = held ? 'signal-vs-time' : 'tracking';
+    a.download = `phaser-${kind}-${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+});
 
 // Global UI interaction
 const sweepBtn = document.getElementById('btn-sweep');
@@ -2711,7 +3545,12 @@ sweepBtn.addEventListener('click', async () => {
     }
 
     if (!isSweeping) {
-        // Start sweeping - send current state first, then start
+        // Start sweeping - send current state first, then start. Signal vs
+        // Time counts from each Start, so a walk begins at t = 0.
+        if (isHoldMode()) {
+            resetSvtHistory();
+            configureTrackingChart();
+        }
         transport.send({ cmd: 'set_state', data: { state } });
         transport.send({ cmd: 'start_sweep' });
         isSweeping = true;
@@ -2734,7 +3573,9 @@ sweepBtn.addEventListener('click', async () => {
 /* --- Lab Pre-sets --- */
 document.querySelectorAll('.lab-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
-        const labIdx = parseInt(e.target.dataset.lab);
+        // currentTarget, not target: a click on the number badge targets the
+        // inner <span>, which has no data-lab, and loaded the base preset.
+        const labIdx = parseInt(e.currentTarget.dataset.lab);
         addRuntimeLog('info', 'LAB', `Loading lab preset ${labIdx}`);
         const preset = await fetchLabPreset(labIdx);
         applyLabPreset(preset);
@@ -2788,7 +3629,15 @@ async function probeBackendReadiness() {
             new Promise((_, reject) => setTimeout(() => reject(new Error('Backend probe timeout')), BACKEND_PROBE_TIMEOUT_MS)),
         ]);
 
+        if (msg.hardware_missing) {
+            // Not a backend that is still starting: retrying the probe cannot help.
+            showHardwareMissing(msg);
+            backendProbeState.probing = false;
+            updateSweepAvailability();
+            return;
+        }
         if (msg.status === 'ok' && msg.data) {
+            hideHardwareMissing();
             backendProbeState.ready = true;
             backendProbeState.retries = 0;
             setBackendStatus('ready', 'Backend: Ready');
@@ -2820,7 +3669,7 @@ async function probeBackendReadiness() {
 // Force resize all plots after initial render to prevent "jump" on first tab click
 // This ensures hidden plots have correct dimensions when first shown
 setTimeout(() => {
-    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-tracking'];
+    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-adaptive', 'chart-tracking'];
     chartIds.forEach(id => {
         const el = document.getElementById(id);
         if (el && window.Plotly) {

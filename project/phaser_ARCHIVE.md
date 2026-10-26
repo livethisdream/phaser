@@ -174,7 +174,50 @@ ADF4159 without the `/4` the CN0566 needs, and the Pi's `config.py` carried
 (as shipped) -> 18.4 dB (LO fixed) -> 45.3 dB (LO fixed + gain 30), against
 53.6 dB from `find_hb100`. The LO half is merged; the gain half is site config.
 
+# Operational runbooks (rotated 2026-10-15)
+
+Still accurate; moved out of the hot note's Status, which is for state
+rather than procedure.
+
+**CTF knobs, for the table:** the flag and sequence live in
+`/etc/default/phaser-ctf` and are in no repo. Thresholds are env-tunable
+(`PHASER_CTF_SOURCE`, `_TOLERANCE_DEG`, `_DWELL_S`, `_TRACK_SWEEPS`,
+`_SIGNAL_FLOOR_DB`) so they can be loosened without a redeploy.
+
+**Turning GUI shutdown off on one kit:** it is granted on every install now, so
+removing it is a per-kit action that has to be repeated after each install:
+
+```bash
+sudo rm /etc/sudoers.d/phaser-shutdown
+sudo systemctl restart phaser-headless
+```
+
+The restart is not optional — `shutdown_permitted()` caches the `sudo -l` probe
+for the process lifetime, so without it the UI keeps offering a gesture that now
+errors. Afterwards `get_state` reports `shutdown_available: false` and the pill
+goes back to being a plain readout.
+
+# Completed ToDo items (rotated 2026-10-15)
+
+- [x] Make `find_hb100` **refuse to save** on a bad result — its range and SNR checks are warnings only, so with no source present it wrote a bogus calibration twice. *Done in #18: nothing is saved unless the spur-rejected SNR and a live LO-shift confirmation both pass.*
+- [x] Gate `channel_calibration` on signal presence — it returned a 348 dB correction against noise, which is unusable by construction (`Rx_gain + ccal` far outside the driver's range). *Done in #18: `phaser_cal_headless.py` aborts before any calibration step when all-on vs all-off array contrast is under 6 dB.*
+
 # Ruled Out
+
+- **2026-10-15 — "The reception limit is on the LO axis."** Disproven. The
+  2026-09-24 sweep that suggested it moved the LO and the IF together, so it
+  could not distinguish them. Parking the Pluto's `rx_lo` and sweeping only
+  the CN0566 LO gave 11/11 rows tracking the tone at `rx_lo` 2.0 GHz and 0/11
+  at 2.2. The limit is on the IF. It cost a day because the HB100 search
+  hardcodes 2.0 GHz and so kept working while calibration went deaf, which
+  pointed every suspicion at the calibration code.
+- **2026-10-15 — "A stale RX buffer explains phase-calibration scatter."**
+  Disproven, twice over. PR #29 anticipated it and this session pursued it
+  first. Adding `rx_destroy_buffer()` to `_capture_peak_dbfs` left the scatter
+  identical — five runs, element 8 spanning 104 degrees, flushed and
+  unflushed alike. The cause was the argmax estimator. The flush was kept
+  anyway, on the separate grounds that reading the state you just set is
+  correct, but it fixes nothing here.
 
 - **Device contention as the cause of bad calibration values.** The backend
   holds four iio sockets open continuously regardless of mode, but the main loop
@@ -190,6 +233,19 @@ ADF4159 without the `/4` the CN0566 needs, and the Pi's `config.py` carried
   works.
 
 # Rotated Decisions (still true, just closed)
+
+Rotated 2026-10-15: CTF tracking and GUI shutdown, both shipped and
+verified on hardware.
+
+- **2026-09-10** — GUI shutdown is installed **unconditionally** by `install.sh`; the `PHASER_ALLOW_GUI_SHUTDOWN` gate is gone. Reason: it is a standard feature of the kit, and the flag was never documented in the README, so in practice it only meant shutdown silently did not work on a fresh install. Accepted tradeoff: the backend is unauthenticated, so any reachable kit can be powered off by anyone. Revoke per kit by deleting `/etc/sudoers.d/phaser-shutdown` — the next `install.sh` writes it back.
+- **2026-09-04** — The UI arms the gesture only when `get_state` reports `shutdown_available`, probed with `sudo -l` (which answers permission without running anything). Reason: an affordance for something that can only return an error is worse than no affordance.
+- **2026-09-04** — Shutdown is a 2 s hold and red, against the CTF control's 1.2 s. Reason: this one cannot be undone from the browser — the machine it stops is the one serving the page.
+- **2026-09-04** — CTF scores the **tracked** source by default: the sweep's measured peak, not a commanded beam. Reason: the table challenge is carrying an HB100 in front of the array; `commanded` stays behind `PHASER_CTF_SOURCE` as the fallback, and exactly one source scores at a time.
+- **2026-09-04** — Peak angle is a -3 dB power-weighted centroid, not an argmax. Reason: 0.53 deg p-p versus 4.80 deg for argmax on a stationary source — see Traps.
+- **2026-09-04** — Tracked confirmation counts 3 consecutive in-sector sweeps, not seconds. Reason: the sweep runs at ~0.9/s, so a 2 s dwell was ~2 observations; `status()` no longer advances the tracked machine, so polling faster cannot confirm sooner.
+- **2026-09-04** — `status()` takes `sweeping` and reports `measuring`, nulling the live readouts and dropping the in-flight sweep count when nothing observes. Reason: a stopped sweep looks on screen exactly like a challenge that refuses to score. The trail is kept — earned progress is still earned.
+- **2026-09-04** — The start gesture is a 1.2 s hold on the stat-row pill; the sidebar Start button was removed. Reason: `ctf_reset` discards a run and a tap did it silently — three taps in thirty seconds during testing threw away a scored sector.
+
 
 - **2026-08-27** — Calibration consolidated into one `calibration.json`, read
   with a per-key fallback to the legacy pickles, dropping `pickle` from the load
@@ -212,6 +268,13 @@ _Rotated 2026-09-04 from the hot note to meet its size budget. Still true._
 - **~2026-06-23** — Radar build-out is CW-first, FMCW second. Reason: CW needs no TDD or ramp config and lifts existing code from `phaser_service.py`.
 
 # Superseded Decisions
+
+Superseded 2026-10-15 — the sweep behind this could not tell the LO and
+the IF apart, and the limit is on the IF. The replacement is the
+2026-10-15 pair in the hot note; see `docs/calibration-bugs.md`.
+
+- **2026-09-24** — `install.sh` prints the RF chain it will run (HB100, `Rx_freq`, LO, ADF4159 register) and warns when the LO is past what was measured receiving, or when the IF cannot reach the whole 10.1–10.7 GHz HB100 range. Reason: `config.py` is site-owned and never deployed over, so the numbers that decide the LO are the ones nobody reviews, and a bad LO is undetectable at runtime — the write is accepted, the readback agrees, and MUXOUT is not lock detect here. It warns rather than fails: the ceiling is one kit's measurement, and refusing an install over it would turn a survivable warning into a dead workshop. Thresholds lived in `phaser_functions.lo_warnings`, overridable per kit. **Superseded 2026-10-15** — that sweep moved the LO and the IF together and the limit is on the IF, not the LO; see the entry below.
+
 
 - **2026-09-04** — GUI shutdown off by default, granted per machine with
   `PHASER_ALLOW_GUI_SHUTDOWN=1`; the default was meant to *be* the access

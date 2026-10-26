@@ -14,15 +14,13 @@
   --secondary: #0088d1;
   --success: #10b981;
   --error: #ef4444;
+  --warning: #f59e0b;
   
   --text-main: #f8fafc;
   --text-muted: #94a3b8;
   
   --radius: 16px;
   --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  --transport-badge-bg: rgba(0, 103, 185, 0.22);
-  --transport-badge-color: #0067b9;
-  --transport-badge-border: rgba(0, 103, 185, 0.4);
   --titlebar-height: 34px;
 }
 
@@ -39,9 +37,6 @@ html[data-theme="light"] {
 
   --text-main: #0f172a;
   --text-muted: #475569;
-  --transport-badge-bg: rgba(0, 103, 185, 0.1);
-  --transport-badge-color: #0056a0;
-  --transport-badge-border: rgba(0, 103, 185, 0.3);
 }
 
 * {
@@ -249,23 +244,6 @@ h1, h2, h3 {
   flex-shrink: 0;
 }
 
-.transport-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.22rem 0.55rem;
-  border: 1px solid var(--transport-badge-border);
-  border-radius: 999px;
-  background: var(--transport-badge-bg);
-  font-size: 0.72rem;
-  font-weight: 600;
-  color: var(--transport-badge-color);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
 .btn-header-sweep {
   width: auto;
   min-width: 84px;
@@ -299,6 +277,16 @@ h1, h2, h3 {
 .dot.disconnected {
   background: var(--error);
   box-shadow: 0 0 10px var(--error);
+}
+.dot.warn {
+  background: var(--warn, #e0a44c);
+  box-shadow: 0 0 10px var(--warn, #e0a44c);
+}
+
+.if-pill {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: help;
 }
 
 /* Layout */
@@ -1380,6 +1368,30 @@ input[type=number]::-webkit-outer-spin-button {
   z-index: 1000;
 }
 
+.confirm-body p {
+  margin: 0 0 0.75rem;
+  line-height: 1.45;
+  color: var(--text-main);
+}
+
+.confirm-body ul {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+  line-height: 1.45;
+  color: var(--text-main);
+}
+
+.confirm-body .confirm-note {
+  color: var(--text-muted);
+  font-size: 0.9em;
+}
+
+/* A confirmation can be asked from inside another card (Shut Down on the
+   hardware-missing card), so it sits above every other overlay. */
+#confirm-modal {
+  z-index: 1001;
+}
+
 .modal-overlay[hidden] {
   display: none;
 }
@@ -1478,16 +1490,67 @@ input[type=number]::-webkit-outer-spin-button {
   display: none;
 }
 
-/* --- Simulation mode ------------------------------------------------------
- *
- * The SIMULATION pill reuses the existing .transport-badge (defined above);
- * initTransportBadge() recolours it via the --transport-badge-* custom
- * properties. It sits in the bottom status bar next to the connection
- * indicator, which is where someone already looks to see what the app is
- * talking to.
- */
-.chart-stats .transport-badge {
-  margin-right: 0.75rem;
+/* The stat row is two groups: plot readouts on the left, hardware status
+   pills on the right. Each wraps as a unit -- left loose in the wrapping row,
+   single boxes and pills broke off on their own. When the pills do not fit
+   beside the readouts the whole group drops to the next line, right-aligned.
+   The pills keep their own capsule size; only the readouts share a height. */
+.chart-stats {
+  --stat-row-h: 2.75rem;
+  --stat-row-radius: 10px;
+  margin-top: 0.6rem; /* breathing room under the plot's axis title */
+}
+.plot-stats,
+.status-pills {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+.plot-stats {
+  flex-wrap: wrap;
+}
+.status-pills {
+  flex-wrap: nowrap;
+  margin-left: auto;
+  align-items: stretch; /* pills share one height */
+}
+.plot-stats .stat-box {
+  height: var(--stat-row-h);
+  padding: 0.3rem 0.7rem;
+  border-radius: var(--stat-row-radius);
+  justify-content: center;
+  gap: 0.1rem;
+}
+.plot-stats .stat-label {
+  font-size: 0.66rem;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+.plot-stats .stat-value {
+  font-size: 0.95rem;
+  white-space: nowrap;
+}
+
+/* Peak and centroid share one box; tapping switches. A real <button>, so it
+   needs the stat-box look restored and a fixed width so the row does not
+   shift when the label changes. */
+.stat-toggle {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-width: 8.2rem;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.stat-toggle:hover {
+  border-color: rgba(99, 102, 241, 0.55);
+}
+.stat-toggle:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.8);
+  outline-offset: 2px;
+}
+.stat-toggle-icon {
+  opacity: 0.6;
 }
 
 /* --- Narrow viewports -------------------------------------------------------
@@ -1587,7 +1650,7 @@ input[type=number]::-webkit-outer-spin-button {
   .controls-panel.collapsed #sidebar-content { display: flex; }
   .controls-panel.collapsed .panel-title { display: block; }
   .controls-panel.collapsed { padding: 0.9rem; }
-  /* The desktop collapsed state centres its header over a 74px rail. Here the
+  /* The desktop collapsed state centers its header over a 74px rail. Here the
      header is full width, so keep the expanded layout -- title left, toggle
      right -- and the bar looks the same open or shut. */
   .controls-panel.collapsed .panel-header-row { justify-content: space-between; }
@@ -1633,10 +1696,86 @@ input[type=number]::-webkit-outer-spin-button {
    shift, while an iPad was already at 0.57 and would shift 204px for it.
    
    :has() is ignored by browsers that lack it, which just leaves the tab at
-   the shared height -- the behaviour before this rule. */
+   the shared height -- the behavior before this rule. */
+/* Phones: readouts on one line, pills on the next, each spread evenly across
+   the full width so the two rows mirror each other. The pills shrink a little
+   so all three fit at 360px. */
+@media (max-width: 600px) {
+  .chart-stats {
+    --stat-row-h: 2.5rem;
+  }
+  .plot-stats,
+  .status-pills {
+    flex-basis: 100%;
+    justify-content: space-evenly;
+    gap: 0.4rem;
+  }
+  .status-pills {
+    margin-left: 0;
+  }
+  .status-pills .status-indicator {
+    padding: 0.22rem 0.45rem;
+    gap: 0.35rem;
+    font-size: 0.74rem;
+  }
+  .status-pills .dot {
+    width: 8px;
+    height: 8px;
+  }
+}
+
 @media (max-width: 600px) {
   .plots-stack:has(#tab-polar.active) {
     height: min(34dvh, 62vw);
     min-height: 190px;
   }
+}
+
+/* --- Interferer -------------------------------------------------------- */
+/* Author display rules beat the UA's [hidden] { display: none }. */
+.interferer-badge[hidden],
+#interferer-phase-group[hidden],
+.plot-stats .stat-box[hidden] {
+  display: none;
+}
+
+.interferer-toggle {
+  width: 100%;
+}
+.interferer-toggle[aria-pressed="true"] {
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #111;
+}
+.interferer-toggle[aria-pressed="true"]:hover {
+  color: #111;
+  border-color: var(--warning);
+  background: var(--warning);
+  filter: brightness(1.08);
+}
+
+.interferer-note {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0.5rem 0 0;
+  line-height: 1.35;
+}
+
+/* Over every plot tab, so a screenshot cannot pass the computed jammer off
+   as a real one. Top centre: the freeze legend owns the top right. */
+.interferer-badge {
+  position: absolute;
+  top: 0.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  pointer-events: none;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  background: var(--warning);
+  color: #111;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
 }

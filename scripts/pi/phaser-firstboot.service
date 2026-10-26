@@ -1,0 +1,23 @@
+# One-shot per-kit identity for SD cards cloned from a golden image.
+# Armed by `provision.sh --prepare-image`; disables itself after it runs.
+# See /usr/local/sbin/phaser-firstboot for why cloned cards need this.
+
+[Unit]
+Description=Phaser: per-kit identity on first boot after imaging
+Documentation=file:/usr/local/sbin/phaser-firstboot
+ConditionPathExists=!/var/lib/phaser/firstboot-done
+# Host keys must be replaced before sshd offers the golden image's to anyone,
+# and machine-id before anything derives a DHCP DUID from it.
+After=local-fs.target
+Before=ssh.service network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/phaser-firstboot
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

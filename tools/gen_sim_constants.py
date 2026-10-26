@@ -13,11 +13,12 @@ Run after changing any sim constant:
 CI regenerates and fails on `git diff --exit-code`, so a Python-side change that
 is not reflected in the committed JS breaks the build.
 
-Behavioural drift -- an algorithm change rather than a constant change -- is not
+Behavioral drift -- an algorithm change rather than a constant change -- is not
 caught here. That is what tests/test_sim_parity.py is for.
 """
 
 import contextlib
+import inspect
 import io
 import pathlib
 import re
@@ -27,7 +28,9 @@ import types
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+import ADAR_pyadi_functions        # noqa: E402
 import config                      # noqa: E402
+import phaser_ctf                  # noqa: E402
 import phaser_sim                  # noqa: E402
 
 OUT = REPO / "frontend" / "src" / "sim" / "constants.generated.js"
@@ -36,7 +39,8 @@ OUT = REPO / "frontend" / "src" / "sim" / "constants.generated.js"
 def steering_pi():
     """Extract the truncated pi that the steering math uses.
 
-    do_sweep() and ConvertPhaseToSteerAngle()/ConvertSteerAngleToPhase() spell
+    do_sweep() (its steered sweep and its hold-mode point) and
+    ConvertPhaseToSteerAngle()/ConvertSteerAngleToPhase() spell
     pi as the literal 3.14159 rather than math.pi, deliberately matching the
     legacy phaser_gui.py they were ported from. A JS port reaching for Math.PI
     instead would shift every steering angle by ~0.03% and produce a parity
@@ -46,7 +50,7 @@ def steering_pi():
     real np.pi. The two coexist on purpose; see SIM_PI below.
 
     Parsing the literal rather than hardcoding it here makes this a tripwire: if
-    someone changes one of the three occurrences and not the others, this raises
+    someone changes one of the four occurrences and not the others, this raises
     instead of silently emitting a value that matches only part of the Python.
     """
     src = (REPO / "phaser_headless.py").read_text()
@@ -63,9 +67,9 @@ def steering_pi():
             "All occurrences must agree, or the sweep's angle axis disagrees "
             "with the phases actually loaded."
         )
-    if len(found) != 3:
+    if len(found) != 4:
         raise SystemExit(
-            f"phaser_headless.py: expected 3 steering pi literals, found {len(found)}. "
+            f"phaser_headless.py: expected 4 steering pi literals, found {len(found)}. "
             "Check whether a new call site needs porting to frontend/src/sim/."
         )
     return found[0]
@@ -95,16 +99,29 @@ def headless_defaults():
     return h
 
 
+def centroid_drop_db():
+    """The mainlobe window of phaser_ctf.peak_angle_centroid().
+
+    do_sweep() calls it with the default, so the default is the value the JS
+    port must use. Read off the signature rather than transcribed.
+    """
+    return inspect.signature(
+        phaser_ctf.peak_angle_centroid
+    ).parameters["drop_db"].default
+
+
 def main():
     sdr = phaser_sim.SimSDR
     steer_pi = steering_pi()
     h = headless_defaults()
+    drop_db = centroid_drop_db()
 
     body = f"""// GENERATED FILE -- DO NOT EDIT BY HAND.
 //
-// Produced by tools/gen_sim_constants.py from phaser_sim.py, config.py and
-// phaser_headless.py. Python is the source of truth for the simulator's
-// physics; this file exists so the JS port cannot drift from it.
+// Produced by tools/gen_sim_constants.py from phaser_sim.py, config.py,
+// ADAR_pyadi_functions.py and phaser_headless.py. Python is the source of
+// truth for the simulator's physics; this file exists so the JS port cannot
+// drift from it.
 //
 // To change a value here, change it in Python and re-run:
 //     python tools/gen_sim_constants.py
@@ -115,7 +132,6 @@ def main():
 // --- Scene -----------------------------------------------------------------
 export const TARGET_ANGLE_DEG = {sdr.TARGET_ANGLE_DEG!r};
 export const TARGET_IF_HZ = {sdr.TARGET_IF_HZ!r};
-export const INTERFERER_IF_HZ = {sdr.INTERFERER_IF_HZ!r};
 
 // --- Synthesis -------------------------------------------------------------
 export const AMP_SCALE = {sdr.AMP_SCALE!r};
@@ -148,10 +164,22 @@ export const BW_MHZ = {h.BW!r};
 export const BF_MODE = {h.bf_mode!r};
 export const MVDR_K = {h.mvdr_K!r};
 export const MVDR_DIAG_LOAD = {h.mvdr_diag_load!r};
+
+// --- Synthetic interferer (injected in do_sweep) ---------------------------
+export const INTERFERER_ANGLE_DEG = {h.interferer_angle_deg!r};
+export const INTERFERER_POWER_DBFS = {h.interferer_power_dbfs!r};
+export const INTERFERER_OFFSET_HZ = {h.interferer_offset_hz!r};
+export const INTERFERER_PHASE_DEG = {h.interferer_phase_deg!r};
 export const B0_GAIN = {h.B0_Gain!r};
 export const B1_GAIN = {h.B1_Gain!r};
 export const BEAM0_PHASE_DEG = {h.Beam0_Phase!r};
 export const BEAM1_PHASE_DEG = {h.Beam1_Phase!r};
+
+// --- Peak angle ------------------------------------------------------------
+// peak_angle_deg is phaser_ctf.peak_angle_centroid() over the sweep: the
+// mainlobe is walked out from the argmax while samples stay within this many
+// dB of it, then power-weighted.
+export const CENTROID_DROP_DB = {drop_db!r};
 
 // --- Fixed point -----------------------------------------------------------
 // dBFS reference: the ADC's 2^11 full scale, as used by do_sweep().
@@ -164,6 +192,13 @@ export const SIM_PI = Math.PI;
 // from the legacy phaser_gui.py. Do not "fix" this to Math.PI: it would move
 // every steering angle by ~0.03% relative to the hardware code path.
 export const STEER_PI = {steer_pi};
+
+// --- ADAR1000 rx_gain register ---------------------------------------------
+// Voltage amplitude at each register code 0-127, relative to code 127. The
+// register is not linear in voltage; applyGainCal inverts this table and the
+// SDR stub applies it, so the sim stays linear in slider %. Emitted as numbers
+// rather than recomputed with Math.pow, which need not round like Python's **.
+export const RX_GAIN_AMPLITUDE = {list(ADAR_pyadi_functions.RX_GAIN_AMPLITUDE)!r};
 
 // --- Calibration -----------------------------------------------------------
 // A static build has no calibration store, so it gets whatever a fresh clone

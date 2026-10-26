@@ -78,7 +78,7 @@ def test_idle_before_any_run(app):
     assert "returncode" not in status
 
 
-def test_cancelling_an_already_dead_process_reports_why(app):
+def test_canceling_an_already_dead_process_reports_why(app):
     """A crash looks exactly like this from the caller's side. Reporting 'no
     calibration running' threw away the only evidence of what went wrong."""
     app.cal_process = FakeProc(1)
@@ -98,3 +98,25 @@ def test_success_is_also_retained(app, monkeypatch):
 
     assert app.get_calibration_status()["success"] is True
     assert app.get_calibration_status()["success"] is True
+
+
+@pytest.mark.parametrize("was_sweeping,returncode,expected", [
+    (True, 0, "sweep"),   # Find HB100 used to leave this idle, plots frozen
+    (False, 0, "idle"),   # never start a sweep nobody asked for
+    (True, 1, "idle"),    # a failed run never re-initialized the hardware
+])
+def test_sweep_resumes_after_a_successful_task(app, was_sweeping, returncode, expected):
+    import threading
+
+    app.mode = "idle"
+    app.sweeping = False
+    app.cw_lock = threading.Lock()
+    app.cal_resume_sweep = was_sweeping
+    app._reload_calibration = lambda task: None
+    app.cal_process = FakeProc(returncode)
+    app.cal_task = "find_hb100"
+
+    app.get_calibration_status()
+    assert app.mode == expected
+    assert app.sweeping == (expected == "sweep")
+    assert app.cal_resume_sweep is False

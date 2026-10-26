@@ -1,0 +1,29 @@
+# Runs the clock sanity check once per boot. See /usr/local/sbin/phaser-clock
+# for why this board needs it (no RTC, and stock Kuiper ships no NTP client).
+#
+# Ordered after the network is up, because the layer that actually fixes a
+# badly wrong clock is an HTTP fetch. The very-early case -- a cold boot before
+# any network -- is covered by fake-hwclock, which systemd already runs in
+# sysinit, plus this script's own mtime floor.
+#
+# Before phaser-headless so the backend's first log lines and any calibration
+# it writes carry a sane timestamp rather than 1970.
+
+[Unit]
+Description=Phaser: sanity-check the system clock (this board has no RTC)
+Documentation=file:/usr/local/sbin/phaser-clock
+After=network-online.target
+Wants=network-online.target
+Before=phaser-headless.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/phaser-clock
+# Three HTTP hosts at 10s each, plus slack. Never hold up boot longer.
+TimeoutStartSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

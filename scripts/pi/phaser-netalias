@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+#
+# Give this kit a second, known IP address on its wired interface, in addition
+# to whatever DHCP hands it. Installed to /usr/local/sbin/phaser-netalias and
+# run at every boot by phaser-netalias.service.
+#
+# The problem: a kit is unreachable until you know its address. On a LAN with
+# DHCP that is fine -- mDNS gives you phaser.local. But on a direct cable to a
+# laptop, or a locked-down LAN whose lease table you cannot read, or Windows
+# without working .local resolution, you are stuck guessing.
+#
+# The fix is an *alias* address rather than a static configuration. An alias is
+# added alongside DHCP, not instead of it, which is why this works on any
+# network stack -- dhcpcd on bullseye, NetworkManager on bookworm,
+# systemd-networkd, anything. Nothing parses or rewrites the stack's own config
+# files, so nothing here breaks when Kuiper changes stacks underneath us.
+#
+# The kit therefore always answers on two addresses: whatever DHCP gave it, and
+# the one written in <boot>/phaser-ip. The second is on the FAT boot partition
+# on purpose -- it is the one filesystem a Windows laptop can edit, so each
+# card in a batch can be given its own address with Notepad.
+
+set -uo pipefail
+
+log() { printf 'phaser-netalias: %s\n' "$*"; }
+
+DEFAULT_CIDR="192.168.7.2/24"
+
+# ---- where is the boot partition? -----------------------------------------
+# /boot on bullseye, /boot/firmware on bookworm.
+BOOTDIR=""
+for d in /boot/firmware /boot; do
+    [ -f "$d/config.txt" ] && { BOOTDIR="$d"; break; }
+done
+
+CIDR=""
+if [ -n "$BOOTDIR" ] && [ -f "$BOOTDIR/phaser-ip" ]; then
+    # Ignore comments and blank lines so the file can explain itself.
+    CIDR="$(grep -vE '^\s*(#|$)' "$BOOTDIR/phaser-ip" 2>/dev/null | head -n1 | tr -d ' \t\r\n')"
+fi
+
+# An empty or absent file means "no alias, DHCP only" -- a deliberate opt-out,
+# not an error. Someone who deletes the file gets the stock behavior back.
+if [ -z "$CIDR" ]; then
+    log "no address configured in ${BOOTDIR:-/boot}/phaser-ip; DHCP only"
+    exit 0
+fi
+
+# Accept a bare address and assume /24, since that is what anyone hand-editing
+# this file on a laptop will type.
+case "$CIDR" in
+    */*) : ;;
+    *)   CIDR="$CIDR/24" ;;
+esac
+
+# Validate before handing it to `ip`, which would otherwise fail with something
+# far less helpful in a log nobody reads.
+if ! printf '%s' "$CIDR" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'; then
+    log "REFUSED malformed address '$CIDR' (want e.g. $DEFAULT_CIDR)"
+    exit 0
+fi
+
+# ---- which interface? ------------------------------------------------------
+# eth0 on bullseye, end0 on bookworm's predictable names, and neither is
+# guaranteed. Take the first wired interface that exists rather than hardcoding.
+IFACE=""
+for candidate in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | cut -d@ -f1); do
+    case "$candidate" in
+        lo|wlan*|docker*|veth*|br-*) continue ;;
+        eth*|en*) IFACE="$candidate"; break ;;
+    esac
+done
+
+if [ -z "$IFACE" ]; then
+    log "found no wired interface; nothing to alias"
+    exit 0
+fi
+
+# ---- add it ----------------------------------------------------------------
+# Idempotent: `ip addr add` returns EEXIST if it is already there, which is the
+# normal case on a re-run and not worth logging as a failure.
+if ip -4 addr show dev "$IFACE" 2>/dev/null | grep -qF "inet ${CIDR%%/*}/"; then
+    log "$CIDR already present on $IFACE"
+else
+    if ip addr add "$CIDR" dev "$IFACE" 2>/dev/null; then
+        log "added $CIDR to $IFACE"
+    else
+        log "WARNING: could not add $CIDR to $IFACE"
+        exit 0
+    fi
+fi
+
+ip link set "$IFACE" up 2>/dev/null || true
+log "reachable at ${CIDR%%/*} plus whatever DHCP assigned"
+exit 0

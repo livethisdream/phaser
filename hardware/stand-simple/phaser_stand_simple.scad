@@ -8,10 +8,17 @@
 // Frame: Z up, rotation axis = Z, +Y = boresight (patch face looks toward +Y
 // when the pointer reads 0).
 //
-//   openscad -D 'part="base"' -o stl/base.stl phaser_stand_simple.scad
-// Parts: base, platter, retainer, mast, lock_wheel, assembly (preview).
+//   openscad -D 'part="base"' -o stl/common/base.stl phaser_stand_simple.scad
+// (common/: base, retainer; tripod/: platter_tripod; mast/: platter, mast,
+// lock_wheel. README.md has the full list.)
+// Parts: base, platter, platter_tripod, retainer, mast, lock_wheel,
+// assembly (preview).
+//
+// Two tops: "mast" (printed mast + 1/4-20 stud) or "tripod" (the kit's own
+// tabletop tripod stands in three grooves on the platter; no mast).
 
 part = "assembly";
+top  = "tripod";  // assembly preview only
 
 // ---------------------------------------------------------------- measured
 board_w          = 113.19;
@@ -27,7 +34,12 @@ mast_y = -(thread_behind_board + board_t / 2);
 
 // ---------------------------------------------------------------- fits
 fit   = 0.3;   // radial clearance on sliding fits (PLA/PETG)
-m5_pilot = 4.2;  // M5 self-tapping into plastic
+// Printed holes come out undersized, so the base's openings get more room
+// than the nominal fit. The first test print needed the post bore opened by
+// hand at 0.3 mm.
+bore_fit    = 0.5;   // radial, base bore around the 24 mm platter post
+channel_fit = 1.0;   // radial, outside of the detent-skirt channel
+m5_pilot = 4.2;  // retainer screw pilot; an M4 x 12 flat-head fits the printed hole (M5 does not)
 m4_pilot = 3.3;
 qtr_head_af = 11.3;  // 1/4-20 hex head, 7/16" AF + clearance
 qtr_head_h  = 4.6;
@@ -58,9 +70,13 @@ detent_step = 5;
 skirt_r     = [56, 60];
 skirt_h     = 8;
 groove_d    = 1.2;
-leaf_t      = 1.6;
-leaf_w      = 14;
-leaf_preload = 0.8;    // ridge interference with the skirt face
+// The first print's leaf (1.6 x 14 x 11 mm, 0.8 mm preload) was too stiff to
+// turn. This one is ~20x softer: thinner, narrower, nearly twice as tall
+// (it stands in a deeper pocket), with less interference.
+leaf_t      = 1.2;
+leaf_w      = 10;
+leaf_preload = 0.5;    // ridge interference with the skirt face
+leaf_floor_z = 2;      // leaf root; pocket under the leaf goes down to here
 
 retainer_d = 36;
 retainer_t = 4;
@@ -72,8 +88,21 @@ mast_h      = 80;
 mast_top    = 22;
 mast_skin   = 4;
 
+// Kit tripod: 11 mm rubber feet, 5.5 in (139.7 mm) apart at full extension,
+// i.e. on a 80.7 mm radius. Grooves meet at the thread position, so the
+// array center stays on the axis, and run from short legs to full extension.
+tripod_foot_d   = 11;
+tripod_r_max    = 139.7 / sqrt(3);
+tripod_r_range  = [35, tripod_r_max + 1.5];
+tripod_groove_r = 7;     // ball-end cutter: 4 mm deep, ~12.6 mm wide
+tripod_groove_depth = 4;
+// Rotate the legs 60 deg off the offset direction so no groove end runs
+// into the rim.
+tripod_leg0 = atan2(mast_y, mast_x) + 60;
+
 scale_r0 = platter_r + 2;
-engrave  = 0.6;
+engrave  = 0.6;   // platter tick marks
+scale_depth = 0.8; // base scale: 5-degree ticks only, 1 mm wide
 
 platter_z = base_h + track_h;  // platter underside in the assembly
 
@@ -85,14 +114,16 @@ module ring(r, h) { difference() { cylinder(r = r[1], h = h); translate([0, 0, -
 
 // ---------------------------------------------------------------- base
 module scale_marks() {
-  for (a = [0 : 1 : 359]) if (abs(a - 180) > 10) {
-    len = (a % 10 == 0) ? 6 : (a % 5 == 0) ? 4 : 2.2;
-    w   = (a % 5 == 0) ? 0.8 : 0.5;
-    rotate(-a) translate([-w / 2, scale_r0, base_h - engrave]) cube([w, len, engrave + eps]);
+  // 1-degree ticks were too fine for a 0.4 mm nozzle; 5-degree spacing is
+  // ~8.5 mm at this radius.
+  for (a = [0 : 5 : 359]) if (abs(a - 180) > 10) {
+    len = (a % 30 == 0) ? 7 : (a % 10 == 0) ? 5.5 : 3.5;
+    w   = 1.0;
+    rotate(-a) translate([-w / 2, scale_r0, base_h - scale_depth]) cube([w, len, scale_depth + eps]);
   }
   // 0 at boresight, positive clockwise seen from above.
   for (a = [-150 : 30 : 150])
-    rotate(-a) translate([0, scale_r0 + 8.5, base_h - engrave]) linear_extrude(engrave + eps)
+    rotate(-a) translate([0, scale_r0 + 8.5, base_h - scale_depth]) linear_extrude(scale_depth + eps)
       text(str(a), size = 4.2, halign = "center", valign = "bottom", font = "DejaVu Sans:style=Bold");
 }
 
@@ -104,10 +135,9 @@ pocket_depth = skirt_h + 4;
 module leaf() {
   // Vertical cantilever: anchored to the pocket floor, flexes radially.
   r_out = skirt_r[0] - fit - 0.4;
-  floor_z = base_h - pocket_depth;
   rotate(-leaf_a) {
-    translate([-leaf_w / 2, r_out - leaf_t, floor_z - eps])
-      cube([leaf_w, leaf_t, pocket_depth - 0.6]);
+    translate([-leaf_w / 2, r_out - leaf_t, leaf_floor_z - eps])
+      cube([leaf_w, leaf_t, base_h - 0.6 - leaf_floor_z]);
     // Ridge: a vertical 90-degree V that reaches into the skirt grooves.
     reach = skirt_r[0] + leaf_preload - (r_out - leaf_t);
     translate([0, r_out - leaf_t, base_h - skirt_h + 0.5])
@@ -123,10 +153,13 @@ module base() {
       translate([0, 0, base_h - eps]) ring(track_r, track_h + eps);
     }
     // Spindle bore and retainer recess.
-    translate([0, 0, -eps]) cylinder(d = post_d + 2 * fit, h = base_h + 1);
+    translate([0, 0, -eps]) cylinder(d = post_d + 2 * bore_fit, h = base_h + 1);
     translate([0, 0, -eps]) cylinder(d = recess_d, h = recess_h + eps);
     // Channel the platter skirt turns in.
-    translate([0, 0, base_h - pocket_depth]) ring([skirt_r[0] - 4, skirt_r[1] + fit + 0.5], pocket_depth + eps);
+    translate([0, 0, base_h - pocket_depth]) ring([skirt_r[0] - 4, skirt_r[1] + channel_fit], pocket_depth + eps);
+    // Deeper pocket under the leaf so it can be taller and softer.
+    rotate(-leaf_a) translate([-leaf_w / 2 - 2, skirt_r[0] - 4, leaf_floor_z])
+      cube([leaf_w + 4, 5, base_h]);
     // Feet recesses (optional 12 mm stick-on feet).
     for (a = [45 : 90 : 359]) rotate(a) translate([0, base_d / 2 - 18, -eps]) cylinder(d = 12.5, h = 0.8 + eps);
     for (a = motor_insert_a) rotate(-a) translate([0, motor_insert_r, base_h - insert_h])
@@ -152,7 +185,17 @@ module mast_foot_2d(d) {
   intersection() { circle(d = d); translate([-d, -d / 2 + 4]) square([2 * d, 2 * d]); }
 }
 
-module platter() {
+module tripod_grooves() {
+  zc = platter_h + tripod_groove_r - tripod_groove_depth;
+  translate([mast_x, mast_y, 0]) for (i = [0 : 2]) rotate(tripod_leg0 + i * 120) {
+    hull() for (r = tripod_r_range) translate([r, 0, zc]) sphere(r = tripod_groove_r, $fn = 48);
+    // Ticks every 10 mm so all three feet go to the same radius.
+    for (r = [40 : 10 : tripod_r_max]) translate([r - 0.4, tripod_groove_r - 0.2, platter_h - engrave])
+      cube([0.8, 3, engrave + eps]);
+  }
+}
+
+module platter(top = "mast") {
   post_len = platter_z - (recess_h - fit);  // ends just above the retainer
   difference() {
     union() {
@@ -171,18 +214,22 @@ module platter() {
     for (a = [0 : detent_step : 359]) rotate(a) translate([0, skirt_r[0], -skirt_h - eps])
       rotate(45) translate([-groove_d * 0.71, -groove_d * 0.71, 0])
         cube([groove_d * 1.42, groove_d * 1.42, skirt_h + 2 * eps]);
-    // Mast pocket and screw pilots.
-    translate([0, 0, platter_h - mast_pocket]) linear_extrude(mast_pocket + eps) offset(0.2) mast_foot_2d(mast_foot_d);
-    for (a = mast_screw_a) rotate(a) translate([mast_screw_r, 0, platter_h - mast_pocket - 8])
-      cylinder(d = m4_pilot, h = 8 + eps, $fn = 24);
+    if (top == "tripod") tripod_grooves();
+    else {
+      // Mast pocket and screw pilots.
+      translate([0, 0, platter_h - mast_pocket]) linear_extrude(mast_pocket + eps) offset(0.2) mast_foot_2d(mast_foot_d);
+      for (a = mast_screw_a) rotate(a) translate([mast_screw_r, 0, platter_h - mast_pocket - 8])
+        cylinder(d = m4_pilot, h = 8 + eps, $fn = 24);
+    }
     // Belt anchor slot at the rear.
     translate([-1.5, -platter_r - eps, -eps]) cube([3, 10, belt_band + eps]);
-    // Lightening pockets.
-    for (a = [30 : 60 : 359]) rotate(a) translate([0, 72, platter_h - 6]) cylinder(d = 18, h = 6 + eps);
+    // Lightening pockets (mast platter only; the tripod grooves cross them).
+    if (top != "tripod")
+      for (a = [30 : 60 : 359]) rotate(a) translate([0, 72, platter_h - 6]) cylinder(d = 18, h = 6 + eps);
   }
 }
 
-// Washer under the base; one M5 x 16 flat-head screw clamps it to the post.
+// Washer under the base; one M4 x 12 flat-head screw clamps it to the post.
 module retainer() {
   difference() {
     cylinder(d = retainer_d, h = retainer_t);
@@ -234,13 +281,15 @@ module lock_wheel() {
 // ---------------------------------------------------------------- output
 module assembly() {
   color("SteelBlue") base();
-  color("Gainsboro") translate([0, 0, platter_z]) platter();
+  color("Gainsboro") translate([0, 0, platter_z]) platter(top);
   color("SlateGray") translate([0, 0, recess_h - fit - retainer_t]) retainer();
-  color("Orange") translate([0, 0, platter_z + platter_h - mast_pocket]) mast();
+  if (top != "tripod")
+    color("Orange") translate([0, 0, platter_z + platter_h - mast_pocket]) mast();
 }
 
 if (part == "base") base();
-else if (part == "platter") platter();
+else if (part == "platter") platter("mast");
+else if (part == "platter_tripod") platter("tripod");
 else if (part == "retainer") retainer();
 else if (part == "mast") mast();
 else if (part == "lock_wheel") lock_wheel();

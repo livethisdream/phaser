@@ -117,8 +117,8 @@ function cancelCalibration() {
     if (calTimer) { clearInterval(calTimer); calTimer = null; }
     cal.running = false;
     cal.returncode = -1;
-    cal.lines.push('Cancelled');
-    return { status: 'ok', message: 'Cancelled' };
+    cal.lines.push('Canceled');
+    return { status: 'ok', message: 'Canceled' };
 }
 
 // --- command dispatch ------------------------------------------------------

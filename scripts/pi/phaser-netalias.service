@@ -1,0 +1,25 @@
+# Adds a known, fixed IP alongside DHCP so a kit is always reachable at an
+# address you knew before you plugged it in. See /usr/local/sbin/phaser-netalias.
+#
+# Runs once per boot, which is the case that matters for reaching a fresh kit.
+# Nothing re-runs it on link-up: if the cable is pulled and the network stack
+# flushes the interface's addresses, the alias may be gone until the next boot
+# or `sudo systemctl restart phaser-netalias`. The DHCP address comes back on
+# its own either way.
+
+[Unit]
+Description=Phaser: fixed IP alias on the wired interface
+Documentation=file:/usr/local/sbin/phaser-netalias
+After=network.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/phaser-netalias
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

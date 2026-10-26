@@ -45,7 +45,7 @@ import adi
 from SDR_functions import SDR_init, SDR_LO_init, SDR_getData, SDR_setRx, SDR_setTx
 from ADAR_pyadi_functions import (
     ADAR_init, ADAR_set_mode, ADAR_set_Taper, ADAR_set_Phase,
-    load_phase_cal, load_gain_cal
+    load_phase_cal, load_gain_cal, rx_gain_code
 )
 
 try:
@@ -54,7 +54,7 @@ except ImportError:
     print("config.py not found")
     sys.exit(1)
 
-from phaser_functions import load_hb100_cal
+from phaser_functions import load_hb100_cal, rx_freq_source
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
@@ -76,6 +76,17 @@ from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additiv
 # switch for the room. Revoking is deleting /etc/sudoers.d/phaser-shutdown, but
 # the next install.sh writes it back.
 SHUTDOWN_CMD = ["/usr/bin/systemctl", "poweroff"]
+
+# Legacy Mode menu values that hold the beam at one steering angle instead of
+# sweeping it. Any other mode ("Beam Sweep", or a lab label such as
+# "Tracking") sweeps.
+HOLD_MODES = ("Static Phase", "Signal vs Time")
+
+# A hold mode returns one point per SDR read, so updates arrive as fast as the
+# receiver reads. The spectrum is ~600 KB of JSON per frame (16k bins of xf and
+# max_gain) and would set the update rate -- and back up the WebSocket, which
+# has no backpressure -- so there it rides along at most this often.
+HOLD_FFT_INTERVAL_S = 0.2
 
 
 class PhaserHeadless:
@@ -120,6 +131,9 @@ class PhaserHeadless:
         # run starts, so the answer is the same however often you ask.
         self.cal_last_result = None
         self.cal_started_at = None
+        # Whether a sweep was running when the task took the hardware, so it
+        # can be handed back afterwards. See _resume_sweep_after_calibration.
+        self.cal_resume_sweep = False
 
         # Initialize hardware
         self._init_hardware()
@@ -186,8 +200,21 @@ class PhaserHeadless:
 
         print(f"Hostname: {my_hostname}, rpi: {self.rpi_ip}, sdr: {self.sdr_ip}")
 
-        # Load configuration
-        self.Rx_freq = config.Rx_freq
+        # Load configuration.
+        #
+        # The IF comes from rx_freq_source, not straight from config.py. It is
+        # a per-unit measurement (phaser_characterize_headless.py): the usable
+        # IF differs by ~200 MHz between kits, config.py is site-owned and
+        # never deployed over, and the value it ships is one a kit in this
+        # fleet cannot hear. Running at an unusable IF is silent -- the writes
+        # are accepted and the patterns are noise -- so the source is printed.
+        _if = rx_freq_source(config)
+        self.Rx_freq = _if["rx_freq_hz"]
+        self.Rx_freq_source = _if["source"]
+        self.Rx_freq_warnings = list(_if["warnings"])
+        print("IF: %.3f GHz, from %s" % (self.Rx_freq / 1e9, _if["source"]))
+        for _line in _if["warnings"]:
+            print("  WARNING: %s" % _line)
         self.Tx_freq = config.Tx_freq
         self.LO_freq = self.SignalFreq + self.Rx_freq
         self.SampleRate = config.SampleRate
@@ -307,6 +334,13 @@ class PhaserHeadless:
         self.steer_min = -90
         self.steer_max = 90
 
+        # Sweep mode, as legacy's Mode menu. In HOLD_MODES each update is ONE
+        # steering point at hold_angle (degrees, +theta toward the E8 end, the
+        # same side the sweep plots +theta), whatever ignore_res says: legacy
+        # tests the mode after res_bits, so the mode wins.
+        self.sweep_mode = "Beam Sweep"
+        self.hold_angle = 0.0
+
         # GRCon26 CTF sector-sequence mode. Passive: it only watches the
         # commanded phaseList and answers ctf_status / ctf_reset, so it has no
         # effect on the workshop app unless a browser asks for it. Flag and
@@ -328,35 +362,68 @@ class PhaserHeadless:
         self.Beam0_Phase = 0.0  # degrees
         self.Beam1_Phase = 0.0  # degrees
 
-        # Digital beamforming mode: "manual" (use B0/B1 weights above) or
-        # "mvdr" (adaptive, wired in a later step). Wired here so the
-        # frontend toggle plumbs through today; algorithm added with todo #4.
-        self.bf_mode = "manual"
-        self.mvdr_K = 128         # snapshots for covariance estimate
-        self.mvdr_diag_load = 1e-3  # diagonal loading factor
+        # The MVDR and interferer settings below are the operator's, and
+        # _reload_calibration re-runs this method after every Find HB100 and
+        # Calibrate. Set them only on the first init: resetting them there
+        # put the interferer back to -20 deg / -10 dBFS and MVDR back to its
+        # default loading behind a lab's back.
+        first_init = not hasattr(self, "bf_mode")
 
-        # Simulator interferer knobs (sim mode only). Frontend hides these
-        # unless ?instructor=1 is set, so students don't see them; the
-        # instructor can still enable/tune from the URL-guarded panel.
-        self.sim_interferer_enable = False
-        self.sim_interferer_angle_deg = 30.0
-        self.sim_interferer_power_db = 0.0  # relative to target amplitude
+        # Digital beamforming mode: "manual" (use B0/B1 weights above) or
+        # "mvdr" (adaptive, Capon weights from the received covariance).
+        if first_init:
+            self.bf_mode = "manual"
+            self.mvdr_K = 128         # snapshots for covariance estimate
+            self.mvdr_diag_load = 1e-3  # diagonal loading factor
+
+        # Synthetic interferer, injected into the received IQ inside
+        # do_sweep() -- on real hardware and in --sim alike. One HB100 is a
+        # target; a second one as a jammer is not something a lab can
+        # reliably set up, so the jammer is computed instead. See
+        # _interferer_channels() for the model.
+        #   power_dbfs -- level the sum beam reads when pointed straight at
+        #                 it with a uniform full taper. Absolute, because the
+        #                 real target's level is not known in advance.
+        #   offset_hz  -- from the tracked target tone. 0 makes it coherent
+        #                 with the target over the MVDR snapshot window,
+        #                 which is the case MVDR handles badly.
+        #   phase_deg  -- start phase. Only meaningful against the simulated
+        #                 target; a real HB100's phase is not ours to set.
+        #   angle_deg  -- default clear of +/-30 deg. The two sub-arrays sit
+        #                 ~2 wavelengths apart, so where sin(angle) differs
+        #                 from the look's by ~0.5 (+/-30 deg at boresight) a
+        #                 jammer looks almost like the look direction to the
+        #                 digital stage, and MVDR can only null it with huge
+        #                 weights.
+        if first_init:
+            self.interferer_enable = False
+            self.interferer_angle_deg = -20.0
+            self.interferer_power_dbfs = -10.0
+            self.interferer_offset_hz = 100e3
+            self.interferer_phase_deg = 0.0
+        # Baseband frequency of the real target tone, re-measured every sweep
+        # from the pre-injection IQ. None until the first sweep has run.
+        self.target_tone_hz = None
 
         print("Hardware Initialization Complete.")
 
     def _apply_gain_cal(self, taper_values):
         """Apply gain calibration to taper values.
 
-        Taper values arrive on the frontend's 0-100 scale; the ADAR1000
-        rx_gain register is 0-127. Legacy scales between the two --
-        `int(gainList[i] * 127 / 100 * gcal[i])` -- and this did not, so a
-        taper commanded to 100 only ever reached 79% of full scale.
+        Taper values arrive on the frontend's 0-100 scale and mean percent of
+        full-scale VOLTAGE, which is what the labs teach. The ADAR1000 rx_gain
+        register is 0-127 and not linear in voltage, so a linear % -> code map
+        (legacy's `int(gainList[i] * 127 / 100 * gcal[i])`) made every taper
+        milder than the slider said: one element at 50% read -3.8 dB, not -6.
+
+        gcal is an amplitude ratio (measured at code 127), so it scales the
+        target amplitude; the chip's curve is inverted after it, by
+        rx_gain_code().
         """
         calibrated = []
         for idx, value in enumerate((list(taper_values) + [100] * 8)[:8]):
             gain_mult = self.gain_cal[idx] if idx < len(self.gain_cal) else 1.0
-            scaled = value * 127.0 / 100.0 * gain_mult
-            calibrated.append(int(max(0, min(127, round(scaled)))))
+            calibrated.append(rx_gain_code(value / 100.0 * gain_mult))
         return calibrated
 
     def _apply_phase_cal(self, phase_values):
@@ -366,7 +433,7 @@ class PhaserHeadless:
         anything -- the single reason a swept array here would not form a
         clean main lobe. pcal is what makes the eight elements add coherently;
         without it each element sits at its own uncorrected phase error and
-        the pattern smears out into something with no recognisable beam.
+        the pattern smears out into something with no recognizable beam.
 
         Legacy adds pcal[i] inside ADAR_set_Phase itself. This repo moved cal
         application out to the caller (phaser_service does the same thing with
@@ -445,6 +512,108 @@ class PhaserHeadless:
         w = numer / denom
         return w.ravel()
 
+    def _interferer_channels(self, PhDelta, n):
+        """The synthetic interferer as the two sub-array outputs would see it.
+
+        Returns (chan0, chan1) to add to SDR_getData()'s two channels, or None
+        when the interferer is off.
+
+        The real target has already been through the ADAR phase shifters and
+        the analog sub-array sums before we get its IQ, so an interferer added
+        after the fact has to go through the same analog stage or MVDR would
+        be nulling something no array could receive. Per element k (k=0..7):
+
+            a_k = A * g_k * exp(j*(2*pi*k*d/lambda*sin(theta) - psi_k))
+
+        summed over k=0..3 into chan0 and k=4..7 into chan1, times the tone.
+        g_k is the commanded taper (0..1) and psi_k the commanded steering
+        ramp plus the user's Phase Control offset -- the same ramp
+        ADAR_set_Phase loads, but WITHOUT the phase/gain calibration. The cal
+        exists to cancel each real element's own error, so a calibrated array
+        behaves like an ideal one, and the ideal one is what is modeled here.
+        Working from commanded values also avoids reading eight registers back
+        over IIO at every sweep point.
+
+        A = 2**11 * 10**(power_dbfs/20) / 8, so a uniform full-taper beam
+        steered onto the interferer reads power_dbfs in the sum channel.
+
+        PORTED TO JAVASCRIPT in frontend/src/sim/engine.js (interfererWeights,
+        interfererTone).
+        """
+        if not self.interferer_enable:
+            return None
+        amp = (2**11) * 10.0 ** (self.interferer_power_dbfs / 20.0) / 8.0
+        wavelength = self.c / self.SignalFreq
+        sin_theta = np.sin(np.radians(self.interferer_angle_deg))
+
+        w = [0j, 0j]
+        for k in range(8):
+            g = max(0.0, min(100.0, float(self.gainList[k]))) / 100.0
+            ramp = round(k * PhDelta / self.phase_step) * self.phase_step
+            psi = np.radians(ramp + float(self.phaseList[k]))
+            phi = 2 * np.pi * (k * self.d / wavelength) * sin_theta
+            w[0 if k < 4 else 1] += amp * g * np.exp(1j * (phi - psi))
+
+        f = (self.target_tone_hz or 0.0) + self.interferer_offset_hz
+        t = np.arange(n) / float(self.SampleRate)
+        tone = np.exp(1j * (2 * np.pi * f * t + np.radians(self.interferer_phase_deg)))
+        return w[0] * tone, w[1] * tone
+
+    def _adaptive_pattern(self, PhDelta, w):
+        """Response of the whole array -- analog stage plus digital weights --
+        against arrival angle, for the beam held at PhDelta.
+
+        The MVDR weights only exist as two complex numbers, which say nothing
+        to a student until they are turned back into a pattern: this is where
+        the null on the interferer becomes visible. Same element model as
+        _interferer_channels(): commanded taper and ramp, no calibration.
+
+        Returns angles (deg), adaptive_db for weights `w` and conventional_db
+        for equal weights [0.5, 0.5] -- what MVDR's distortionless constraint
+        reduces to with nothing to null. Both are divided by the mean
+        sub-array gain sum(g)/2, so each reads ~0 dB at the look direction,
+        and floored at -80 dB.
+
+        PORTED TO JAVASCRIPT in frontend/src/sim/engine.js (adaptivePattern).
+        """
+        angles = np.arange(-90.0, 90.5, 0.5)
+        wavelength = self.c / self.SignalFreq
+        sin_t = np.sin(np.radians(angles))
+        a = np.zeros((2, len(angles)), dtype=np.complex128)
+        g_sum = 0.0
+        for k in range(8):
+            g = max(0.0, min(100.0, float(self.gainList[k]))) / 100.0
+            g_sum += g
+            ramp = round(k * PhDelta / self.phase_step) * self.phase_step
+            psi = np.radians(ramp + float(self.phaseList[k]))
+            phi = 2 * np.pi * (k * self.d / wavelength) * sin_t
+            a[0 if k < 4 else 1] += g * np.exp(1j * (phi - psi))
+        norm = max(g_sum / 2, 1e-12)
+
+        def db(y):
+            return (20 * np.log10(np.maximum(np.abs(y) / norm, 1e-4))).tolist()
+
+        return {
+            "angles": angles.tolist(),
+            "adaptive_db": db(np.conj(w[0]) * a[0] + np.conj(w[1]) * a[1]),
+            "conventional_db": db(0.5 * (a[0] + a[1])),
+        }
+
+    def _measure_target_tone(self, raw):
+        """Baseband frequency of the strongest tone in `raw`, in Hz.
+
+        `raw` is the pre-injection sum (chan0 + chan1) from the loudest point
+        of the sweep, so the interferer can never measure itself -- which
+        would walk it off by offset_hz every sweep.
+
+        Bin resolution (fs/N, ~183 Hz) is plenty: at offset 0 a half-bin
+        error turns the interferer through 0.004 cycles over a 128-snapshot
+        MVDR window, which is still coherent for every purpose here.
+        """
+        n = len(raw)
+        sp = np.abs(np.fft.fft(raw * np.blackman(n)))
+        return float(np.fft.fftfreq(n, 1 / float(self.SampleRate))[int(np.argmax(sp))])
+
     def do_sweep(self):
         """Perform one beam sweep and return data including monopulse delta/error
 
@@ -467,7 +636,15 @@ class PhaserHeadless:
         # SignalFreq.
         calc_freq = self.SignalFreq - self.BW * 1e6
 
-        if self.ignore_res:
+        if self.sweep_mode in HOLD_MODES:
+            # Hold the beam: one point, the same +i*PhDelta ramp the sweep
+            # uses at that angle, so a held 30 deg reads what the sweep reads
+            # at 30 deg. Phase Control offsets still add on top, as in legacy.
+            SteerValues = np.array([float(self.hold_angle)])
+            PhaseValues = np.degrees(
+                2 * 3.14159 * self.d * np.sin(np.radians(SteerValues)) * calc_freq / self.c
+            )
+        elif self.ignore_res:
             # Legacy "ignore steering resolution": step the phase delta one
             # ADAR LSB at a time and let the angle axis fall out of it.
             phase_limit = (
@@ -492,6 +669,19 @@ class PhaserHeadless:
         # steering ramp per element.
         phaseList = self._apply_phase_cal(self.phaseList)
 
+        # The interferer is placed off the tone measured on the LAST sweep;
+        # target_tone_hz is re-measured below. Report the frequency actually
+        # injected: an HB100 drifts, and when it moved more than a few FFT
+        # bins between updates the readout looked for the interferer where
+        # it was not and read the noise floor, about 1 update in 8 on the kit.
+        injected_tone_hz = self.target_tone_hz
+        # Loudest pre-injection buffer of this sweep; feeds target_tone_hz.
+        best_raw = None
+        best_raw_pow = -1.0
+        # Last MVDR weights computed; a held beam has one point, so these are
+        # the weights behind the adaptive pattern.
+        last_w = None
+
         for i, PhDelta in enumerate(PhaseValues):
             ADAR_set_Phase(self.array, PhDelta, self.phase_step, phaseList)
 
@@ -504,6 +694,19 @@ class PhaserHeadless:
                 data = SDR_getData(self.sdr)
                 chan1 = np.asarray(data[0])
                 chan2 = np.asarray(data[1])
+
+                raw = chan1 + chan2
+                raw_pow = float(np.vdot(raw, raw).real)
+                if raw_pow > best_raw_pow:
+                    best_raw_pow = raw_pow
+                    best_raw = raw
+
+                # Inject before any digital weights, so MVDR sees the
+                # interferer in its covariance like any received signal.
+                interf = self._interferer_channels(PhDelta, len(chan1))
+                if interf is not None:
+                    chan1 = chan1 + interf[0]
+                    chan2 = chan2 + interf[1]
 
                 # Compute digital beamforming weights (2 complex scalars,
                 # one per digital sub-array). Manual: user-set sliders.
@@ -519,8 +722,13 @@ class PhaserHeadless:
                     K = int(min(self.mvdr_K, len(chan1)))
                     X = np.vstack([chan1[:K], chan2[:K]]).astype(np.complex128)
                     w = self._mvdr_weights(X)
-                    # Apply weights: y = w^H · x, per-sample
-                    sum_chan = np.conj(w[0]) * chan1 + np.conj(w[1]) * chan2
+                    last_w = w
+                    # Apply weights: y = Nr · w^H · x, per-sample. The Nr
+                    # matches Manual's scale: MVDR's distortionless weights
+                    # sum to 1 in the look direction where Manual's [1, 1]
+                    # sum to 2, so unscaled MVDR read every level 6 dB below
+                    # Manual and looked like it had lost the target.
+                    sum_chan = len(w) * (np.conj(w[0]) * chan1 + np.conj(w[1]) * chan2)
                     # MVDR produces one optimal beam; no natural delta output.
                     delta_chan = np.zeros_like(sum_chan)
                 else:
@@ -533,15 +741,35 @@ class PhaserHeadless:
                     sum_chan = chan1 + chan2
                     delta_chan = chan1 - chan2
 
-                # Find peak in sum channel
-                max_index = np.argmax(np.abs(sum_chan))
+                if self.interferer_enable:
+                    # Two tones beat, so the sum channel's envelope repeats
+                    # and "the peak sample" becomes a tie decided by
+                    # rounding. Use in-band RMS instead: the same level as
+                    # the peak sample for a lone constant-envelope tone, and
+                    # it counts the interferer, which is the point -- the
+                    # jammer has to show in the beam pattern for MVDR to
+                    # visibly remove it. (Reading only the target's FFT bin
+                    # would filter an off-frequency jammer out entirely.)
+                    # The monopulse phase becomes that of the sum/delta
+                    # cross-correlation, which a lone tone reads identically.
+                    n_s = len(sum_chan)
+                    cross = np.vdot(delta_chan, sum_chan) / n_s
+                    s_val = np.sqrt(np.vdot(sum_chan, sum_chan).real / n_s)
+                    d_val = np.sqrt(np.vdot(delta_chan, delta_chan).real / n_s)
+                    beam_phase_src = cross
+                else:
+                    # Find peak in sum channel
+                    max_index = np.argmax(np.abs(sum_chan))
+                    s_val = sum_chan[max_index]
+                    d_val = delta_chan[max_index]
+                    beam_phase_src = s_val * np.conj(d_val)
 
                 # Sum beam magnitude
-                s_mag_sum = max(np.abs(sum_chan[max_index]), 1e-15)
+                s_mag_sum = max(np.abs(s_val), 1e-15)
                 s_dbfs_sum = 20 * np.log10(s_mag_sum / (2**11))
 
                 # Delta beam magnitude
-                s_mag_delta = max(np.abs(delta_chan[max_index]), 1e-15)
+                s_mag_delta = max(np.abs(d_val), 1e-15)
                 s_dbfs_delta = 20 * np.log10(s_mag_delta / (2**11))
 
                 # Phase difference between sum and delta.
@@ -566,7 +794,7 @@ class PhaserHeadless:
                 # product and only the sub-array geometry survives. Exactly so
                 # with no noise; with noise the value still jitters by ~0.03 rad
                 # sample to sample, but continuously, with no 2pi steps.
-                beam_phase = np.angle(sum_chan[max_index] * np.conj(delta_chan[max_index]))
+                beam_phase = np.angle(beam_phase_src)
 
                 total_sum += s_dbfs_sum
                 total_delta += s_dbfs_delta
@@ -598,34 +826,60 @@ class PhaserHeadless:
                 max_signal = avg_sum
                 data_fft = sum_chan
 
-        # FFT at peak angle
-        NumSamples = len(data_fft)
-        win = np.blackman(NumSamples)
-        y = data_fft * win
-        sp = np.absolute(np.fft.fft(y))
-        sp = np.fft.fftshift(sp)
-        s_mag = np.abs(sp) / np.sum(win)
-        s_mag = np.maximum(s_mag, 10**-15)
-        max_gain = 20 * np.log10(s_mag / (2**11))
+        if best_raw is not None:
+            self.target_tone_hz = self._measure_target_tone(best_raw)
 
-        ts = 1 / float(self.SampleRate)
-        xf = np.fft.fftfreq(NumSamples, ts)
-        xf = np.fft.fftshift(xf)
-
-        return {
+        result = {
             "ArrayGain": [float(x) for x in gain],
             "ArrayDelta": [float(x) for x in delta_gain],
             "PhaseDiff": phase_diff,
             "ErrorFunc": error_func,
             "ArrayAngle": [float(x) for x in angles],
-            "max_gain": max_gain.tolist(),
-            "xf": xf.tolist(),
             "peak_signal": float(max_signal),
             # Where the SOURCE is, for CTF tracking mode. Computed here rather
             # than in the browser because the flag is scored backend-side, and
             # a client-computed sector would be trivially spoofable.
             "peak_angle_deg": peak_angle_centroid(angles, gain),
+            # Echoed so the frontend can tell a held beam from a sweep, and
+            # spot a backend too old to know the mode.
+            "sweep_mode": self.sweep_mode,
+            "hold_angle_deg": float(self.hold_angle),
+            # Measured from pre-injection IQ, so it is the real target even
+            # with the interferer on. The FFT plot marks both tones from these.
+            "target_tone_hz": self.target_tone_hz,
+            "interferer_freq_hz": (
+                (injected_tone_hz or 0.0) + self.interferer_offset_hz
+                if self.interferer_enable else None
+            ),
         }
+
+        if self.sweep_mode in HOLD_MODES and last_w is not None:
+            # Every held update, not throttled with the spectrum: it is 361
+            # points, and it should move as the weights do.
+            result["adaptive_pattern"] = self._adaptive_pattern(PhaseValues[0], last_w)
+
+        now = time.monotonic()
+        last_fft = getattr(self, "_last_fft_t", None)
+        if (self.sweep_mode not in HOLD_MODES or last_fft is None
+                or now - last_fft >= HOLD_FFT_INTERVAL_S):
+            self._last_fft_t = now
+            # FFT at peak angle
+            NumSamples = len(data_fft)
+            win = np.blackman(NumSamples)
+            y = data_fft * win
+            sp = np.absolute(np.fft.fft(y))
+            sp = np.fft.fftshift(sp)
+            s_mag = np.abs(sp) / np.sum(win)
+            s_mag = np.maximum(s_mag, 10**-15)
+            max_gain = 20 * np.log10(s_mag / (2**11))
+
+            ts = 1 / float(self.SampleRate)
+            xf = np.fft.fftfreq(NumSamples, ts)
+            xf = np.fft.fftshift(xf)
+
+            result["max_gain"] = max_gain.tolist()
+            result["xf"] = xf.tolist()
+        return result
 
     # --- Mode dispatcher --------------------------------------------------
 
@@ -760,6 +1014,11 @@ class PhaserHeadless:
             "data": {
                 "SignalFreq": self.SignalFreq,
                 "Rx_freq": self.Rx_freq,
+                # Where the IF came from, so the sidebar can say whether this
+                # kit has actually been measured. An unverified IF is the one
+                # fault that looks identical to a working kit on screen.
+                "Rx_freq_source": getattr(self, "Rx_freq_source", "unknown"),
+                "Rx_freq_warnings": list(getattr(self, "Rx_freq_warnings", [])),
                 "Tx_freq": self.Tx_freq,
                 "Rx_gain": self.Rx_gain,
                 "Tx_gain": self.Tx_gain,
@@ -769,6 +1028,8 @@ class PhaserHeadless:
                 "phase_step": self.phase_step,
                 "steer_res": self.steer_res,
                 "ignore_res": self.ignore_res,
+                "sweep_mode": self.sweep_mode,
+                "hold_angle": self.hold_angle,
                 "steer_min": self.steer_min,
                 "steer_max": self.steer_max,
                 "Averages": self.Averages,
@@ -782,9 +1043,11 @@ class PhaserHeadless:
                 "mvdrK": self.mvdr_K,
                 "mvdrDiagLoad": self.mvdr_diag_load,
                 "sim_mode": self.sim_mode,
-                "sim_interferer_enable": self.sim_interferer_enable,
-                "sim_interferer_angle_deg": self.sim_interferer_angle_deg,
-                "sim_interferer_power_db": self.sim_interferer_power_db,
+                "interferer_enable": self.interferer_enable,
+                "interferer_angle_deg": self.interferer_angle_deg,
+                "interferer_power_dbfs": self.interferer_power_dbfs,
+                "interferer_offset_hz": self.interferer_offset_hz,
+                "interferer_phase_deg": self.interferer_phase_deg,
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
                 # Lets the UI hide the affordance where it would only fail.
@@ -893,6 +1156,8 @@ class PhaserHeadless:
             script = os.path.join(script_dir, "phaser_find_hb100_headless.py")
         elif task_name == "phaser_cal":
             script = os.path.join(script_dir, "phaser_cal_headless.py")
+        elif task_name == "characterize":
+            script = os.path.join(script_dir, "phaser_characterize_headless.py")
         else:
             return {"status": "error", "message": f"Unknown calibration task: {task_name}"}
 
@@ -912,6 +1177,7 @@ class PhaserHeadless:
         # CW teardown (restoring SDR state) before the calibration subprocess
         # tries to grab the hardware.
         was_sweeping = self.sweeping
+        self.cal_resume_sweep = was_sweeping
         if self.mode != "idle":
             self._set_mode("idle")
 
@@ -933,7 +1199,9 @@ class PhaserHeadless:
             self.cal_reader_thread.start()
             return {"status": "ok", "message": f"Started {task_name}"}
         except Exception as e:
-            self.sweeping = was_sweeping
+            self.cal_resume_sweep = False
+            if was_sweeping:
+                self._set_mode("sweep")
             return {"status": "error", "message": str(e)}
 
     def get_calibration_status(self):
@@ -973,8 +1241,10 @@ class PhaserHeadless:
             # Reload calibration if successful
             if returncode == 0:
                 self._reload_calibration(self.cal_task)
+                self._resume_sweep_after_calibration()
             else:
                 print(f"[CAL:{self.cal_task}] FAILED, exit {returncode}", flush=True)
+                self.cal_resume_sweep = False
 
             self.cal_last_result = dict(result)
             self.cal_process = None
@@ -1002,9 +1272,23 @@ class PhaserHeadless:
         task = self.cal_task
         self.cal_process = None
         self.cal_task = None
-        self.cal_log.append("Calibration cancelled by user")
-        print(f"Calibration {task} cancelled")
-        return {"status": "ok", "message": f"Cancelled {task}"}
+        self.cal_log.append("Calibration canceled by user")
+        print(f"Calibration {task} canceled")
+        return {"status": "ok", "message": f"Canceled {task}"}
+
+    def _resume_sweep_after_calibration(self):
+        """Hand the sweep back if a calibration task interrupted one.
+
+        run_calibration drops to idle so the subprocess can own the hardware,
+        and nothing ever switched back: after Find HB100 the browser still
+        showed Stop while the backend sat idle, so the plots froze until the
+        user pressed Stop and Start. Only after a successful run, which is the
+        one that re-initializes the hardware first.
+        """
+        resume = getattr(self, "cal_resume_sweep", False)
+        self.cal_resume_sweep = False
+        if resume and self.mode == "idle":
+            self._set_mode("sweep")
 
     def _reload_calibration(self, task_name):
         """Re-initialize hardware after calibration script completes.
@@ -1113,33 +1397,30 @@ class PhaserHeadless:
                 if mode in ("manual", "mvdr") and mode != self.bf_mode:
                     self.bf_mode = mode
                     if mode == "mvdr":
-                        print("[BF] MVDR mode selected — algorithm not yet wired; using manual weights until todo #4 lands.")
+                        print("[BF] MVDR mode selected.")
                     else:
                         print("[BF] Manual mode selected.")
             if "mvdrK" in state:
                 self.mvdr_K = max(8, int(state["mvdrK"]))
             if "mvdrDiagLoad" in state:
                 self.mvdr_diag_load = max(0.0, float(state["mvdrDiagLoad"]))
-            # Simulator interferer fields: ignored on real hardware; in sim
-            # mode we forward them to SimSDR so the next SDR read reflects
-            # the new configuration.
-            interf_changed = False
-            if "sim_interferer_enable" in state:
-                self.sim_interferer_enable = bool(state["sim_interferer_enable"])
-                interf_changed = True
-            if "sim_interferer_angle_deg" in state:
-                v = float(state["sim_interferer_angle_deg"])
-                self.sim_interferer_angle_deg = max(-90.0, min(90.0, v))
-                interf_changed = True
-            if "sim_interferer_power_db" in state:
-                self.sim_interferer_power_db = float(state["sim_interferer_power_db"])
-                interf_changed = True
-            if interf_changed and self.sim_mode and hasattr(self.sdr, "set_interferer"):
-                self.sdr.set_interferer(
-                    enable=self.sim_interferer_enable,
-                    angle_deg=self.sim_interferer_angle_deg,
-                    power_db=self.sim_interferer_power_db,
-                )
+            # Synthetic interferer. Read by do_sweep() at the next SDR read,
+            # on hardware and in sim alike; nothing to push anywhere.
+            if "interferer_enable" in state:
+                self.interferer_enable = bool(state["interferer_enable"])
+            if "interferer_angle_deg" in state:
+                v = float(state["interferer_angle_deg"])
+                self.interferer_angle_deg = max(-90.0, min(90.0, v))
+            if "interferer_power_dbfs" in state:
+                v = float(state["interferer_power_dbfs"])
+                self.interferer_power_dbfs = max(-80.0, min(0.0, v))
+            if "interferer_offset_hz" in state:
+                # Inside the +/- fs/2 baseband, with room for the target tone.
+                lim = float(self.SampleRate) / 4
+                v = float(state["interferer_offset_hz"])
+                self.interferer_offset_hz = max(-lim, min(lim, v))
+            if "interferer_phase_deg" in state:
+                self.interferer_phase_deg = float(state["interferer_phase_deg"]) % 360.0
             # Phase LSB and steering resolution are independent knobs, so
             # take both whenever the frontend sends them. ignore_res only
             # decides which one drives the sweep -- it must not make the
@@ -1156,6 +1437,15 @@ class PhaserHeadless:
             if "ignore_res" in state:
                 self.ignore_res = bool(state["ignore_res"])
                 print(f"Ignore steering resolution: {self.ignore_res}")
+            # The frontend's `mode` is the legacy sweep mode. It is NOT
+            # self.mode, which is the run state (idle/sweep/cw_radar).
+            if "mode" in state:
+                sweep_mode = str(state["mode"])
+                if sweep_mode != self.sweep_mode:
+                    self.sweep_mode = sweep_mode
+                    print(f"Sweep mode: {self.sweep_mode}")
+            if "hold_angle" in state:
+                self.hold_angle = max(-90.0, min(90.0, float(state["hold_angle"])))
             return {"status": "ok"}
 
         elif cmd == "power_off":
@@ -1502,6 +1792,152 @@ class PhaserHeadless:
         self.ctx.term()
 
 
+# The Pluto's iiod, reached over the USB network gadget the Pluto presents
+# (SDR_functions and _do_init_hardware use "ip:192.168.2.1"). A TCP connect is
+# enough to tell "cable unplugged" from "plugged in but something else broke",
+# and it needs no libiio.
+PLUTO_IIOD = ("192.168.2.1", 30431)
+
+
+def pluto_reachable(timeout=1.0):
+    try:
+        with socket.create_connection(PLUTO_IIOD, timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+class HardwareMissingServer:
+    """Serves the UI, and says what is wrong, when the hardware will not start.
+
+    Without this a failed hardware init killed the process before the HTTP
+    server existed, so the browser said "refused to connect" -- which points
+    at the network, not at the cause. On two bring-ups in a row the cause was
+    the Pluto's USB cable to the Pi, left unplugged. Now the page loads and
+    shows a card naming the cable.
+
+    It watches for the Pluto and, once it appears, exits nonzero so systemd
+    (Restart=on-failure) starts the full backend; the page's 2 s WebSocket
+    reconnect then picks that up with no reload. A failure with the Pluto
+    present gets no watcher -- restarting would fail the same way -- only the
+    card's Retry button.
+    """
+
+    EXIT_RETRY = 3
+    # Plugged in is not ready: the Pluto's iiod answers a few seconds before
+    # the radio does, and an init in that window fails all over again.
+    SETTLE_S = 5.0
+    POLL_S = 2.0
+
+    # Borrowed rather than copied: the same static-file server, the same
+    # passwordless-poweroff probe. Neither touches hardware state.
+    _http_server = PhaserHeadless._http_server
+    shutdown_permitted = PhaserHeadless.shutdown_permitted
+
+    def __init__(self, error, ws_port=8765, http_port=8080, pluto_check=pluto_reachable):
+        self.error = f"{type(error).__name__}: {error}"
+        self.ws_port = ws_port
+        self.http_port = http_port
+        self.pluto_check = pluto_check
+        self.pluto_found = pluto_check()
+        self._shutdown_permitted = None
+        self.running = False
+        self.exit_code = 0
+
+    def status(self):
+        if self.pluto_found:
+            message = ("The Phaser hardware did not start. Check the Pluto's USB "
+                       "cable to the Pi and the PHASER's USB-C power, then press Retry.")
+        else:
+            message = ("The Pluto's USB cable to the Pi is unplugged, the usual "
+                       "cause, or the Pluto has no power. Plug it in and this page "
+                       "reconnects on its own.")
+        return {
+            "status": "error",
+            "hardware_missing": True,
+            "pluto_found": self.pluto_found,
+            "message": message,
+            "detail": self.error,
+            "shutdown_available": self.shutdown_permitted(),
+        }
+
+    def handle_command(self, msg):
+        cmd = msg.get("cmd")
+        if cmd == "retry_hardware":
+            self.request_restart("Retry pressed")
+            return {"status": "ok", "message": "Restarting the backend."}
+        if cmd == "power_off":
+            if not self.shutdown_permitted():
+                return {"status": "error",
+                        "message": "Shutdown is not permitted on this host."}
+            subprocess.Popen(["sudo", "-n"] + SHUTDOWN_CMD)
+            return {"status": "ok", "message": "Shutting down."}
+        return self.status()
+
+    def request_restart(self, why):
+        print(f"[HW] {why}; exiting for systemd to restart the backend")
+        self.exit_code = self.EXIT_RETRY
+        self.running = False
+
+    def watch_once(self):
+        """One poll. True when the Pluto has just appeared."""
+        if self.pluto_found:
+            return False
+        if self.pluto_check():
+            self.pluto_found = True
+            return True
+        return False
+
+    def _watch(self):
+        while self.running:
+            if self.watch_once():
+                print(f"[HW] Pluto appeared; waiting {self.SETTLE_S:.0f} s for it to settle")
+                time.sleep(self.SETTLE_S)
+                self.request_restart("Pluto found")
+                return
+            time.sleep(self.POLL_S)
+
+    def _websocket_server(self):
+        async def handler(websocket):
+            try:
+                await websocket.send(json.dumps({"type": "hardware_missing", "data": self.status()}))
+                async for message in websocket:
+                    try:
+                        msg = json.loads(message)
+                    except json.JSONDecodeError:
+                        continue
+                    reply = {"type": "response", **self.handle_command(msg)}
+                    if msg.get("id"):
+                        reply["id"] = msg["id"]
+                    await websocket.send(json.dumps(reply))
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
+        async def serve():
+            async with websockets.serve(handler, "0.0.0.0", self.ws_port):
+                while self.running:
+                    await asyncio.sleep(0.2)
+
+        asyncio.run(serve())
+
+    def run(self):
+        """Serve until the hardware should be retried; returns the exit code."""
+        self.running = True
+        print(f"[HW] Hardware init failed: {self.error}")
+        print("[HW] Pluto " + ("reachable" if self.pluto_found else
+                               "NOT reachable at %s:%d -- check its USB cable to the Pi" % PLUTO_IIOD))
+        threads = [threading.Thread(target=self._http_server, daemon=True)]
+        if HAS_WEBSOCKETS:
+            threads.append(threading.Thread(target=self._websocket_server, daemon=True))
+        threads.append(threading.Thread(target=self._watch, daemon=True))
+        for t in threads:
+            t.start()
+        while self.running:
+            time.sleep(0.2)
+        time.sleep(0.5)   # let the Retry reply reach the browser
+        return self.exit_code
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Phaser Headless Backend")
@@ -1530,14 +1966,20 @@ def main():
     if args.sim:
         print("*** RUNNING IN SIMULATION MODE — no Phaser hardware required ***")
 
-    server = PhaserHeadless(
-        pub_port=args.pub_port,
-        rep_port=args.rep_port,
-        ws_port=args.ws_port,
-        http_port=args.http_port,
-        radar_http_port=args.radar_http_port,
-        sim_mode=args.sim,
-    )
+    try:
+        server = PhaserHeadless(
+            pub_port=args.pub_port,
+            rep_port=args.rep_port,
+            ws_port=args.ws_port,
+            http_port=args.http_port,
+            radar_http_port=args.radar_http_port,
+            sim_mode=args.sim,
+        )
+    except Exception as e:
+        if args.sim:
+            raise
+        fallback = HardwareMissingServer(e, ws_port=args.ws_port, http_port=args.http_port)
+        sys.exit(fallback.run())
 
     def signal_handler(sig, frame):
         server.stop()

@@ -17,6 +17,8 @@ import numpy as np
 from phaser_functions import (
     MIN_SCAN_SNR_DB,
     find_scan_peak,
+    DEFAULT_RX_FREQ_HZ,
+    rx_freq_source,
     save_hb100_cal,
     scan_peak_is_trustworthy,
     spec_est,
@@ -24,6 +26,11 @@ from phaser_functions import (
 
 from adi import ad9361
 from adi.cn0566 import CN0566
+
+try:
+    import config as config_module
+except ImportError:
+    config_module = None
 
 MAX_RETRIES = 3
 RETRY_DELAY = 2.0
@@ -48,9 +55,22 @@ def _capture(my_phaser, my_sdr, signal_freq):
     my_phaser.SignalFreq = signal_freq
     my_phaser.frequency = (int(signal_freq) + my_sdr.rx_lo) // 4
     sleep(0.05)
-    my_sdr.rx()  # discard the buffer that straddles the retune
+    # Destroy the RX buffer rather than discarding one read. Discarding one
+    # was not enough: on hardware every capture still held the PREVIOUS LO's
+    # data, whatever the settle time (0.05, 0.2 and 1.0 s measured the same),
+    # so each 10 MHz sweep step was labeled with the next step's frequency
+    # and the search landed ~8 MHz off the tone. Discarding two did no better.
+    # A fresh buffer measured within one bin from any jump (2026-10-15).
+    if hasattr(my_sdr, "rx_destroy_buffer"):
+        my_sdr.rx_destroy_buffer()
+    else:
+        my_sdr.rx()
     data = my_sdr.rx()
-    ampl, freqs = spec_est(data[0] + data[1], SAMPLE_RATE, ref=2 ** 12, plot=False)
+    # The rate the radio actually runs at, not SAMPLE_RATE: loading
+    # LTE20_MHz.ftr moves it to 30.72 MSPS, and a 30 MSPS axis puts every
+    # tone 2.4% too close to the LO.
+    ampl, freqs = spec_est(data[0] + data[1], int(my_sdr.sample_rate),
+                           ref=2 ** 12, plot=False)
     return np.flip(np.fft.fftshift(ampl)), np.fft.fftshift(freqs)
 
 
@@ -63,9 +83,9 @@ def confirm_with_lo_shift(my_phaser, my_sdr, candidate_hz):
     frequency moves by exactly the shift and it fails.
     """
     for shift in (+CONFIRM_SHIFT_HZ, -CONFIRM_SHIFT_HZ):
-        centre = candidate_hz + shift
-        ampl, bb = _capture(my_phaser, my_sdr, centre)
-        observed = centre + bb[int(np.argmax(ampl))]
+        center = candidate_hz + shift
+        ampl, bb = _capture(my_phaser, my_sdr, center)
+        observed = center + bb[int(np.argmax(ampl))]
         error = abs(observed - candidate_hz)
         print(
             "  LO %+0.1f MHz -> peak at %.6f GHz (candidate %.6f GHz, "
@@ -79,6 +99,31 @@ def confirm_with_lo_shift(my_phaser, my_sdr, candidate_hz):
                 % (error / 1e6, shift / 1e6)
             )
     return True, "ok"
+
+
+def search_if(config_module):
+    """The IF to search at: this unit's measurement, else the bootstrap default.
+
+    The search is what a fresh kit runs first, so it must not trust
+    config.Rx_freq. That ships at 2.2 GHz, and kit phaser-00 hears nothing
+    there: on a freshly flashed card (2026-10-19) the search ran at 2.2 GHz,
+    found only a receiver spur at 10.68 GHz, and failed -- leaving no stored
+    HB100 frequency for Characterize IF to start from. The bootstrap default
+    sits inside every kit's measured window so far. A deliberate
+    Rx_freq_override still wins.
+    """
+    chosen = rx_freq_source(config_module)
+    if chosen["source"] != "config.py (unverified)":
+        return chosen
+    return {
+        "rx_freq_hz": float(DEFAULT_RX_FREQ_HZ),
+        "source": "the bootstrap default (unit not characterized yet)",
+        "warnings": [
+            "config.Rx_freq = %.3f GHz is not used for the search on an "
+            "uncharacterized unit. Run Characterize IF after this."
+            % (chosen["rx_freq_hz"] / 1e9)
+        ],
+    }
 
 
 def find_hb100():
@@ -128,7 +173,18 @@ def find_hb100():
             my_sdr.gain_control_mode_chan1 = "manual"
             my_sdr.rx_hardwaregain_chan0 = 0
             my_sdr.rx_hardwaregain_chan1 = 0
-            my_sdr.rx_lo = int(2.0e9)
+            # The IF is per-unit and measured; see
+            # phaser_characterize_headless.py. Before a unit has been
+            # characterized this falls back to the bootstrap default, which
+            # is what makes the search runnable on a kit that has never been
+            # measured -- it used to be a hardcoded 2.0 GHz, inside both kits
+            # measured so far but not guaranteed inside the next one.
+            chosen = search_if(config_module)
+            print("IF: %.3f GHz, from %s"
+                  % (chosen["rx_freq_hz"] / 1e9, chosen["source"]))
+            for line in chosen["warnings"]:
+                print("  WARNING: %s" % line)
+            my_sdr.rx_lo = int(chosen["rx_freq_hz"])
 
             # Load filter if available
             try:
@@ -183,7 +239,7 @@ def find_hb100():
                 print("  NOTE: too few LO steps to build a spur template; "
                       "result is a plain peak search")
             elif abs(result["raw_freq_hz"] - peak_hz) > CONFIRM_TOLERANCE_HZ:
-                # Worth saying out loud: this is the old behaviour being
+                # Worth saying out loud: this is the old behavior being
                 # overruled, and the gap is how far off it would have been.
                 print(
                     "  spur rejection changed the answer: a plain peak search "

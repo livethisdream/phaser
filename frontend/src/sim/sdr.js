@@ -20,19 +20,19 @@
  * length-N vector passes into one, and it is the same number to the last bit --
  * tests/test_sim_parity.py asserts exactly that against the Python.
  *
- * Sources are therefore grouped by IF: sources sharing an IF share a carrier
- * and collapse into a single pass. The target and the interferer deliberately
- * run at the same IF (see phaser_sim's class comment on MVDR), so the common
- * case is one pass per sub-array.
+ * Sources are grouped by IF: sources sharing an IF share a carrier and
+ * collapse into a single pass. Today the target is the only source; the
+ * interferer is injected after the read by engine.js (interfererWeights),
+ * mirroring PhaserHeadless.do_sweep(), so it works on hardware too.
  * ---------------------------------------------------------------------------
  */
 
 import {
     AMP_SCALE,
     C_M_PER_S,
-    INTERFERER_IF_HZ,
     NOISE_SIGMA,
     NUM_ELEMENTS,
+    RX_GAIN_AMPLITUDE,
     SIM_PI,
     TARGET_ANGLE_DEG,
     TARGET_IF_HZ,
@@ -57,9 +57,6 @@ export function createSimSdr({
         sampleRate,
         bufferSize,
         noiseSigma,
-        interfererEnable: false,
-        interfererAngleDeg: 30,
-        interfererPowerDb: 0,
     };
 
     /**
@@ -75,7 +72,9 @@ export function createSimSdr({
             const el = state.array.elements[k];
             // Latched beam state, not the shadow registers -- an unlatched
             // write must not steer the simulated array either.
-            const gain = Math.max(0, Math.min(127, el.latchedGain)) / 127;
+            // The register is not linear in voltage; model the chip's curve,
+            // so applyGainCal's inverse of it leaves the sim linear in slider %.
+            const gain = RX_GAIN_AMPLITUDE[Math.max(0, Math.min(127, el.latchedGain | 0))];
             const rxPhaseRad = (el.latchedPhase * Math.PI) / 180;
             const errRad = (state.array.elementPhaseError[k] * Math.PI) / 180;
             const phiIncident =
@@ -101,16 +100,7 @@ export function createSimSdr({
             byIf.set(ifHz, cur);
         }
 
-        // Target is always present.
         add(TARGET_IF_HZ, TARGET_ANGLE_DEG, 1);
-
-        if (state.interfererEnable) {
-            add(
-                INTERFERER_IF_HZ,
-                state.interfererAngleDeg,
-                Math.pow(10, state.interfererPowerDb / 20),
-            );
-        }
         return byIf;
     }
 
@@ -178,14 +168,6 @@ export function createSimSdr({
         get state() { return state; },
 
         setSignalFreq(hz) { state.signalFreq = hz; },
-
-        setInterferer({ enable, angleDeg, powerDb } = {}) {
-            if (enable !== undefined) state.interfererEnable = !!enable;
-            if (angleDeg !== undefined) {
-                state.interfererAngleDeg = Math.max(-90, Math.min(90, angleDeg));
-            }
-            if (powerDb !== undefined) state.interfererPowerDb = powerDb;
-        },
 
         setNoiseSigma(sigma) { state.noiseSigma = sigma; },
 
