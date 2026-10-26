@@ -38,7 +38,7 @@ set -euo pipefail
 REPO="${PHASER_REPO:-livethisdream/phaser}"
 REF="${PHASER_REF:-main}"
 SERVICE_USER="analog"
-HOSTNAME_NEW="${PHASER_HOSTNAME:-phaser}"
+HOSTNAME_NEW="${PHASER_HOSTNAME:-}"
 TIMEZONE="${PHASER_TIMEZONE:-America/Denver}"
 ASSUME_YES=0
 SKIP_GUI=0
@@ -51,7 +51,8 @@ usage() {
     cat <<'USAGE'
 Usage: provision.sh [options]
 
-  --hostname NAME     hostname for this kit (default: phaser)
+  --hostname NAME     hostname for this kit (default: <boot>/phaser-hostname
+                      if present, else phaser)
                       Give each kit its own -- ten kits called "phaser" collide
                       on mDNS and you can only reach one of them.
   --timezone TZ       IANA timezone (default: America/Denver)
@@ -117,6 +118,25 @@ for d in /boot/firmware /boot; do
 done
 [ -n "$BOOTDIR" ] || die "found no config.txt in /boot/firmware or /boot. Is this a Raspberry Pi image?"
 say "OK: $(hostname), $(uname -m), boot partition at $BOOTDIR"
+
+# No --hostname: take the name from <boot>/phaser-hostname, the file a card was
+# named with (prep_sdcard.py, build_kit_image.py, or Notepad on a golden-image
+# clone). Defaulting straight to "phaser" would rename phaser-01 back to
+# phaser -- on an --autoprovision first boot, and on every re-run to update a
+# kit in the field -- and ten kits answering to phaser.local is the collision
+# the file exists to prevent.
+if [ -z "$HOSTNAME_NEW" ] && [ -f "$BOOTDIR/phaser-hostname" ]; then
+    HOSTNAME_NEW="$(grep -vE '^[[:space:]]*(#|$)' "$BOOTDIR/phaser-hostname" \
+        | head -n1 | tr -d ' \t\r\n' || true)"
+    if [ -n "$HOSTNAME_NEW" ] && ! printf '%s' "$HOSTNAME_NEW" \
+            | grep -Eq '^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$'; then
+        warn "ignoring invalid hostname '$HOSTNAME_NEW' in $BOOTDIR/phaser-hostname"
+        HOSTNAME_NEW=""
+    elif [ -n "$HOSTNAME_NEW" ]; then
+        say "hostname '$HOSTNAME_NEW' from $BOOTDIR/phaser-hostname"
+    fi
+fi
+HOSTNAME_NEW="${HOSTNAME_NEW:-phaser}"
 
 # Ask for sudo once, up front, rather than surprising an unattended run with a
 # password prompt forty minutes in.
