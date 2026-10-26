@@ -190,6 +190,7 @@ class SimSDR:
         # FMCW radar state. Like the CW state above, off until the backend
         # enters the mode.
         self._fmcw_enable = False
+        self._fmcw_plan = None
         self._fmcw_targets = list(self.FMCW_DEFAULT_TARGETS)
         self._fmcw = {
             "chirp_bw": 500e6,
@@ -249,11 +250,27 @@ class SimSDR:
         output_freq, and a `targets` list. CW and FMCW are mutually exclusive:
         entering one leaves the other, the same way the hardware's mode
         dispatcher works.
+
+        `plan` is a phaser_radar_dsp.chirp_plan(), as the backend's FMCW mode
+        builds one. Given a synced plan, chirps land in PRI slots the way the
+        TDD delivers them; without one they are back to back, as before.
+        The plan's ramp time, PRI and chirp count override the params, since
+        the plan is built from what the (stub) ADF4159 read back.
         """
         targets = params.pop("targets", None)
+        plan = params.pop("plan", None)
         for key, value in params.items():
             if key in self._fmcw and value is not None:
                 self._fmcw[key] = float(value)
+        if enable:
+            self._fmcw_plan = plan
+            if plan is not None:
+                self._fmcw["ramp_time"] = float(plan["effective_ramp_time"])
+                self._fmcw["num_chirps"] = float(plan["num_chirps"])
+                if plan.get("pri_ms"):
+                    self._fmcw["pri"] = float(plan["pri_ms"]) / 1e3
+        else:
+            self._fmcw_plan = None
         if targets is not None:
             self.set_fmcw_targets(targets)
         self._fmcw_enable = bool(enable)
@@ -299,17 +316,27 @@ class SimSDR:
         n_total = int(self.rx_buffer_size)
         fs = float(self.sample_rate)
         cfg = self._fmcw
+        plan = self._fmcw_plan
 
         num_chirps = max(1, int(cfg["num_chirps"]))
-        spc = max(1, n_total // num_chirps)
-        usable = spc * num_chirps
+        if plan is not None and plan.get("synced"):
+            # Laid out the way a chirp-synced capture arrives: chirp m starts
+            # at m * frame_samples, the beat lasts as long as the ramp, and
+            # the rest of the PRI is empty (the shared noise fills it). That
+            # is what makes --sim exercise slice_chirps' offsets.
+            slot = max(1, int(plan["frame_samples"]))
+            ramp_n = max(1, min(slot, int(round(float(plan["ramp_time"]) * fs))))
+        else:
+            slot = max(1, n_total // num_chirps)
+            ramp_n = slot
+        usable = slot * num_chirps
 
         slope = float(cfg["chirp_bw"]) / float(cfg["ramp_time"])
         f_c = float(cfg["output_freq"])
         c = 299_792_458.0
         wavelength = c / max(f_c, 1.0)
 
-        t_fast = np.arange(spc) / fs
+        t_fast = np.arange(ramp_n) / fs
         m_idx = np.arange(num_chirps)
 
         chan_sub = [
@@ -324,10 +351,16 @@ class SimSDR:
             fast_phase = 2 * np.pi * (float(cfg["signal_freq"]) + f_beat + f_doppler) * t_fast
             slow_phase = 2 * np.pi * f_doppler * m_idx * float(cfg["pri"])
 
-            wave = np.exp(1j * (fast_phase[None, :] + slow_phase[:, None]))
-            wave = wave.ravel().astype(np.complex64)
+            chirps = np.exp(1j * (fast_phase[None, :] + slow_phase[:, None]))
+            if ramp_n < slot:
+                slotted = np.zeros((num_chirps, slot), dtype=complex)
+                slotted[:, :ramp_n] = chirps
+                chirps = slotted
+            wave = chirps.ravel().astype(np.complex64)
 
-            if usable < n_total:
+            if usable > n_total:
+                wave = wave[:n_total]
+            elif usable < n_total:
                 # A buffer that is not a whole number of chirps gets the
                 # remainder zero-filled; chirp_matrix drops it anyway.
                 wave = np.concatenate([wave, np.zeros(n_total - usable, np.complex64)])
@@ -494,3 +527,31 @@ def make_stub_gpios():
 
 def make_stub_array():
     return _StubADARArray()
+
+
+class _StubTDD(_StubGPIOs):
+    """adi.tddn: attributes plus three channels, which is all FMCW writes."""
+
+    def __init__(self):
+        self.enable = False
+        self.channel = [_StubGPIOs() for _ in range(3)]
+
+
+def make_stub_fmcw_hardware(phaser_gpios):
+    """The handles FMCW opens on a kit, stubbed: an ADF4159, the Pluto TDD,
+    and the Pluto GPIOs as v0.39 labels them (phaser_enable, no tdd_ext_sync).
+
+    With these, --sim runs the same enter_fmcw_mode / exit_fmcw_mode a kit
+    runs. The stub ADF4159 reads freq_dev_time back as written; nothing
+    rounds it, so the plan is the requested one.
+    """
+    import phaser_fmcw_radar  # pure; imports no pyadi-iio
+
+    synth = _StubGPIOs()
+    synth.frequency = 0
+    synth.ramp_mode = "disabled"
+    synth.enable = 0
+    pins = _StubGPIOs()
+    pins.gpio_phaser_enable = False
+    return phaser_fmcw_radar.FmcwHardware(
+        synth, _StubTDD(), pins, phaser_gpios, pluto_labels={"phaser_enable", "muxout"})
