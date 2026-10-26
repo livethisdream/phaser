@@ -70,6 +70,14 @@ step 1 "Checking this machine..."
 id "$SERVICE_USER" >/dev/null 2>&1 || die "user '$SERVICE_USER' does not exist. This expects the Phaser Pi image."
 [ "$(id -un)" = "$SERVICE_USER" ] || die "run this as '$SERVICE_USER', not '$(id -un)'. Everything below writes into that user's home."
 command -v tar >/dev/null 2>&1 || die "'tar' not found."
+# Step 6 always needs sudo, so find out now, before anything is copied. A sudo
+# that could not prompt used to surface in step 5b as "sudoers rule failed
+# validation", with new files on disk and the old backend still running. sudo
+# prompts on /dev/tty, not stdin, so curl | bash is fine; ssh without -t is not.
+if ! sudo -n true 2>/dev/null && ! { : </dev/tty; } 2>/dev/null; then
+    die "sudo needs your password and there is no terminal to ask on.
+       Re-run from an interactive shell:  ssh -t $SERVICE_USER@$(hostname).local"
+fi
 say "OK: running as $SERVICE_USER on $(hostname), $($PYTHON_BIN -V 2>&1)"
 
 # ---- 2. get the source -----------------------------------------------------
@@ -251,18 +259,24 @@ fi
 # for the room.
 SUDOERS_PATH="/etc/sudoers.d/phaser-shutdown"
 step 5b "Granting the GUI permission to power off..."
-RENDERED_SUDO="$TMP/phaser-shutdown"
-{
-    printf '# Installed by phaser install.sh.\n'
-    printf '# Exactly one command; delete this file to revoke.\n'
-    printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n' "$SERVICE_USER"
-} > "$RENDERED_SUDO"
-# visudo -c refuses a file that would otherwise break sudo entirely.
-if sudo visudo -cqf "$RENDERED_SUDO"; then
-    sudo install -m 440 -o root -g root "$RENDERED_SUDO" "$SUDOERS_PATH"
-    say "OK: $SUDOERS_PATH installed"
+# Test the permission, not the file: /etc/sudoers.d is unreadable without sudo,
+# and what the backend needs is that this one command runs with no password.
+if sudo -n -l /usr/bin/systemctl poweroff >/dev/null 2>&1; then
+    say "OK: poweroff is already permitted"
 else
-    die "the generated sudoers rule failed validation; refusing to install it."
+    RENDERED_SUDO="$TMP/phaser-shutdown"
+    {
+        printf '# Installed by phaser install.sh.\n'
+        printf '# Exactly one command; delete this file to revoke.\n'
+        printf '%s ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff\n' "$SERVICE_USER"
+    } > "$RENDERED_SUDO"
+    # visudo -c refuses a file that would otherwise break sudo entirely.
+    if sudo visudo -cqf "$RENDERED_SUDO"; then
+        sudo install -m 440 -o root -g root "$RENDERED_SUDO" "$SUDOERS_PATH"
+        say "OK: $SUDOERS_PATH installed"
+    else
+        die "the generated sudoers rule failed validation; refusing to install it."
+    fi
 fi
 
 # ---- 6. start and verify ---------------------------------------------------
