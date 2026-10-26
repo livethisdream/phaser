@@ -1,6 +1,10 @@
 # FMCW Phase C — hardware path
 
-Status: **draft for review**, 2026-10-24. Nothing here is implemented yet.
+Status, 2026-10-26:
+- **C0 is done.** The probe passes on phaser-01 (Pluto v0.39), reporting
+  `single_sawtooth_burst`.
+- **The open questions are decided** (see *Decisions* at the end).
+- **C1 is planned in detail** below, and is not implemented yet.
 
 Phase B (`phaser_radar_dsp.py`, the FMCW scene in `phaser_sim.py`) gives us the
 math. Phase C makes the kit produce data for it: program the ADF4159 ramp,
@@ -66,17 +70,168 @@ report `fmcw: {available, reason}` in state, so the UI can say *why* FMCW is
 greyed out instead of failing silently. Unit-tested with fakes.
 
 ### C1. `phaser_fmcw_radar.py` (new hardware module, mirrors `phaser_cw_radar.py`)
-- Pure functions, no I/O, fully tested:
-  `ramp_registers(cfg)`, `tdd_plan(cfg)` (PRI, burst count, buffer size,
-  offsets) and `slice_chirps(iq, plan)`.
-- I/O functions: `enter_fmcw_mode(sdr, cfg, saved, array, rpi_ip,
-  sdr_ip, gpios)`, `capture_fmcw_frame(...)` and `exit_fmcw_mode(...)`.
-- Hold one `adi.adf4159` handle for the mode's lifetime instead of reopening
-  per write (`SDR_LO_init` opens a fresh context every call, and the todo list
-  already flags leaked iio contexts).
-- Tests: a recording fake for ADF4159/TDD/SDR that asserts write **order**
-  (`enable` last, `tdd.enable` bracketing), the unwind on failure at every step,
-  and that exit puts back exactly what enter changed.
+
+Detailed 2026-10-26, after reading `Range_Doppler_Plot.py`,
+`FMCW_RADAR_Waterfall_ChirpSync.py`, `CFAR_RADAR_Waterfall_ChirpSync.py` and
+`RADAR_FFT_Waterfall.py`. C1 adds no mode, no command and no UI. It is a module
+and its tests, and nothing calls it until C2.
+
+**Pure part: config, presets and plans.** Goes in `phaser_radar_dsp.py`, which
+imports no hardware, so the tests run without pyadi-iio.
+
+- `FMCW_PRESETS`, one per lab, taken from the script each lab runs:
+
+  | preset | script | fs | output | ramp | chirps | PRI guard |
+  |---|---|---|---|---|---|---|
+  | `range` | `RADAR_FFT_Waterfall.py` | 0.6 MHz | 12.145 GHz | 1.2 ms | 1 | n/a (free-running) |
+  | `range_sync` | `FMCW_RADAR_Waterfall_ChirpSync.py` | 5 MHz | 10 GHz | 500 µs | 1 | +1.0 ms |
+  | `cfar` | `CFAR_RADAR_Waterfall_ChirpSync.py` | 2 MHz | 10 GHz | 500 µs | 1 | +1.0 ms |
+  | `range_doppler` | `Range_Doppler_Plot.py` | 4 MHz | 9.9 GHz | 300 µs | 256 | +0.2 ms |
+
+  All use B = 500 MHz and a 100 kHz IF tone. The values in each script get
+  checked against lab pp. 29–38 while writing the presets; where they
+  disagree, the lab wins and the test says why. **`center_freq` is not in
+  any preset.** It defaults to the kit's characterized IF (`self.Rx_freq`,
+  from `calibration.json`). The scripts' 2.1 GHz and our `FMCW_DEFAULTS`
+  2.2 GHz are both above phaser-00's 2.18 GHz ceiling or close to it (see
+  `docs/calibration-bugs.md`). C1 takes `center_freq` from the cfg, so the
+  wiring belongs to C2.
+- `ramp_registers(cfg, ramp_mode)` returns an **ordered list** of
+  `(attr, value)` pairs for an `adi.adf4159`, in upstream's order:
+  - `frequency = cw_lo_freq(cfg) / 4`
+  - `freq_dev_range = B/4`, `freq_dev_step = (B/4)/num_steps`,
+    `freq_dev_time = ramp_us`
+  - the delay and enable bits: `delay_word = 4095`, `delay_clk = "PFD"`,
+    the three delay enables at 0
+  - `ramp_mode`, `sing_ful_tri = 0`, and `tx_trig_en` = 1 for the synced
+    ramp, 0 for the free-running one
+  - `enable = 0` **last**
+
+  Writing it in a loop makes "`enable` last" a property of the data, which
+  is easy to test. All values are ints, and every `/4` goes through one
+  helper.
+- `chirp_plan(cfg, ramp_mode, actual_ramp_us, on_ms=0.0)` replaces
+  `tdd_plan` from the first draft, because the free-running ramp needs a
+  plan too. It takes the ramp time the ADF4159 **read back**, never the
+  requested one, and returns:
+  - `pri_ms` = ramp + `pri_guard_ms`, `burst_count`, and
+    `frame_samples` = `PRI × fs`
+  - `begin_offset_samples` = 10% of the ramp, `good_ramp_samples` = the
+    other 90%, and `start_offset_samples` = `on_ms` + the 10%
+  - `rx_buffer_size`, the next power of two ≥ `PRI × chirps × fs`, at
+    least 2^13
+  - `effective_ramp_time` (next bullet)
+
+  It raises `ValueError` when the burst needs more than 2^22 samples.
+  Upstream silently caps the buffer and slices past the end of it. For the
+  synced ramp, `pri_ms` and `burst_count` are the values `tdd` is
+  programmed with, so the TDD and the slicer can't disagree. For the
+  free-running ramp, the buffer is the preset's `fft_size` and nothing is
+  sliced.
+- **Range factor (Q3).** `effective_ramp_time` is the ramp time to hand
+  `phaser_radar_dsp`'s existing `c/(2·S)` functions:
+  - sawtooth: the read-back time
+  - triangle: half of it, which reproduces `RADAR_FFT_Waterfall.py`'s
+    `c/(4·S)`
+
+  It comes from one table, `RANGE_TIME_SCALE = {sawtooth: 1.0, triangle:
+  0.5}`. So the Phase B DSP is unchanged, and C5 bench step 3 corrects
+  one number if the triangle turns out to be wrong. My reading is that
+  the triangle sweeps B in each half of `freq_dev_time`. That would make
+  0.5 physically right and the lab's "6.7 kHz/m" correct for that ramp,
+  but this is unverified until the bench.
+- `slice_chirps(iq, plan)` takes the window at `start_offset + m ×
+  frame_samples` for `good_ramp_samples` samples, for each chirp `m`. It
+  returns the samples × chirps matrix that `chirp_matrix()` already
+  produces, so `mti_filter()` / `range_doppler_map()` take it unchanged.
+  It raises if the last window runs past the buffer. For a free-running
+  plan, it returns the buffer unchanged.
+
+**Hardware part: `phaser_fmcw_radar.py`.**
+
+- `FmcwHardware`, a small holder that opens the three new handles once per
+  mode entry:
+  - `adi.adf4159(rpi_ip)`
+  - `adi.tddn(sdr_ip)`
+  - `adi.one_bit_adc_dac(sdr_ip)` for the Pluto GPIOs
+
+  It takes the backend's existing Phaser `gpios` (for `burst`) instead of
+  opening another one. It drops all three on exit, and the LO restore goes
+  through the held ADF4159 handle, not `SDR_LO_init`, so the mode leaks no
+  contexts. `adi` is passed in, so the tests inject a fake module.
+- `enter_fmcw_mode(sdr, cfg, saved, hw, array, ramp_mode)` follows
+  `Range_Doppler_Plot.py`'s order, which is the one proven on the bench:
+  1. SDR snapshot (see *Shared with CW* below)
+  2. taper
+  3. SDR rates, LOs, gains, `rx_buffer_size`, `tx_cyclic_buffer = True`
+  4. ADF4159 registers, then read back `freq_dev_time` and build the plan
+     from it
+  5. TDD, synced only: `phaser_enable = True`; `tdd_ext_sync = True` only
+     if the channel exists; `tdd.enable = False` → `sync_external`,
+     `startup_delay_ms = 0`, `frame_length_ms`, `burst_count`, channels
+     0–2 → `tdd.enable = True`
+  6. cyclic Tx tone, ch0 at −88 dB
+  7. discard one frame, because of the stale-buffer lesson from
+     calibration bug 3
+
+  Before each step it records a flag in `saved`, so the unwind knows how
+  far it got. It returns `(cfg, plan)`.
+- `capture_fmcw_frame(sdr, gpios, plan)`:
+  - synced: pulse `gpio_burst` 0→1→0, then `rx()`
+  - free-running: `rx()` only
+
+  Then it sums ch0 + ch1 and returns `slice_chirps(...)`.
+- `exit_fmcw_mode(sdr, saved, hw, array, restore_taper, restore_lo_freq)`
+  undoes only what the `saved` flags say landed. Each step is in its own
+  `try`, so it tolerates being half-entered and being called twice:
+  1. `tdd.enable = False`
+  2. `phaser_enable` and `tdd_ext_sync` back to their snapshotted values
+  3. on the held handle: `ramp_mode = "disabled"`, `tx_trig_en = 0`,
+     `frequency = LO/4`, then `enable = 0` last
+  4. `tx_destroy_buffer()`
+  5. SDR restore, including `tx_cyclic_buffer` and `rx_buffer_size`
+  6. taper
+
+  The TDD has to be off before the beamforming sweep resumes: with
+  `sync_external` still set, every plain `rx()` waits for a trigger that
+  never comes.
+
+**Shared with CW.** The SDR snapshot and restore code is inline in
+`enter_cw_mode`/`exit_cw_mode`. C1 moves it into `snapshot_sdr()` /
+`restore_sdr()` in `phaser_cw_radar.py` without changing its behaviour,
+adds `tx_cyclic_buffer` to it, and both modes call it. The CW tests guard
+the move.
+
+**Tests** (`tests/test_fmcw_hw.py`, plus parity cases in
+`tests/test_fmcw_dsp.py`):
+- **Golden plan.** The `range_doppler` preset must reproduce
+  `Range_Doppler_Plot.py` exactly: `frame_samples` 2000,
+  `good_ramp_samples` 1080, `start_offset` 120, buffer 2^19 for 128 ms.
+  The same check runs for each other preset against its script.
+- **Registers.** The `/4` rule, `step × num_steps = range`, `enable` last,
+  and `tx_trig_en` per ramp mode.
+- **Plan errors.** A burst over 2^22 raises, and a PRI shorter than the
+  ramp raises.
+- **Slicing.** A synthetic buffer with each chirp's window marked comes
+  back in order. A short buffer raises. Slicing a synced `SimSDR`-style
+  frame gives the same range peak as Phase B's `chirp_matrix` on the same
+  target.
+- **Write order**, on a recording fake of `adi`, the SDR and the GPIOs:
+  `enable` is the last ADF4159 write, `tdd.enable` brackets the TDD
+  config, `tdd_ext_sync` is never written when the channel is absent, and
+  the read-back `freq_dev_time` is what the plan uses.
+- **Unwind.** Parametrized over a failure injected at each enter step: the
+  exit leaves every recorded attribute at its pre-enter value, the TDD
+  off, the ramp disabled, and no handle open. Enter → exit leaves the
+  fakes exactly as they started. Exiting twice is harmless.
+
+**Not in C1, and recorded for C2:**
+- **`SimSDR` layout.** `_synthesize_fmcw` lays chirps back to back with no
+  PRI gap or settling offset. C2 makes it lay them out the way a plan says,
+  so `--sim` runs `slice_chirps` too and doesn't skip it.
+- **CW `center_freq`.** CW mode has the same 2.2 GHz problem today:
+  `DEFAULTS["center_freq"]` ignores the per-unit IF. That's a CW bug,
+  separate from this work.
 
 ### C2. Mode dispatcher
 - Add `fmcw_radar` to `_set_mode`, and generalize the CW enter/exit/unwind into
@@ -116,7 +271,7 @@ and polish are Phase D.
 7. Stop FMCW → beamforming sweep: the HB100 beam is still where it was (LO,
    taper and SDR fully restored).
 
-## Open questions for you
+## Open questions (as asked 2026-10-24; answered under *Decisions*)
 
 1. **One ramp mode or two?** The range lab runs a free-running
    `continuous_triangular` ramp with no sync. The other three labs use the TDD-synced
@@ -143,3 +298,23 @@ and polish are Phase D.
 C0 → C1 → C2 → C3 → C4 → C5. Each of C0–C3 lands as its own PR into
 `radar-dev`, testable in CI with fakes and `--sim`. C4 can overlap C3. C5 is
 the gate before any of it merges to `main`.
+
+## Decisions (2026-10-26)
+
+1. **Ramp mode.** The synced `single_sawtooth_burst` is the one code path.
+   The free-running `continuous_triangular` is used only when the probe finds
+   no TDD sync.
+2. **Firmware.** v0.39 is enough. Two kits confirm it: on the earlier kit,
+   `Range_Doppler_Plot.py` drew a live map, and phaser-01's probe passes. No
+   firmware step goes in `provision.sh`.
+3. **Range factor.** Each ramp mode gets its own constant
+   (`RANGE_TIME_SCALE`): 1.0 for the sawtooth, 0.5 for the triangle. C5 bench
+   step 3 decides whether those are right.
+4. **Defaults.** One preset per lab (`FMCW_PRESETS`), with each preset's
+   values taken from the script that lab runs. `center_freq` comes from the
+   kit's characterized IF, never from a preset.
+5. **Frame rate.** The target is about 5 fps for range-Doppler. A
+   `range_doppler` frame is 128 ms of capture alone, which caps it near
+   7.8 fps before any DSP, so C3 has to keep processing and transport under
+   about 70 ms. A single-chirp range profile should run faster. C3 measures
+   both on the Pi.
