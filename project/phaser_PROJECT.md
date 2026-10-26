@@ -146,6 +146,8 @@ matching your own ssh command line).
 **Next is beamforming Phase 1, untouched.** The per-element phase sliders
 still send `state.phaseList` and the backend still ignores it.
 
+**Signal Freq field retunes (2026-10-07):** committing a value (Enter, blur, spinner) now sends `set_state`, so the LO retunes; before, the field changed only browser state, and the L17 bench step that retunes by typing a frequency silently did nothing. Branch `claude/signal-freq-sync`.
+
 Kit provisioning (#24) is merged but unproven on hardware end to end; the
 new-kit bring-up in ToDo is the first run that exercises it. Five unrelated
 PRs remain open: #31, #28, #26, #25 (CONFLICTING), #19.
