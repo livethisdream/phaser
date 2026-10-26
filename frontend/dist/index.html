@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-DMMAdJjZ.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-2mihS-Eq.css">
+  <script type="module" crossorigin src="./assets/index-TWHBRLRo.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-Irc6m2Jc.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -63,20 +63,25 @@
               <path d="M12 8v4l2.6 2.6"></path>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="3" title="Quantization" aria-label="Quantization">
+          <button class="sidebar-icon-btn" data-section="4" title="Quantization" aria-label="Quantization">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M5 7.5h14v9H5z"></path>
               <path d="M8 7.5v3M11 7.5v2M14 7.5v3M17 7.5v2"></path>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="4" title="Digital Beam" aria-label="Digital Beam Forming">
+          <button class="sidebar-icon-btn" data-section="5" title="Digital Beam" aria-label="Digital Beam Forming">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="12" cy="12" r="2"></circle>
               <path d="M12 4v3M12 17v3M4 12h3M17 12h3"></path>
               <path d="M6.7 6.7l2.1 2.1M15.2 15.2l2.1 2.1M17.3 6.7l-2.1 2.1M8.8 15.2l-2.1 2.1"></path>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="5" title="Plot Options" aria-label="Plot Options">
+          <button class="sidebar-icon-btn" data-section="6" title="Interferer" aria-label="Interferer">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="7" title="Plot Options" aria-label="Plot Options">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M4.5 18.5h15"></path>
               <path d="M6 16l4-5 3 2 5-6"></path>
@@ -86,7 +91,7 @@
               <circle cx="18" cy="7" r="1"></circle>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="6" title="Lab Presets" aria-label="Lab Presets">
+          <button class="sidebar-icon-btn" data-section="8" title="Lab Presets" aria-label="Lab Presets">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M9 3h6"></path>
               <path d="M10 3v6.2L6 17a2 2 0 0 0 1.78 2.9h8.44A2 2 0 0 0 18 17l-4-7.8V3"></path>
@@ -122,8 +127,11 @@
                       <label style="margin-bottom:0; color: var(--text-main);">Calibration</label>
                     </div>
                     <div class="action-row" style="margin-top:0.5rem">
-                        <button class="btn btn-outline" id="btn-calibrate-phaser">Calibrate</button>
+                        <!-- Workflow order: find the source, measure the IF this
+                             kit can hear, then calibrate the array against it. -->
                         <button class="btn btn-outline" id="btn-find-hb100">Find HB100</button>
+                        <button class="btn btn-outline" id="btn-characterize" title="Measure this kit's usable IF range. Needed once per kit, with the HB100 powered and aimed at the array.">Characterize IF</button>
+                        <button class="btn btn-outline" id="btn-calibrate-phaser">Calibrate</button>
                         <button class="btn btn-outline" id="btn-reboot-phaser" title="Reboot Phaser hardware">Reboot</button>
                     </div>
                     <hr class="divider" />
@@ -228,6 +236,17 @@
             <div class="accordion-item">
                 <button class="accordion-header" title="Compute the per-element phases needed to steer to a chosen angle; sliders in Phase Control update to show the ramp"><span class="accordion-icon" data-icon="2"></span> Beam Steering <span>▼</span></button>
                 <div class="accordion-body">
+                    <!-- Legacy Mode menu. Signal vs Time holds the beam at the
+                         Steer Angle and plots peak amplitude against time on
+                         the Tracking tab (L21 Lab, antenna pattern). -->
+                    <div class="control-group" style="display:flex; align-items:center; gap:10px;">
+                      <label for="sweep-mode" style="margin-bottom:0">Mode</label>
+                      <select id="sweep-mode" class="modern-input-small" style="flex:1; width:auto; text-align:left;"
+                              title="Beam Sweep scans the beam; Signal vs Time holds it at the Steer Angle and plots peak amplitude against time">
+                        <option value="Beam Sweep">Beam Sweep</option>
+                        <option value="Signal vs Time">Signal vs Time</option>
+                      </select>
+                    </div>
                     <div class="control-group combo-group">
                       <label>Steer Angle (deg)</label>
                       <div class="combo-inputs">
@@ -247,6 +266,7 @@
                     <div class="action-row mt-2">
                         <button class="btn btn-outline" id="btn-apply-steer">Apply</button>
                     </div>
+                    <p id="svt-steer-note" hidden style="font-size:0.8rem; color:var(--text-muted); margin:0.75rem 0 0;">Signal vs Time: the beam is held at the Steer Angle, which takes effect as you move it. Apply sets the Taper and zeroes Phase Control.</p>
                 </div>
             </div>
 
@@ -339,6 +359,48 @@
                 </div>
             </div>
 
+            <!-- 6. Interferer -->
+            <div class="accordion-item" id="accordion-interferer">
+                <button class="accordion-header" title="Add a computed jammer to the received signal to see what MVDR does about it"><span class="accordion-icon" data-icon="7"></span> Interferer <span>▼</span></button>
+                <div class="accordion-body">
+                    <button class="btn btn-outline interferer-toggle" id="btn-interferer" aria-pressed="false">Inject Interferer</button>
+                    <p class="interferer-note">
+                      Computed, not radiated: a second source at the angle below is added to the
+                      received signal, as the array would see it, before the digital beamformer.
+                    </p>
+                    <div class="control-group combo-group mt-2">
+                      <label>Angle (deg)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-angle" min="-90" max="90" step="1" value="-20" class="modern-slider">
+                        <input type="number" id="val-interferer-angle" min="-90" max="90" step="1" value="-20" class="modern-input-small">
+                      </div>
+                    </div>
+                    <div class="control-group combo-group mt-2">
+                      <label title="What a full-taper beam pointed straight at it would read">Power (dBFS)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-power" min="-60" max="0" step="1" value="-10" class="modern-slider">
+                        <input type="number" id="val-interferer-power" min="-60" max="0" step="1" value="-10" class="modern-input-small">
+                      </div>
+                    </div>
+                    <div class="control-group combo-group mt-2">
+                      <label title="From the target tone. Keep it well above 25 kHz so the two are distinct over MVDR's snapshot window">Offset from target (kHz)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-offset" min="-750" max="750" step="5" value="100" class="modern-slider">
+                        <input type="number" id="val-interferer-offset" min="-750" max="750" step="5" value="100" class="modern-input-small">
+                      </div>
+                    </div>
+                    <label class="toggle-container mt-2" title="Same frequency as the target: the case MVDR handles badly"><span>Coherent with target</span><input type="checkbox" id="interferer-coherent"><span class="checkmark"></span></label>
+                    <div class="control-group combo-group mt-2" id="interferer-phase-group" hidden>
+                      <label title="Only meaningful in the simulator; a real HB100's phase is not ours to set">Phase (deg, sim only)</label>
+                      <div class="combo-inputs">
+                        <input type="range" id="interferer-phase" min="0" max="359" step="1" value="0" class="modern-slider">
+                        <input type="number" id="val-interferer-phase" min="0" max="359" step="1" value="0" class="modern-input-small">
+                      </div>
+                    </div>
+                    <p id="interferer-hint" class="interferer-note mt-2"></p>
+                </div>
+            </div>
+
             <!-- 6. Plot Options -->
             <div class="accordion-item">
                 <button class="accordion-header" title="Toggle visual markers and override graph axes boundaries"><span class="accordion-icon" data-icon="5"></span> Plot Options <span>▼</span></button>
@@ -400,33 +462,8 @@
                 </div>
             </div>
 
-            <!-- 8. Simulator Interferer (instructor mode only — hidden unless ?instructor=1) -->
-            <div class="accordion-item" id="accordion-sim-interferer" hidden>
-                <button class="accordion-header" title="Inject a simulated jammer at a chosen angle to demonstrate adaptive nulling (sim mode only)"><span class="accordion-icon" data-icon="7"></span> Simulator Interferer <span>▼</span></button>
-                <div class="accordion-body">
-                    <label class="toggle-container mt-2"><span>Enable Interferer</span><input type="checkbox" id="sim-interferer-enable"><span class="checkmark"></span></label>
-                    <div class="control-group combo-group mt-2">
-                      <label>Interferer Angle (deg)</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="sim-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-slider">
-                        <input type="number" id="val-sim-interferer-angle" min="-90" max="90" step="1" value="30" class="modern-input-small" style="width:88px;">
-                      </div>
-                    </div>
-                    <div class="control-group combo-group mt-2">
-                      <label>Interferer Power (dB rel target)</label>
-                      <div class="combo-inputs">
-                        <input type="range" id="sim-interferer-power" min="-20" max="10" step="1" value="0" class="modern-slider">
-                        <input type="number" id="val-sim-interferer-power" min="-20" max="10" step="1" value="0" class="modern-input-small" style="width:88px;">
-                      </div>
-                    </div>
-                    <p style="font-size:0.75rem; color:var(--text-muted); margin:0.5rem 0 0; line-height:1.35;">
-                      Instructor-only panel. Simulator sums a second plane wave at the chosen angle and power. Only visible with <code>?instructor=1</code> in the URL, and only while the backend reports sim mode.
-                    </p>
-                </div>
-            </div>
-
             <div class="accordion-item" id="accordion-ctf" hidden>
-                <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="7"></span> CTF Mode <span>▼</span></button>
+                <button class="accordion-header" title="GRCon26 CTF: steer the beam through the sector sequence"><span class="accordion-icon" data-icon="8"></span> CTF Mode <span>▼</span></button>
                 <div class="accordion-body">
                     <!-- Sector table, the helper-line toggle, and a single status
                          line. No controls: the live beam/sector readout, the
@@ -467,12 +504,18 @@
                     <button class="tab-btn active" data-target="tab-rect">Rectangular</button>
                     <button class="tab-btn" data-target="tab-polar">Polar</button>
                     <button class="tab-btn" data-target="tab-fft">FFT</button>
+                    <button class="tab-btn" data-target="tab-adaptive" id="tab-btn-adaptive" hidden
+                            title="The array's response with the MVDR weights, for the held beam">Adaptive</button>
                     <button class="tab-btn" data-target="tab-tracking">Tracking</button>
                     <button class="tab-btn" data-target="tab-logs" id="tab-btn-logs" hidden>Logs</button>
                 </div>
               </div>
               <div class="header-actions">
 
+                <!-- Tracking tab only: the plotted history, as CSV, built in
+                     the browser. Shown/hidden by the tab handler. -->
+                <button class="btn btn-outline btn-small" id="btn-export-tracking" hidden
+                        title="Download the tracked history as CSV: per sweep in Beam Sweep, or time and peak amplitude in Signal vs Time">Export CSV</button>
                 <button class="btn btn-outline btn-small btn-freeze" id="btn-memory" title="Click to freeze current trace (max 3). Hold to clear all.">
                   <span class="btn-freeze-fill"></span>
                   <span class="btn-freeze-label">Freeze</span>
@@ -482,6 +525,7 @@
           </div>
         
         <div class="plots-stack">
+          <div class="interferer-badge" id="interferer-badge" hidden>Interferer</div>
           <div class="chart-wrapper tab-content active" id="tab-rect">
              <div id="chart-rect" style="width:100%; height:100%;"></div>
           </div>
@@ -490,6 +534,9 @@
           </div>
           <div class="chart-wrapper tab-content" id="tab-fft">
              <div id="chart-fft" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-adaptive">
+             <div id="chart-adaptive" style="width:100%; height:100%;"></div>
           </div>
           <div class="chart-wrapper tab-content" id="tab-tracking">
              <div id="chart-tracking" style="width:100%; height:100%;"></div>
@@ -506,55 +553,93 @@
         </div>
 
         <div class="chart-stats">
-            <div class="stat-box">
-                <span class="stat-label">Peak Array Gain</span>
-                <span class="stat-value" id="stat-peak">-- dB</span>
-            </div>
-            <div class="stat-box">
-                <span class="stat-label">Est. Angle</span>
-                <span class="stat-value" id="stat-angle">-- °</span>
-            </div>
-            <!-- CTF progress. It sits in the stat row rather than in the CTF
-                 panel for the same reason the sector bands do: the player is
-                 already looking at the plot and its readouts, not at the
-                 sidebar. Hidden unless ?ctf=1 AND a Python backend answered.
+            <!-- Plot readouts on the left, hardware status pills on the right:
+                 two groups of the same height that wrap as units. -->
+            <div class="plot-stats">
+              <div class="stat-box">
+                  <span class="stat-label">Peak Gain</span>
+                  <span class="stat-value" id="stat-peak">-- dB</span>
+              </div>
+              <!-- Peak and centroid share one box; tap to switch. Peak is the
+                   argmax of the pattern. Centroid is the backend's
+                   peak_angle_deg, a power-weighted centroid of the mainlobe: on
+                   a peak clipped flat near full scale the argmax wanders between
+                   tied points while the centroid holds still, which is what a
+                   bearing wants. -->
+              <button type="button" class="stat-box stat-toggle" id="stat-angle-box">
+                  <span class="stat-label"><span id="stat-angle-label">Angle · Peak</span> <span class="stat-toggle-icon" aria-hidden="true">⇄</span></span>
+                  <span class="stat-value" id="stat-angle">-- °</span>
+              </button>
+              <!-- Interferer readouts, from the FFT: the interferer tone's level
+                   relative to the target tone's, and how much lower that ratio
+                   is under MVDR than under Manual with the same settings.
+                   Shown only while the interferer is on. -->
+              <div class="stat-box" id="interferer-ratio-box" hidden
+                   title="Interferer tone level minus target tone level, from the FFT. Measured with the beam held: Mode set to Signal vs Time.">
+                  <span class="stat-label">Interferer vs Target</span>
+                  <span class="stat-value" id="interferer-ratio">-- dB</span>
+              </div>
+              <div class="stat-box" id="interferer-suppression-box" hidden
+                   title="How much lower Interferer vs Target reads under MVDR than under Manual, same Steer Angle and settings.">
+                  <span class="stat-label">MVDR Suppression</span>
+                  <span class="stat-value" id="interferer-suppression">-- dB</span>
+              </div>
+              <!-- CTF progress. It sits in the stat row rather than in the CTF
+                   panel for the same reason the sector bands do: the player is
+                   already looking at the plot and its readouts, not at the
+                   sidebar. Hidden unless ?ctf=1 AND a Python backend answered.
 
-                 Full size, not .compact, to match Peak Array Gain and Est.
-                 Angle. During a run this is the readout the player checks
-                 most, so it should not read as an afterthought next to them;
-                 the beam-squint boxes below stay compact because they are.
+                   Same size as Peak Gain and Angle. During a run this is the
+                   readout the player checks most, so it should not read as an
+                   afterthought next to them.
 
-                 It is also the control: hold it to start a run. Putting the
-                 reset on the readout the player is already watching beats a
-                 button in the sidebar they have to look away to find. -->
-            <div class="stat-box btn-hold" id="ctf-progress-box" style="display:none;"
-                 role="button" tabindex="0"
-                 title="Hold to start a new run. This clears any progress.">
-                <span class="btn-hold-fill"></span>
-                <span class="stat-label">CTF Sequence</span>
-                <span class="stat-value" id="ctf-progress-pill">— / —</span>
-            </div>
-            <div class="stat-box compact" id="beam-squint-info" style="display:none;">
-                <span class="stat-label">Calc (GHz)</span>
-                <span class="stat-value" id="beam-calc-freq">--</span>
-            </div>
-            <div class="stat-box compact" id="beam-squint-info2" style="display:none;">
-                <span class="stat-label">Meas (GHz)</span>
-                <span class="stat-value" id="beam-meas-freq">--</span>
+                   It is also the control: hold it to start a run. Putting the
+                   reset on the readout the player is already watching beats a
+                   button in the sidebar they have to look away to find. -->
+              <div class="stat-box btn-hold" id="ctf-progress-box" style="display:none;"
+                   role="button" tabindex="0"
+                   title="Hold to start a new run. This clears any progress.">
+                  <span class="btn-hold-fill"></span>
+                  <span class="stat-label">CTF Sequence</span>
+                  <span class="stat-value" id="ctf-progress-pill">— / —</span>
+              </div>
+              <div class="stat-box compact" id="beam-squint-info" style="display:none;">
+                  <span class="stat-label">Calc (GHz)</span>
+                  <span class="stat-value" id="beam-calc-freq">--</span>
+              </div>
+              <div class="stat-box compact" id="beam-squint-info2" style="display:none;">
+                  <span class="stat-label">Meas (GHz)</span>
+                  <span class="stat-value" id="beam-meas-freq">--</span>
+              </div>
             </div>
             <div class="stats-spacer"></div>
-            <span id="transport-badge" class="transport-badge" style="display:none;"></span>
-            <!-- Also the power switch: hold to shut the Pi down cleanly. Same
-                 effect as the push button on the Phaser itself, which is a
-                 gpio-shutdown overlay on GPIO21 that logind turns into
-                 `systemctl poweroff`. Standard on any current install; the hold
-                 is still armed only when the backend reports
-                 shutdown_available, so an older Pi or the simulator never
-                 offers something that would only fail. -->
-            <div class="status-indicator" id="connection-pill">
-              <span class="btn-hold-fill"></span>
-              <div class="dot disconnected" id="connection-dot"></div>
-              <span id="connection-text">Disconnected</span>
+            <!-- One unit so the pills wrap together instead of scattering
+                 between the stat boxes when the row runs out of width. -->
+            <div class="status-pills">
+              <!-- The IF this kit runs at. Amber when it was not measured on this
+                   unit -- the failure that cost a day on phaser-00 looks exactly
+                   like a measured kit otherwise. Details live in the tooltip. -->
+              <div class="status-indicator if-pill" id="if-pill" style="display:none;">
+                <div class="dot" id="if-dot"></div>
+                <span id="if-text"></span>
+              </div>
+              <!-- What the data is coming from: green Connected for real
+                   hardware, amber Simulated for either simulator (in the
+                   browser, or the Pi's --sim backend), red when the link is
+                   down. The tooltip says which simulator.
+
+                   Also the power switch: hold to shut the Pi down cleanly. Same
+                   effect as the push button on the Phaser itself, which is a
+                   gpio-shutdown overlay on GPIO21 that logind turns into
+                   `systemctl poweroff`. Standard on any current install; the hold
+                   is still armed only when the backend reports
+                   shutdown_available, so an older Pi or the simulator never
+                   offers something that would only fail. -->
+              <div class="status-indicator" id="connection-pill">
+                <span class="btn-hold-fill"></span>
+                <div class="dot disconnected" id="connection-dot"></div>
+                <span id="connection-text">Disconnected</span>
+              </div>
             </div>
         </div>
       </section>
@@ -575,6 +660,39 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-danger" id="btn-cal-action">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- In-app confirmation (replaces the browser's confirm()) -->
+  <div class="modal-overlay" id="confirm-modal" hidden>
+    <div class="modal glass-panel" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="confirm-modal-title">Confirm</h3>
+      </div>
+      <div class="modal-body confirm-body" id="confirm-modal-body"></div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btn-confirm-cancel">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-ok">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shown when the backend is up but the hardware is not: by far the most
+       common cause is the Pluto's USB cable to the Pi. Without it the page used
+       not to load at all, and "refused to connect" pointed at the network. -->
+  <div class="modal-overlay" id="hw-missing-modal" hidden>
+    <div class="modal glass-panel" role="alertdialog" aria-modal="true" aria-labelledby="hw-missing-title" aria-describedby="hw-missing-message">
+      <div class="modal-header">
+        <h3 class="modal-title" id="hw-missing-title">Pluto not found</h3>
+      </div>
+      <div class="modal-body confirm-body">
+        <p id="hw-missing-message"></p>
+        <p class="confirm-note" id="hw-missing-detail"></p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="btn-hw-shutdown" hidden>Shut Down</button>
+        <button class="btn btn-primary" id="btn-hw-retry">Retry</button>
       </div>
     </div>
   </div>

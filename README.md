@@ -656,6 +656,11 @@ boresight, so the beam patterns are physically consistent — correct beamwidth,
 sidelobe roll-off, grating lobes on sparse tapers, MVDR nulls on the
 interferer.
 
+Signal vs Time (Beam Steering > Mode) works too, but the simulated source cannot
+be carried around the array: it stays at boresight, so the trace sits at the
+pattern's level for the held Steer Angle (about -12 dBFS at 0, deep in the
+sidelobes at 30). Walking the antenna pattern needs a kit and an HB100.
+
 `phaser_sim.py` is a development-only module and is not in `BACKEND_FILES`, so
 `--sim` is a local thing; on the Pi, use the browser simulator instead.
 
@@ -688,27 +693,32 @@ pytest tests/test_sim_parity.py       # fails until you do
 Parity is only as strong as the case matrix in that test. **A new physics knob
 needs a new case**, or it is simply untested on the JS side.
 
-### Instructor mode
+### Interferer (MVDR lab)
 
-Append `?instructor=1` to the URL:
+The **Interferer** pane in the sidebar adds a computed jammer to the received
+signal, for demonstrating MVDR nulling without a second HB100. The backend
+(`PhaserHeadless._interferer_channels`) models a plane wave arriving at the
+chosen angle, passes it through the same analog steering and taper the real
+signal went through, and adds it to the two sub-array channels before the
+digital beamformer -- on the kit and in the simulator alike.
 
-```text
-http://localhost:8080/?instructor=1
-```
-
-This reveals a **Simulator Interferer** panel in the sidebar (a configurable
-jammer for MVDR nulling demos). Students loading the app without the flag see
-no trace of it, and it stays hidden unless the transport is actually a
-simulator — so `?instructor=1` against the *real* Pi app shows nothing either.
-
-It works in the browser simulator too, including on the hosted demo:
-`?sim=1&instructor=1`, or just `?instructor=1` on the Pages site, which is
-already in simulation.
-
-The parameter *name* is matched case-insensitively (`?INSTRUCTOR=1` works),
-because a flag that is silently ignored looks exactly like a stale bundle. The
-value still has to be `1`. `?sim=` and `?backend=` are unchanged -- they are
-read by the transport, not by `main.js`, and are lowercase-only.
+- **Power** is absolute dBFS: what a full-taper beam pointed straight at it
+  would read.
+- **Offset** is from the target tone, which the backend re-measures every
+  sweep from the signal *before* injection. Keep it well above ~25 kHz so the
+  two are distinct over MVDR's 128-snapshot window; **Coherent** pins it to
+  0 Hz, the case MVDR handles badly.
+- While it is on, an **Interferer** badge sits over every plot, the FFT marks
+  both tones, and the stat row shows the interferer's level relative to the
+  target and, after measuring both Manual and MVDR with the same settings,
+  how much MVDR suppresses it. Measure with the beam held on the target
+  (Static Phase or Signal vs Time).
+- In MVDR mode an **Adaptive** tab plots the held beam's response with the
+  MVDR weights beside the conventional one, so the notch on the interferer is
+  visible. Worth trying in class: the two sub-arrays sit about two
+  wavelengths apart, so a jammer near +/-30 deg (looking at boresight) is
+  nearly indistinguishable from the target to the digital stage. MVDR still
+  nulls it, but only with large weights that lift the rest of the pattern.
 
 ### CTF mode
 
@@ -722,7 +732,7 @@ http://phaser.local:8080/?ctf=1
 
 The name is case-insensitive, so `?CTF=1` works too; the value must be `1`.
 
-Unlike instructor mode, the URL parameter is UI convenience, **not** a secret.
+The URL parameter is UI convenience, **not** a secret.
 `frontend/dist` is served to every browser that connects and a CTF player's
 whole job is to go looking, so the sequence check and the flag both live in
 `phaser_ctf.py` on the backend. The panel only renders what the backend
@@ -768,7 +778,7 @@ privileges -- `ctf_flag.txt` and `ctf_sequence.txt` go in the install directory
 next to `phaser_ctf.py` (`/home/analog/pyadi-iio/examples/phaser/`), owned by
 the service user. The environment wins when both are present.
 
-Sectors default to five bins centred at -40/-20/0/+20/+40 degrees with +/-5
+Sectors default to five bins centered at -40/-20/0/+20/+40 degrees with +/-5
 degrees tolerance and a 2 s dwell; all of that is constructor arguments on
 `CtfMode`. The mode is passive -- it watches the commanded `phaseList` and
 answers `ctf_status` / `ctf_reset`, and does nothing at all unless a browser
@@ -820,7 +830,6 @@ genuinely useful for frontend work:
 
 ```text
 http://localhost:5173/?sim=1
-http://localhost:5173/?sim=1&instructor=1     # with the interferer panel
 ```
 
 For the backend-connected path, use `npm run build` + reload, or run
@@ -857,6 +866,48 @@ you don't normally touch it by hand.
 Sim mode uses the same loaders and reads whatever cal state is present
 locally, so tweaks made on the Pi during development can be scp'd back and
 reproduced in sim.
+
+### Characterize a new kit once
+
+`calibration.json` also holds this unit's usable **IF window**, measured by
+`phaser_characterize_headless.py`. The IF that works is a property of the
+individual kit — two measured so far differ by ~200 MHz — and the value
+`config.py` ships is one that at least one kit in this fleet cannot hear at
+all. So a new kit wants three steps, in order, on a bench with the HB100
+powered and aimed at the array:
+
+```
+python3 phaser_find_hb100_headless.py        # find the source
+python3 phaser_characterize_headless.py      # find the IF   <- once per kit
+python3 phaser_cal_headless.py               # channel, gain, phase
+```
+
+You do not have to remember step 2. If calibration fails its signal check on
+a kit that has never been characterized, it runs the sweep itself, stores the
+result and retries — once, and never on a kit that already has a measurement.
+
+You **do** have to remember step 1. The sweep tunes against the stored HB100
+frequency, so on a kit that has never found its source there is nothing to
+sweep against; calibration says so and stops rather than reporting a result
+it cannot support.
+Running the step deliberately is still better, because it tells you the window
+rather than just picking from it.
+
+The sidebar has the same three buttons in that order — **Find HB100**,
+**Characterize IF**, **Calibrate** — and shows which IF is in use and whether
+it was measured on this kit. Characterize confirms before running, since it
+takes about a minute and means nothing unless the HB100 is aimed at the array.
+
+It is not part of `provision.sh` on purpose: provisioning runs unattended at
+first boot, often before a kit is assembled, which is the one moment the
+measurement cannot be made. `install.sh` prints the three steps instead when
+a kit has no measurement yet.
+
+The measurement beats `config.Rx_freq`, which is site-owned and never
+deployed over. If a kit is deaf, calibration aborts with "no signal is
+reaching the array" and prints the chain it ran on —
+[`docs/calibration-bugs.md`](docs/calibration-bugs.md) explains how to read
+that, and documents the four silent failures behind it.
 
 ## Codebase map
 
@@ -960,6 +1011,10 @@ served on port 8081.
 
 ## Reference
 
+- [`docs/calibration-bugs.md`](docs/calibration-bugs.md) — the four silent
+  calibration failures on this hardware, three of them inherited from the
+  upstream ADI examples, with the measurements that separated them and how to
+  tell which one you are looking at
 - [`docs/golden-image.md`](docs/golden-image.md) — runbook for provisioning a
   batch of kits by cloning one card, and why cloned cards need a first-boot
   identity reset

@@ -7,7 +7,7 @@ does. This is the test that makes drift fail the build.
 
 Constants are handled separately and more strongly: tools/gen_sim_constants.py
 generates them from the Python, and CI fails if the committed output is stale.
-So what is left for this file is *behavioural* drift -- an algorithm change on
+So what is left for this file is *behavioral* drift -- an algorithm change on
 one side and not the other.
 
 --- Why noise is off ------------------------------------------------------
@@ -35,7 +35,7 @@ float64 rounding, i.e. by nothing physical.
 
 That was a real defect in do_sweep(), found by this test: a difference of
 exactly 2*pi between two implementations means both computed the same angle and
-then labelled it differently. It is fixed now (beam_phase is the angle of
+then labeled it differently. It is fixed now (beam_phase is the angle of
 sum * conj(delta)), so PhaseDiff and ErrorFunc are compared raw, with no
 wrapping. They agree to ~5e-14 and ~1e-15 respectively.
 
@@ -72,30 +72,93 @@ CASES = [
     ("boresight", {}, {}),
     ("steered", {"ignore_res": False, "steer_res": 1.0}, {"steer_min": -60, "steer_max": 60}),
     ("tapered", {"gainList": [6, 27, 66, 100, 100, 66, 27, 6]}, {}),
+    # One element at half voltage: exercises the rx_gain register curve on
+    # both sides (backend inverts it, SDR stub applies it).
+    ("half_scale_element", {"gainList": [50, 0, 0, 0, 0, 0, 0, 0]}, {}),
     ("three_bit", {"bits": 3}, {}),
     ("beam_squint", {"BW": 10.0}, {}),
     ("phase_offsets", {"phaseList": [0, 15, 30, 45, 60, 75, 90, 105]}, {}),
     ("digital_weights", {"B0_Gain": 0.7, "B1_Gain": 1.0, "Beam0_Phase": 35.0}, {}),
+    # Synthetic interferer (injected in do_sweep, not in the simulator). These
+    # run two sweeps; see test_sweep_matches_python.
     (
         "mvdr_interferer",
         {
             "bfMode": "mvdr",
-            "sim_interferer_enable": True,
-            "sim_interferer_angle_deg": 30.0,
-            "sim_interferer_power_db": 0.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": 30.0,
+            "interferer_power_dbfs": -12.0,
         },
         {},
     ),
     (
         "interferer_manual",
         {
-            "sim_interferer_enable": True,
-            "sim_interferer_angle_deg": -45.0,
-            "sim_interferer_power_db": 6.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": -45.0,
+            "interferer_power_dbfs": -6.0,
+        },
+        {},
+    ),
+    # Taper, user phase offsets and a coarse phase shifter all shape what the
+    # analog stage does to the interferer.
+    (
+        "interferer_through_analog_stage",
+        {
+            "interferer_enable": True,
+            "interferer_angle_deg": 22.0,
+            "interferer_power_dbfs": -15.0,
+            "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
+            "phaseList": [0, 15, 30, 45, 60, 75, 90, 105],
+            "bits": 4,
+            "ignore_res": False,
+            "steer_res": 1.0,
+        },
+        {"steer_min": -60, "steer_max": 60},
+    ),
+    # Held MVDR beam: carries the adaptive pattern, with its notch.
+    (
+        "mvdr_held_adaptive_pattern",
+        {
+            "bfMode": "mvdr",
+            "mode": "Signal vs Time",
+            "hold_angle": 10.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": -35.0,
+            "gainList": [6, 27, 66, 100, 100, 66, 27, 6],
+        },
+        {},
+    ),
+    (
+        "interferer_coherent_held",
+        {
+            "bfMode": "mvdr",
+            "mode": "Static Phase",
+            "hold_angle": 0.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": -20.0,
+            "interferer_offset_hz": 0.0,
+            "interferer_phase_deg": 75.0,
         },
         {},
     ),
     ("averaged", {"Averages": 3}, {}),
+    # Hold modes: one point at hold_angle, and the mode must beat ignore_res
+    # (on by default), as it does in legacy.
+    ("signal_vs_time", {"mode": "Signal vs Time", "hold_angle": 30.0}, {}),
+    # Lab 6: a held 15 deg beam on a 2-bit phase shifter, Blackman taper.
+    (
+        "signal_vs_time_two_bit",
+        {"mode": "Signal vs Time", "hold_angle": 15.0, "bits": 2,
+         "gainList": [6, 27, 66, 100, 100, 66, 27, 6]},
+        {},
+    ),
+    (
+        "static_phase_squint",
+        {"mode": "Static Phase", "hold_angle": -20.0, "BW": 500.0,
+         "phaseList": [0, 5, 10, 15, 20, 25, 30, 35]},
+        {},
+    ),
 ]
 
 CASE_IDS = [c[0] for c in CASES]
@@ -103,7 +166,7 @@ CASE_IDS = [c[0] for c in CASES]
 
 # --- the two implementations ----------------------------------------------
 
-def _python_sweep(patch, sweep_params, phase_error=None):
+def _python_sweep(patch, sweep_params, phase_error=None, sweeps=1):
     """Run do_sweep() against the Python simulator with noise disabled."""
     if "adi" not in sys.modules:
         # pyadi-iio binds libiio at import; sim mode never touches it.
@@ -126,7 +189,9 @@ def _python_sweep(patch, sweep_params, phase_error=None):
             h.handle_command({"cmd": "set_state", "data": {"state": patch}})
         if sweep_params:
             h.handle_command({"cmd": "set_sweep_params", "data": sweep_params})
-        return h.do_sweep()
+        for _ in range(sweeps):
+            out = h.do_sweep()
+        return out
     finally:
         phaser_sim.SimSDR.NOISE_SIGMA = original
 
@@ -140,11 +205,13 @@ if (cfg.patch && Object.keys(cfg.patch).length) engine.setState(cfg.patch);
 if (cfg.sweepParams && Object.keys(cfg.sweepParams).length) {
     engine.setSweepParams(cfg.sweepParams);
 }
-process.stdout.write(JSON.stringify(engine.doSweep()));
+let out;
+for (let i = 0; i < cfg.sweeps; i++) out = engine.doSweep();
+process.stdout.write(JSON.stringify(out));
 """
 
 
-def _js_sweep(patch, sweep_params, phase_error=None, tmp_path=None):
+def _js_sweep(patch, sweep_params, phase_error=None, tmp_path=None, sweeps=1):
     """Run the same sweep through frontend/src/sim/engine.js via node."""
     sim_dir = (ROOT / "frontend" / "src" / "sim").as_posix()
     driver = tmp_path / "driver.mjs"
@@ -154,6 +221,7 @@ def _js_sweep(patch, sweep_params, phase_error=None, tmp_path=None):
         "patch": patch,
         "sweepParams": sweep_params,
         "phaseError": phase_error,
+        "sweeps": sweeps,
     })
     proc = subprocess.run(
         [NODE, str(driver), cfg],
@@ -181,8 +249,34 @@ def _importable():
 
 @pytest.mark.parametrize("name,patch,sweep_params", CASES, ids=CASE_IDS)
 def test_sweep_matches_python(name, patch, sweep_params, tmp_path, _importable):
-    py = _python_sweep(patch, sweep_params)
-    js = _js_sweep(patch, sweep_params, tmp_path=tmp_path)
+    # With the interferer on, it is placed relative to target_tone_hz, which
+    # the first sweep measures; compare the second, which uses it.
+    sweeps = 2 if patch.get("interferer_enable") else 1
+    py = _python_sweep(patch, sweep_params, sweeps=sweeps)
+    js = _js_sweep(patch, sweep_params, tmp_path=tmp_path, sweeps=sweeps)
+    _assert_sweeps_match(name, py, js)
+
+
+def test_first_sweep_with_interferer_matches_python(tmp_path, _importable):
+    """Before any tone is measured the interferer sits at offset_hz from DC."""
+    patch = {"interferer_enable": True, "interferer_angle_deg": 30.0}
+    py = _python_sweep(patch, {})
+    js = _js_sweep(patch, {}, tmp_path=tmp_path)
+    assert py["target_tone_hz"] is not None and js["target_tone_hz"] is not None
+    assert py["target_tone_hz"] == pytest.approx(js["target_tone_hz"], abs=1e-6)
+    _assert_sweeps_match("first_sweep_interferer", py, js)
+
+
+def test_tone_tracking_matches_python(tmp_path, _importable):
+    """target_tone_hz and interferer_freq_hz, which step 2's FFT markers use."""
+    patch = {"interferer_enable": True, "interferer_offset_hz": -250e3}
+    py = _python_sweep(patch, {}, sweeps=2)
+    js = _js_sweep(patch, {}, tmp_path=tmp_path, sweeps=2)
+    assert py["target_tone_hz"] == pytest.approx(js["target_tone_hz"], abs=1e-6)
+    assert py["interferer_freq_hz"] == pytest.approx(js["interferer_freq_hz"], abs=1e-6)
+
+
+def _assert_sweeps_match(name, py, js):
 
     assert len(js["ArrayGain"]) == len(py["ArrayGain"]), (
         f"{name}: sweep produced {len(js['ArrayGain'])} points, Python produced "
@@ -238,9 +332,31 @@ def test_sweep_matches_python(name, patch, sweep_params, tmp_path, _importable):
         "sum * conj(delta), not a difference of two angles"
     )
 
+    assert ("adaptive_pattern" in py) == ("adaptive_pattern" in js), (
+        f"{name}: only one side attached an adaptive pattern"
+    )
+    if "adaptive_pattern" in py:
+        pa, ja = py["adaptive_pattern"], js["adaptive_pattern"]
+        assert pa["angles"] == pytest.approx(ja["angles"], abs=1e-12)
+        for key in ("adaptive_db", "conventional_db"):
+            pv, jv = np.asarray(pa[key]), np.asarray(ja[key])
+            # Deep nulls are float32-vs-float64 residue, as in the sweep.
+            ok = pv > -40.0
+            assert ok.any() and np.max(np.abs(pv[ok] - jv[ok])) < 1e-3, (
+                f"{name}: {key} diverged"
+            )
+
     assert abs(py["peak_signal"] - js["peak_signal"]) < 1e-3, f"{name}: peak signal diverged"
     assert int(np.argmax(py_gain)) == int(np.argmax(js_gain)), (
         f"{name}: the beam peaks at a different angle"
+    )
+
+    # The centroid every sweep message carries, and the Centroid Angle readout
+    # shows. Without this field the sim's readout would sit at "--".
+    assert js.get("peak_angle_deg") is not None, f"{name}: JS sweep has no peak_angle_deg"
+    assert abs(py["peak_angle_deg"] - js["peak_angle_deg"]) < 1e-3, (
+        f"{name}: centroid peak angle diverged "
+        f"({py['peak_angle_deg']} vs {js['peak_angle_deg']})"
     )
 
 
@@ -294,7 +410,7 @@ def test_fft_tone_matches(tmp_path, _importable):
     assert np.max(np.abs(py_gain[lobe] - js_gain[lobe])) < 1e-2, "FFT main lobe diverged"
 
 
-def test_element_phase_error_is_modelled_identically(tmp_path, _importable):
+def test_element_phase_error_is_modeled_identically(tmp_path, _importable):
     """The intrinsic per-element error the phase calibration exists to cancel.
 
     Nothing else in the matrix perturbs it, and it enters the physics at a
@@ -389,6 +505,31 @@ process.stdout.write(JSON.stringify(a.elements.map((e) => e.latchedGain)));
     assert expected[0] == 0, "a zeroed element must route through the attenuator"
 
 
+def test_rx_gain_code_matches_python(tmp_path, _importable):
+    """Amplitude -> register code: the inverse of the chip's gain curve.
+
+    Includes gcal-style products and exact table values, where a
+    nearest-neighbor tie-break would show up first.
+    """
+    from ADAR_pyadi_functions import RX_GAIN_AMPLITUDE, rx_gain_code
+
+    amps = [p / 100 * g for p in range(0, 101) for g in (1.0, 0.93, 0.871)]
+    amps += list(RX_GAIN_AMPLITUDE) + [-0.1, 1.2]
+    expected = [rx_gain_code(a) for a in amps]
+
+    driver = tmp_path / "gaincode.mjs"
+    sim_dir = (ROOT / "frontend" / "src" / "sim").as_posix()
+    driver.write_text(f"""
+import {{ rxGainCode }} from '{sim_dir}/array.js';
+const amps = JSON.parse(process.argv[2]);
+process.stdout.write(JSON.stringify(amps.map(rxGainCode)));
+""")
+    proc = subprocess.run([NODE, str(driver), json.dumps(amps)],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == expected
+
+
 def test_unlatched_writes_flatten_the_pattern_in_js(tmp_path, _importable):
     """The latch model has to survive the port.
 
@@ -416,3 +557,48 @@ process.stdout.write(JSON.stringify({{
     assert out["latchCount"] == 1, "steering phases were never latched"
     assert out["latched"] == out["shadow"], "latched beam state does not match the shadow"
     assert len(set(out["latched"])) > 1, "phases did not form a steering ramp"
+
+
+def test_peak_angle_centroid_matches_python(tmp_path):
+    """peakAngleCentroid() in engine.js against phaser_ctf.peak_angle_centroid().
+
+    The sweep matrix above only ever feeds it smooth, noiseless lobes. This
+    feeds it the real clipped lobe test_phaser_ctf keeps -- ragged top, one
+    spike -- plus a sidelobe outside the -3 dB walk, an exact tie at the peak
+    (Python's max() takes the first), and the degenerate inputs that must come
+    back None/null rather than a number.
+    """
+    from phaser_ctf import peak_angle_centroid
+    from test_phaser_ctf import REAL_LOBE_ANGLES, REAL_LOBE_GAINS
+
+    cases = [
+        (REAL_LOBE_ANGLES, REAL_LOBE_GAINS),
+        (REAL_LOBE_ANGLES + [30.0, 31.0, 32.0], REAL_LOBE_GAINS + [0.5, 0.6, 0.5]),
+        ([-2.0, -1.0, 0.0, 1.0, 2.0], [-9.0, -1.0, -1.0, -3.5, -20.0]),
+        ([10.0], [-40.0]),
+        ([], []),
+        ([1.0, 2.0], [1.0]),
+    ]
+
+    driver = tmp_path / "centroid.mjs"
+    sim_dir = (ROOT / "frontend" / "src" / "sim").as_posix()
+    driver.write_text(f"""
+import {{ peakAngleCentroid }} from '{sim_dir}/engine.js';
+const cases = JSON.parse(process.argv[2]);
+process.stdout.write(JSON.stringify(cases.map(([a, g]) => peakAngleCentroid(a, g))));
+""")
+    proc = subprocess.run(
+        [NODE, str(driver), json.dumps(cases)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    js = json.loads(proc.stdout)
+
+    for (angles, gain), got in zip(cases, js):
+        want = peak_angle_centroid(angles, gain)
+        if want is None:
+            assert got is None, f"JS returned {got} where Python returns None"
+        else:
+            assert got is not None and abs(want - got) < 1e-9, (
+                f"centroid diverged: Python {want}, JS {got}"
+            )

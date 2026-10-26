@@ -9,6 +9,10 @@ The project moved here from the OneDrive-hosted copy on 2026-08-25; that copy is
 
 Reference materials:
 
+- `docs/calibration-bugs.md` — the four silent calibration failures on this
+  hardware and how to tell them apart. Three are inherited from the upstream
+  ADI `examples/phaser`, so they recur on any kit built from it. Read this
+  before debugging a deaf array or a flat beam pattern.
 - `docs/2025_Phaser_labs_Python.pdf` — canonical PHASER Phased Array Radar Workshop labs document (2025 edition). **Tracked in the repo**: `.gitignore` excludes `docs/*.pdf` but allowlists this one. Source of truth for the Lab 1–9 preset audit and for verifying what each lab's default state should be.
 
 ## Repo layout
@@ -171,15 +175,24 @@ A knowledge graph of this codebase exists at `graphify-out/graph.json`. When ans
 ```
 
 Key entry points (god nodes):
-- **PhaserHeadless** — headless runtime, bridges WebSocket commands to hardware
-- **BackendService** — orchestrates calibration, sweep processing, hardware lifecycle
-- **PhaserServer** — real hardware interface (vs PhaserServerSim for simulation)
-- **ADI Phaser Dashboard** — frontend UI entry point
+- **PhaserHeadless** (`phaser_headless.py`) — the only backend that runs. The
+  systemd unit starts it; it owns the WebSocket/HTTP servers, the command loop,
+  `do_sweep()`, calibration subprocesses and hardware lifecycle
+- **SimSDR** (`phaser_sim.py`) — simulated hardware behind `--sim`; the sweep
+  logic itself still lives in `PhaserHeadless.do_sweep()`
+- **ADI Phaser Dashboard** — frontend UI entry point; `frontend/src/sim/engine.js`
+  mirrors `do_sweep()` for `?sim=1` and the Pages demo
 
 Communities:
-- Phaser Headless Runtime (WebSocket server, command loop)
+- Phaser Headless Runtime (WebSocket server, command loop, sweep)
 - Frontend Dashboard UI (vanilla JS + Plotly.js controls, plots)
-- Backend Service Layer (calibration tasks, state management)
 - Hardware Control (ADAR/SDR pyadi-iio functions)
+
+**`phaser_service.py` is dead code.** `BackendService`, `PhaserServer` and
+`PhaserServerSim` live there, from the PyWebView desktop-app era. Nothing
+imports it and `install.sh` does not deploy it, so a bug found or fixed there
+is not a bug on the kit. Fix `phaser_headless.py` (and its JS mirror) instead.
+If a local `graphify-out/graph.json` still ranks those classes highly, it is
+stale: regenerate it, and trust this note over the graph.
 
 

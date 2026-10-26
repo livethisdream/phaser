@@ -48,6 +48,7 @@ HTTP_PORT=8080
 # only, the same treatment config.py gets below.
 BACKEND_FILES=(
   phaser_headless.py phaser_cal_headless.py phaser_find_hb100_headless.py
+  phaser_characterize_headless.py phaser_gain_curve_headless.py
   phaser_cw_radar.py ADAR_pyadi_functions.py SDR_functions.py phaser_functions.py
   phaser_ctf.py
   LTE5_MHz.ftr LTE10_MHz.ftr LTE20_MHz.ftr
@@ -273,21 +274,38 @@ if ! systemctl is-active --quiet "$SERVICE"; then
     sudo journalctl -u "$SERVICE" -n 30 --no-pager >&2 || true
     exit 1
 fi
-CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" || echo 000)"
+# curl prints 000 itself when nothing answers and then exits non-zero, so an
+# `|| echo 000` here appended a second one ("HTTP 000000"). Retry briefly: the
+# backend starts the hardware before its web server.
+CODE=000
+for _ in 1 2 3 4 5 6 7 8; do
+    CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${HTTP_PORT}/" 2>/dev/null || true)"
+    CODE="${CODE:-000}"
+    [ "$CODE" = "200" ] && break
+    sleep 2
+done
 [ "$CODE" = "200" ] || say "WARN: the UI returned HTTP $CODE (expected 200)"
 
 # ---- 6b. the RF chain this kit will actually run ---------------------------
 #
 # config.py is site-owned and never deployed over, so the numbers that decide
-# the LO are exactly the ones nobody reviews. Printing them is most of the
-# value: this kit turned out to be carrying Rx_gain = 1 and an IF 300 MHz off
+# the chain are exactly the ones nobody reviews. Printing them is most of the
+# value: one kit turned out to be carrying Rx_gain = 1 and an IF 300 MHz off
 # the repo default, neither of which is visible anywhere else.
 #
-# A bad LO cannot be detected at runtime -- the write is accepted, the readback
-# agrees, and MUXOUT is not wired as lock detect on this board -- so arithmetic
-# before the kit reaches a table is the only check there is. Warn, never fail:
-# the ceiling is measured on one kit, and refusing an install over it would
-# turn a survivable warning into a dead workshop.
+# A deaf chain cannot be detected at runtime -- the write is accepted, the
+# readback agrees, and MUXOUT is not wired as lock detect on this board -- so
+# a check before the kit reaches a table is the only one there is.
+#
+# What that check compares against is now this unit's OWN measured IF window
+# where it has one (phaser_characterize_headless.py), not a constant. The
+# constant was the bug: the usable IF differs by ~200 MHz between kits, the
+# figure in the repo came off one of them, and the other was deaf at the
+# shipped config.Rx_freq with nothing anywhere saying so.
+#
+# Warn, never fail. An uncharacterized kit is the normal state of a fresh
+# install, and refusing to install over it would turn a warning into a dead
+# workshop.
 step 6b "Checking the RF chain..."
 PYTHONPATH="$INSTALL_DIR" "$PYTHON_BIN" - "$INSTALL_DIR" <<'PY' || say "WARN: could not evaluate the RF chain"
 import os
@@ -298,15 +316,14 @@ os.chdir(sys.argv[1])
 
 try:
     import config
-    from phaser_functions import lo_chain, lo_warnings, load_hb100_cal
+    from phaser_functions import (lo_chain, rf_chain_warnings, load_hb100_cal,
+                                  load_if_cal, rx_freq_source)
 except Exception as exc:                      # noqa: BLE001 - report, never fail
     print("  could not import the installed backend: %s" % exc)
     raise SystemExit(0)
 
-rx_freq = float(getattr(config, "Rx_freq", 0) or 0)
-if not rx_freq:
-    print("  config.py has no Rx_freq; skipping")
-    raise SystemExit(0)
+chosen = rx_freq_source(config)
+rx_freq = chosen["rx_freq_hz"]
 
 try:
     signal = load_hb100_cal()
@@ -320,21 +337,64 @@ if not signal:
     raise SystemExit(0)
 
 chain = lo_chain(signal, rx_freq)
+window = load_if_cal()
 print("  HB100      %.6f GHz   (%s)" % (signal / 1e9, source))
-print("  Rx_freq    %.3f GHz      (config.py, site-owned)" % (rx_freq / 1e9))
-print("  LO         %.3f GHz      = HB100 + Rx_freq" % (chain["lo_hz"] / 1e9))
+print("  IF         %.3f GHz      (%s)" % (rx_freq / 1e9, chosen["source"]))
+print("  LO         %.3f GHz      = HB100 + IF" % (chain["lo_hz"] / 1e9))
 print("  ADF4159    %.4f GHz     = LO / 4" % (chain["adf4159_hz"] / 1e9))
+if window is not None:
+    print("  IF window  %.3f - %.3f GHz   (measured on this unit)"
+          % (float(window["clean_min_hz"]) / 1e9,
+             float(window["clean_max_hz"]) / 1e9))
 
-problems = lo_warnings(signal, rx_freq)
+problems = list(chosen["warnings"]) + rf_chain_warnings(signal, rx_freq)
 for line in problems:
     print("  WARN: %s" % line)
 if not problems:
-    print("  OK: inside the range measured receiving cleanly")
+    print("  OK: inside the IF window measured on this unit")
+
+# A fresh kit has no measurement, and that is the normal state after an
+# install rather than an error. Leave a marker for the closing summary: the
+# three setup scripts have to run in order and nothing else says so.
+if window is None:
+    open("/tmp/.phaser-uncharacterized", "w").close()
 PY
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 printf '\n'; printf '=%.0s' {1..64}; printf '\n'
-say "Installed. Service is active and the UI answered HTTP $CODE."
+if [ "$CODE" = "200" ]; then
+    say "Installed. Service is active and the UI answered HTTP 200."
+else
+    # Not a failure on a freshly provisioned kit: the board's device-tree
+    # overlay only loads at boot, so the backend cannot start the hardware
+    # until the reboot provision.sh asks for. Say so instead of "success".
+    say "Installed, but the UI is not answering yet (HTTP $CODE)."
+    say "  On a kit just provisioned, reboot first; the board appears at boot."
+    say "  Otherwise:  sudo journalctl -u ${SERVICE} -n 30   ('No device found' = the Pluto's USB cable)"
+fi
+
+# Deliberately NOT run from here, nor from provision.sh. Characterization
+# needs a powered HB100 aimed at the array, and provisioning runs unattended
+# at first boot (scripts/pi/firstrun.sh passes --yes), often before the kit is
+# even assembled -- sweeping then would measure noise. Telling the operator is
+# the most an installer can honestly do.
+if [ -f /tmp/.phaser-uncharacterized ]; then
+    rm -f /tmp/.phaser-uncharacterized
+    say ""
+    say "This kit has NOT been characterized. The usable IF differs between"
+    say "kits by ~200 MHz, and the config default is one that some kits cannot"
+    say "hear at all -- a deaf kit looks exactly like a dead HB100."
+    say ""
+    say "With the HB100 powered and aimed at the array, run once:"
+    say ""
+    say "  cd $INSTALL_DIR"
+    say "  python3 phaser_find_hb100_headless.py       # find the source"
+    say "  python3 phaser_characterize_headless.py     # find the IF"
+    say "  python3 phaser_cal_headless.py              # calibrate the array"
+    say ""
+    say "Or press Find HB100 / Characterize IF / Calibrate in the UI, in that"
+    say "order. See docs/calibration-bugs.md."
+fi
 say ""
 say "  http://$(hostname).local:${HTTP_PORT}/"
 [ -n "$IP" ] && say "  http://${IP}:${HTTP_PORT}/"
