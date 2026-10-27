@@ -1,4 +1,4 @@
-# Why calibration goes deaf, and the four bugs behind it
+# Why calibration goes deaf, and the five bugs behind it
 
 Every failure in this document looks identical from the console: calibration
 reports that no signal is reaching the array, or it completes and writes
@@ -7,10 +7,10 @@ writes are accepted, the readbacks agree, and MUXOUT is not wired as lock
 detect on this board — it reads 0 at every LO, including one demonstrably
 producing a 43 dB beam pattern. There is nothing to catch.
 
-**Three of the four come from the upstream ADI examples**, so they are waiting
+**Three of the five come from the upstream ADI examples**, so they are waiting
 in any kit built from
 [`pyadi-iio/examples/phaser`](https://github.com/analogdevicesinc/pyadi-iio/tree/main/examples/phaser),
-not just from this repo. The fourth is ours. All four are fixed here; this
+not just from this repo. The other two are ours. All five are fixed here; this
 document exists so the next person who sees a flat beam pattern can tell which
 of them they are looking at, and so the reasoning survives the people who did
 it.
@@ -21,6 +21,7 @@ it.
 | 2 | Search and cal run different IFs | ADI | Search finds a 75 dB tone; cal is deaf on the same kit, same minute |
 | 3 | Captures return the previous tuning | ADI | HB100 search lands ~8 MHz off a real tone |
 | 4 | Phase cal takes an argmax, not a null | **this repo** | Cal completes; reruns disagree by 104° |
+| 5 | Radar modes inherit unwritten phases | **this repo** | After a restart, radar sees only 0 m leakage; upstream on the same kit sees targets |
 
 ---
 
@@ -234,6 +235,43 @@ noise level that reproduces the bench's per-pair scatter.
 
 ---
 
+## 5. Radar modes listened through phases nothing had written — ours too
+
+Only the beamforming sweep writes the ADAR1000 Rx phases (`do_sweep` ->
+`ADAR_set_Phase`). Startup wrote the taper and left the phases alone, and the
+CW and FMCW modes wrote the taper and inherited whatever phases were there.
+After a service restart, with no sweep yet, that is nothing at all.
+
+On phaser-01 the result was an array that heard nothing but its own Tx->Rx
+leakage. FMCW reported every frame at 0 m, and with 2-pulse MTI at a fixed
++0.24 m/s and 1.8 dB, while a metal pot swung at ~1.8 m in front of it. The
+upstream `Range_Doppler_Plot.py` on the same kit, at the same IF, saw the pot.
+It calls `set_chan_phase(i, 0)` for every element before it captures.
+
+Writing boresight (the phase cal alone) and latching it from a second process,
+mid-run, changed the next frame:
+
+| Phases | Peak range | Velocity | Peak |
+| --- | --- | --- | --- |
+| As inherited (read back as all 0) | 0.01 m, every frame | +0.24 m/s, fixed | 1.8 dB |
+| Boresight + phase cal, latched | **1.68 m** (pot at ~1.83 m) | −2 to +8 m/s, tracking the swing | 10–21 dB |
+
+Note the readback: the inherited phases read **0**, which is boresight. A
+readback cannot tell a written 0 from registers that were never written, so
+"the phases say 0" proves nothing here. The likeliest explanation is the
+power-on state of the ADAR1000 Rx vector-modulator registers, which leaves the
+channel close to null until a phase is written; that is not yet confirmed
+(see Open).
+
+The fix: `phaser_cw_radar.apply_boresight()` writes and latches the phase cal,
+and is called at startup and on entering either radar mode. Unlike
+`apply_taper`, it raises on a failed write, so the mode refuses to start
+instead of running deaf. Exit does not restore phases; the sweep rewrites all
+eight on every angle. `tests/test_boresight_phases.py` asserts on the stub's
+*latched* phase, so a write without a latch fails it.
+
+---
+
 ## How these were separated
 
 Worth keeping, because the same confound will recur.
@@ -291,6 +329,7 @@ The chain this ran on:
 | Search reports the peak "moved with the LO" | Bug 3 — check the flush is present |
 | Cal completes, reruns disagree by tens of degrees | Bug 4 — check the fit quality line |
 | Cal completes, beam pattern is flat | Phase cal ran against an off-boresight source |
+| Radar peaks pinned at 0 m, MTI shows nothing moving | Bug 5 — check `Boresight phases latched` in the log |
 
 ---
 
@@ -312,3 +351,7 @@ The chain this ran on:
 - **Only two kits have been characterized.** The ~200 MHz spread between them
   is the entire evidence base for treating the ceiling as per-unit. A third
   measurement would be worth more than any further reasoning here.
+- **What the never-written phase state actually is.** Bug 5 is fixed by
+  writing the phases, which is right whatever the cause. Confirming it means
+  restarting the service and reading the raw Rx I/Q registers on each chip
+  before and after the first write.
