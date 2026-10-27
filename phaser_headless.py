@@ -342,6 +342,11 @@ class PhaserHeadless:
         # frontend Phase Control sliders write here via set_state.
         self.phaseList = [0.0] * 8
 
+        # Boresight, latched now. Nothing else writes the phases until the
+        # first sweep, so a radar mode -- or anything else -- started before
+        # one ran found the array deaf (docs/calibration-bugs.md, bug 5).
+        phaser_cw_radar.apply_boresight(self.array, self.phase_cal)
+
         # Sweep settings. phase_step and steer_res are DIFFERENT quantities
         # and used to be the same attribute, which is why the Phase Shift
         # Bits slider silently coarsened the sweep itself:
@@ -956,6 +961,7 @@ class PhaserHeadless:
             self.cw_saved_sdr,
             array=self.array,
             rpi_ip=self._cw_rpi_ip(),
+            phase_cal=getattr(self, "phase_cal", None),
         )
         self._sim_set_cw(True)
 
@@ -1021,7 +1027,8 @@ class PhaserHeadless:
 
         self.fmcw_cfg, self.fmcw_plan = phaser_fmcw_radar.enter_fmcw_mode(
             self.sdr, cfg, self.fmcw_saved, self.fmcw_hw,
-            array=self.array, ramp_mode=ramp_mode)
+            array=self.array, ramp_mode=ramp_mode,
+            phase_cal=getattr(self, "phase_cal", None))
         self.fmcw_preset = preset
         self._sim_set_fmcw(True)
         plan = self.fmcw_plan

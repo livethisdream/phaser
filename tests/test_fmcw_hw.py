@@ -460,15 +460,19 @@ def test_synced_enter_refuses_without_tdd_handles():
     assert kit.log == []
 
 
-def test_enter_applies_the_taper_when_given_an_array(monkeypatch):
+def test_enter_applies_the_taper_and_boresight_when_given_an_array(monkeypatch):
     seen = []
     monkeypatch.setattr(phaser_cw_radar, "apply_taper", lambda arr, t: seen.append(t))
+    monkeypatch.setattr(phaser_cw_radar, "apply_boresight",
+                        lambda arr, pcal: seen.append(("boresight", pcal)))
     kit = Kit()
     cfg = dsp.fmcw_config({"center_freq": CENTER, "taper": "hann"}, preset="range_doppler")
     saved = {}
-    fm.enter_fmcw_mode(kit.sdr, cfg, saved, kit.hw, array=object())
+    fm.enter_fmcw_mode(kit.sdr, cfg, saved, kit.hw, array=object(), phase_cal=[5.0] * 8)
     fm.exit_fmcw_mode(kit.sdr, saved, kit.hw, array=object(), restore_taper=[1] * 8)
-    assert seen == ["hann", [1] * 8]
+    # Boresight is not restored on exit: the sweep rewrites every phase on
+    # every angle, and boresight is a sane state for anything else.
+    assert seen == ["hann", ("boresight", [5.0] * 8), [1] * 8]
 
 
 # --- exit and the unwind ---------------------------------------------------

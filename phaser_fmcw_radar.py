@@ -307,7 +307,8 @@ def _tx_payload(sdr, iq):
     return [iq, iq] if _tx_channel_count(sdr) > 1 else iq
 
 
-def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED):
+def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
+                    phase_cal=None):
     """Program the ramp, sync the capture to it, and start the Tx tone.
 
     Args:
@@ -317,8 +318,9 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED):
         saved: dict to fill with what to undo; pass it to exit_fmcw_mode
             whether or not this returns
         hw: an FmcwHardware
-        array: ADAR1000 array, for the taper. Optional.
+        array: ADAR1000 array, for the taper and boresight phases. Optional.
         ramp_mode: RAMP_SYNCED, or RAMP_FREE_RUNNING when the probe found no TDD
+        phase_cal: per-element phase calibration, degrees, for boresight
 
     Returns:
         (cfg, plan). `plan` is built from the ramp time the ADF4159 read back.
@@ -326,7 +328,7 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED):
     Raises on any failure. The caller unwinds with exit_fmcw_mode, as the
     dispatcher already does for CW.
     """
-    from phaser_cw_radar import apply_taper, snapshot_sdr
+    from phaser_cw_radar import apply_boresight, apply_taper, snapshot_sdr
 
     cfg = fmcw_config(params)
     synced = ramp_mode == RAMP_SYNCED
@@ -339,11 +341,14 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED):
     center = int(cfg["center_freq"])
     rx_gain = int(cfg["rx_gain"])
 
-    # 1. Snapshot, then 2. taper.
+    # 1. Snapshot, then 2. taper and boresight phases. Upstream zeroes the
+    # phases too; inheriting them is how a radar started before any sweep
+    # listened through registers nothing had written.
     saved["sdr"] = snapshot_sdr(sdr, {}, tag="FMCW")
     if array is not None:
         _land(saved, STEP_TAPER)
         apply_taper(array, cfg.get("taper"))
+        apply_boresight(array, phase_cal)
 
     # 3. SDR rates, LOs and gains, as Range_Doppler_Plot.py sets them.
     _land(saved, STEP_SDR)

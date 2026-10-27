@@ -12,8 +12,8 @@ Hardware contract:
   - The ADAR1000 array is already configured for Rx beamforming.
   - On `enter_cw_mode`, the SDR is reconfigured for the requested CW capture
     parameters (sample rate, FFT/buffer size, IF tone), the Phaser's ADF4159 LO
-    is moved to the CW mixing frequency, the requested taper is latched into
-    the array, and a cyclic Tx tone is started. The previous configuration is
+    is moved to the CW mixing frequency, the requested taper and boresight
+    phases are latched into the array, and a cyclic Tx tone is started. The previous configuration is
     captured into `saved_state` so `exit_cw_mode` can restore it.
 
 Defaults follow radar/CW_RADAR_Waterfall.py:
@@ -24,7 +24,7 @@ Defaults follow radar/CW_RADAR_Waterfall.py:
 
 import time
 
-from ADAR_pyadi_functions import ADAR_set_Taper
+from ADAR_pyadi_functions import ADAR_set_Phase, ADAR_set_Taper
 from SDR_functions import SDR_getData, SDR_LO_init
 
 # Re-exported so `from phaser_cw_radar import process_cw_frame, DEFAULTS` and
@@ -62,6 +62,31 @@ def apply_taper(array, taper):
     return gains
 
 
+def apply_boresight(array, phase_cal=None):
+    """Latch boresight phases into the ADAR1000 array. Returns the phases sent.
+
+    Boresight is the phase calibration alone: no steering ramp, no user
+    offsets. A radar mode has to write it rather than inherit the array's
+    phases, because only the beamforming sweep ever wrote them. A radar mode
+    started before any sweep had run (the first thing anyone does after a
+    service restart) captured with the Rx phase registers never written, and
+    the array was deaf: Tx->Rx leakage at 0 m was the only return, with no
+    error to say so (docs/calibration-bugs.md, bug 5).
+
+    Raises on a write failure, unlike apply_taper: a deaf array is exactly the
+    silent failure this exists to prevent, so the caller's unwind runs instead.
+    Returns None when there is no array to write to.
+    """
+    phases = [float(p) for p in (list(phase_cal or []) + [0.0] * 8)[:8]]
+    if array is None:
+        return None
+    # A zero steering delta leaves only the offsets; the step size quantizes
+    # that (zero) ramp and nothing else. ADAR_set_Phase latches.
+    ADAR_set_Phase(array, 0.0, 1.0, phases)
+    print(f"[ADAR] Boresight phases latched: {[round(p, 1) for p in phases]}")
+    return phases
+
+
 def _tx_channel_count(sdr):
     """How many Tx channels this SDR actually has enabled.
 
@@ -78,7 +103,8 @@ def _tx_channel_count(sdr):
         return 1
 
 
-def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None):
+def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None,
+                  phase_cal=None):
     """Reconfigure the SDR, LO and array for CW radar capture.
 
     Args:
@@ -89,6 +115,8 @@ def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None):
         rpi_ip: Phaser's IP, so the ADF4159 can be moved to the CW mixing
             frequency. Optional — pass None (as sim mode does) to leave the LO
             alone.
+        phase_cal: per-element phase calibration, degrees. Boresight is
+            latched with it; None latches plain zeros.
 
     Returns:
         Effective params dict (with defaults applied) — caller stores this.
@@ -130,6 +158,9 @@ def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None):
     gains = apply_taper(array, cfg.get("taper"))
     if gains is not None:
         print(f"[CW] Taper applied: {gains}")
+    # And point it straight ahead, so it is not listening through phase
+    # registers nothing has written yet.
+    apply_boresight(array, phase_cal)
 
     # Configure SDR for CW
     sdr.sample_rate = fs
