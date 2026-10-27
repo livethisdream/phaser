@@ -441,3 +441,30 @@ the gate before any of it merges to `main`.
    7.8 fps before any DSP, so C3 has to keep processing and transport under
    about 70 ms. A single-chirp range profile should run faster. C3 measures
    both on the Pi.
+
+## Bench findings (2026-10-27, phaser-01)
+
+Three problems found timing captures against `Range_Doppler_Plot.py`, the
+first three fixed in `fix/fmcw-coherence`.
+
+- **Chirps were not coherent.** `build_iq_tone` snapped the 100 kHz tone to a
+  bin of 2**18 samples (100006.1 Hz), so it advanced +1.9 deg a chirp. Every
+  stationary return sat ~2 Doppler bins up (+0.24 m/s), and through the MTI.
+  Leakage at zero Doppler: 55% ours, 98.7% upstream. The Tx buffer is now
+  sized to whole tone periods (`coherent_tone_length`); the plan reports
+  `chirp_phase_step_deg`, and enter warns when it is not 0. After: 98.7%,
+  +0.01 deg. 2-pulse MTI still only cancels ~21 dB, upstream too: that is the
+  hardware's phase noise.
+- **`rx_buffer_size` never took effect after the first capture.** pyadi reads
+  it only when it creates the buffer. `set_rx_buffer_size` destroys first; CW,
+  FMCW and the restore on exit all use it.
+- **Short synced captures never completed.** The first `rx()` created the Rx
+  buffer after the burst had fired. 256 chirps (128 ms) outlasted the setup; 1
+  chirp did not, so `range_sync` and `cfar` timed out from cold (and only ran
+  in the service on the stale `range_doppler` buffer). Synced enter now arms
+  the buffer first (`arm_rx`), as the ChirpSync scripts do. After: 1-chirp
+  `range_sync` refills in 4.5 ms, `cfar` in 7 ms.
+- **Capture time is the transfer, not our code** (not fixed). `range_doppler`
+  at 2**19 samples: refill ~307 ms, four per-channel reads ~119 ms, ~554 ms
+  frame to frame, identical to upstream. 5 fps needs a smaller capture; one
+  raw read plus a numpy de-interleave may save ~100 ms (unmeasured).

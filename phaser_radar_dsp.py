@@ -15,6 +15,9 @@ phaser_cw_radar re-exports the names below, so `from phaser_cw_radar import
 process_cw_frame, DEFAULTS` keeps working for anything that already does it.
 """
 
+from fractions import Fraction
+from math import lcm
+
 import numpy as np
 
 
@@ -107,6 +110,32 @@ def build_iq_tone(fs, n, signal_freq, scale=2 ** 14):
     i = np.cos(2 * np.pi * t * fc_exact) * scale
     q = np.sin(2 * np.pi * t * fc_exact) * scale
     return i + 1j * q
+
+
+def coherent_tone_length(fs, signal_freq, n_target, align=8):
+    """The cyclic Tx length nearest n_target that holds signal_freq exactly.
+
+    build_iq_tone snaps the tone to a bin of whatever length it is given. At
+    2**18 samples and 4 MHz that moved 100 kHz to 100006.1 Hz, and FMCW cannot
+    afford it: chirp to chirp the tone advances 2*pi*f*PRI, which is only a
+    whole number of cycles at the frequency the PRI was chosen for. The extra
+    6.1 Hz walked every return +1.9 degrees a chirp, a constant Doppler that
+    put stationary clutter two bins up and through the MTI.
+
+    So instead of moving the tone to fit the buffer, size the buffer to fit
+    the tone: a whole number of its periods, which is also a whole number of
+    cycles, so the buffer still wraps cleanly and the bin is exact. `align`
+    keeps the length a multiple of 8 samples for the Tx DMA.
+
+    Returns None when no such length is anywhere near n_target (a tone with no
+    short rational period), and the caller falls back to snapping.
+    """
+    ratio = (Fraction(float(signal_freq)).limit_denominator(10 ** 6)
+             / Fraction(float(fs)).limit_denominator(10 ** 6))
+    period = lcm(ratio.denominator, int(align))
+    if period > int(n_target):
+        return None
+    return max(1, round(int(n_target) / period)) * period
 
 
 def window(name, n):
@@ -790,6 +819,11 @@ def chirp_plan(cfg, ramp_mode, actual_ramp_us, on_ms=0.0):
     if start_offset_samples + good_ramp_samples > frame_samples:
         raise ValueError("the chirp window runs past its PRI slot; raise pri_guard_ms")
 
+    # Chirp-to-chirp phase of the Tx tone. Anything but a whole number of
+    # cycles per PRI is a Doppler offset on every stationary return.
+    cycles = float(cfg["signal_freq"]) * pri_s
+    step_deg = (cycles - round(cycles)) * 360.0
+
     total_ms = pri_ms * num_chirps
     power = 13
     buffer_size = 2 ** power
@@ -808,6 +842,8 @@ def chirp_plan(cfg, ramp_mode, actual_ramp_us, on_ms=0.0):
         "frame_samples": frame_samples,
         "start_offset_samples": start_offset_samples,
         "good_ramp_samples": good_ramp_samples,
+        "tone_cycles_per_pri": cycles,
+        "chirp_phase_step_deg": step_deg,
     })
     return plan
 

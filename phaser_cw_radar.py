@@ -87,6 +87,24 @@ def apply_boresight(array, phase_cal=None):
     return phases
 
 
+def set_rx_buffer_size(sdr, n):
+    """Set rx_buffer_size so the next rx() actually uses it.
+
+    pyadi creates the Rx buffer on the first rx() and keeps it: a new
+    rx_buffer_size is only read when a buffer is created. Without the destroy,
+    every mode change went on reading whatever size the first capture after
+    startup had made -- FMCW range_sync read range_doppler's 2**19 samples,
+    and the sweep after a radar mode read the radar's.
+    """
+    destroy = getattr(sdr, "rx_destroy_buffer", None)
+    if destroy is not None:
+        try:
+            destroy()
+        except Exception as e:
+            print(f"[SDR] Warning: could not destroy the Rx buffer: {e}")
+    sdr.rx_buffer_size = int(n)
+
+
 def _tx_channel_count(sdr):
     """How many Tx channels this SDR actually has enabled.
 
@@ -165,7 +183,7 @@ def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None,
     # Configure SDR for CW
     sdr.sample_rate = fs
     sdr.rx_rf_bandwidth = fs
-    sdr.rx_buffer_size = n
+    set_rx_buffer_size(sdr, n)
     sdr.rx_lo = rx_lo
     sdr.tx_lo = tx_lo
     sdr.gain_control_mode_chan0 = "manual"
@@ -285,7 +303,9 @@ def restore_sdr(sdr, saved_state, tag="radar"):
     """Put back whatever snapshot_sdr recorded, and nothing else."""
     try:
         for key in _SDR_SNAPSHOT_KEYS:
-            if key in saved_state:
+            if key == "rx_buffer_size" and key in saved_state:
+                set_rx_buffer_size(sdr, saved_state[key])
+            elif key in saved_state:
                 setattr(sdr, key, int(saved_state[key]))
         for key in _SDR_SNAPSHOT_OPTIONAL:
             if key in saved_state and hasattr(sdr, key):

@@ -74,9 +74,16 @@ class _SDR(_Rec):
     def tx(self, payload):
         self._maybe_fail("tx()")
         self._log.append((self._name, "tx()", len(payload)))
+        self._vals["tx_payload"] = payload
 
     def tx_destroy_buffer(self):
         self._log.append((self._name, "tx_destroy_buffer()", None))
+
+    def rx_destroy_buffer(self):
+        self._log.append((self._name, "rx_destroy_buffer()", None))
+
+    def _rx_init_channels(self):
+        self._log.append((self._name, "_rx_init_channels()", None))
 
     def rx(self):
         self._maybe_fail("rx()")
@@ -588,3 +595,115 @@ def test_sdr_snapshot_records_tx_cyclic_buffer_for_both_modes():
     snap = phaser_cw_radar.snapshot_sdr(kit.sdr, {})
     assert snap["tx_cyclic_buffer"] is False
     assert snap["sample_rate"] == SDR_INITIAL["sample_rate"]
+
+
+# --- chirp-to-chirp coherence -------------------------------------------------
+#
+# The Tx tone has to advance a whole number of cycles per PRI, or every
+# stationary return walks in phase chirp to chirp: a constant Doppler that
+# moved clutter two bins up and through the MTI on phaser-01 (+1.9 deg a
+# chirp, 55% of the leakage at zero Doppler against upstream's 99%).
+
+@pytest.mark.parametrize("name", sorted(dsp.FMCW_PRESETS))
+def test_every_preset_puts_a_whole_number_of_tone_cycles_in_a_pri(name):
+    cfg = _cfg(name)
+    plan = dsp.chirp_plan(cfg, fm.RAMP_SYNCED, dsp.ramp_time_us(cfg))
+    assert plan["tone_cycles_per_pri"] == pytest.approx(round(plan["tone_cycles_per_pri"]))
+    assert abs(plan["chirp_phase_step_deg"]) < 1e-6
+
+
+def test_the_plan_reports_the_step_a_bin_snapped_tone_had():
+    cfg = _cfg("range_doppler", signal_freq=round(1e5 / 4e6 * 2 ** 18) * 4e6 / 2 ** 18)
+    plan = dsp.chirp_plan(cfg, fm.RAMP_SYNCED, dsp.ramp_time_us(cfg))
+    assert plan["chirp_phase_step_deg"] > 1.0
+
+
+@pytest.mark.parametrize("fs,f,period", [(4e6, 1e5, 40), (5e6, 1e5, 200), (2e6, 1e5, 40),
+                                         (600e3, 1e5, 24)])
+def test_coherent_tone_length_is_whole_periods_near_the_target(fs, f, period):
+    n = dsp.coherent_tone_length(fs, f, 2 ** 18)
+    assert n % period == 0 and n % 8 == 0
+    assert abs(n - 2 ** 18) <= period / 2
+    # So build_iq_tone's snap is a no-op: the bin is the tone.
+    assert round(f / fs * n) * fs / n == f
+
+
+def test_coherent_tone_length_gives_up_on_a_tone_with_no_short_period():
+    assert dsp.coherent_tone_length(4e6, 100_000.123457, 2 ** 18) is None
+
+
+def test_enter_transmits_the_exact_tone_and_it_wraps_without_a_step():
+    kit = Kit()
+    cfg, plan = kit.enter()
+    iq = np.asarray(kit.sdr.tx_payload[0])
+    fs, f = float(cfg["sample_rate"]), float(cfg["signal_freq"])
+    assert len(iq) == dsp.coherent_tone_length(fs, f, fm.TX_TONE_SAMPLES)
+    peak = np.argmax(np.abs(np.fft.fft(iq)))
+    assert peak * fs / len(iq) == f
+    # The sample after the last one is the first one again.
+    nxt = iq[-1] * np.exp(2j * np.pi * f / fs)
+    assert abs(nxt - iq[0]) < 1e-6 * abs(iq[0])
+
+
+# --- the Rx buffer is rebuilt at the new size ----------------------------------
+#
+# pyadi only reads rx_buffer_size when it creates the buffer. Without a
+# destroy, range_sync went on reading range_doppler's 2**19 samples, and the
+# sweep after a radar mode read the radar's.
+
+def _destroy_then_resize(log):
+    sdr = [(a, v) for n, a, v in log if n == "sdr"]
+    sizes = [i for i, (a, _) in enumerate(sdr) if a == "rx_buffer_size"]
+    assert sizes
+    for i in sizes:
+        assert sdr[i - 1][0] == "rx_destroy_buffer()", sdr[max(0, i - 3): i + 1]
+
+
+def test_enter_destroys_the_rx_buffer_before_resizing_it():
+    kit = Kit()
+    kit.enter()
+    _destroy_then_resize(kit.log)
+
+
+def test_exit_destroys_the_rx_buffer_before_restoring_its_size():
+    kit = Kit()
+    kit.enter()
+    kit.log.clear()
+    kit.exit()
+    _destroy_then_resize(kit.log)
+
+
+def test_resize_works_on_an_sdr_with_no_destroy():
+    sdr = _Rec("sdr", [], set(), rx_buffer_size=1)
+    phaser_cw_radar.set_rx_buffer_size(sdr, 4096)
+    assert sdr.rx_buffer_size == 4096
+
+
+def test_resize_survives_a_failing_destroy():
+    class Sdr(_Rec):
+        def rx_destroy_buffer(self):
+            raise OSError("no buffer yet")
+
+    sdr = Sdr("sdr", [], set(), rx_buffer_size=1)
+    phaser_cw_radar.set_rx_buffer_size(sdr, 4096)
+    assert sdr.rx_buffer_size == 4096
+
+
+# --- the Rx buffer is armed before the first burst ------------------------------
+
+def test_synced_enter_arms_the_rx_buffer_before_the_first_burst():
+    kit = Kit()
+    kit.enter()
+    sdr = [a for n, a, _ in kit.log if n == "sdr"]
+    burst = next(i for i, (n, a, v) in enumerate(kit.log)
+                 if n == "gpios" and a == "gpio_burst" and v == 1)
+    armed = next(i for i, (n, a, _) in enumerate(kit.log) if a == "_rx_init_channels()")
+    resized = max(i for i, (n, a, _) in enumerate(kit.log) if n == "sdr" and a == "rx_buffer_size")
+    assert resized < armed < burst
+    assert sdr.count("_rx_init_channels()") == 1
+
+
+def test_free_running_enter_does_not_arm():
+    kit = Kit(synced=False)
+    kit.enter()
+    assert all(a != "_rx_init_channels()" for _, a, _ in kit.log)

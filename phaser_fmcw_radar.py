@@ -66,6 +66,7 @@ from phaser_radar_dsp import (  # noqa: E402
     TDD_OFF_RAW,
     TDD_ON_RAW,
     build_iq_tone,
+    coherent_tone_length,
     chirp_plan,
     fmcw_config,
     ramp_registers,
@@ -240,8 +241,9 @@ def probe_fmcw(adi_module, sdr_ctx, rpi_ctx, sim=False):
 # phaser_radar_dsp, so this half only decides order and undo.
 # ---------------------------------------------------------------------------
 
-# Tx tone length. The scripts load 2**18 samples; build_iq_tone snaps the
-# tone to a whole number of cycles in it, so the cyclic buffer wraps cleanly.
+# Tx tone length to aim for. The scripts load 2**18 samples; enter_fmcw_mode
+# uses the nearest length holding a whole number of tone periods
+# (coherent_tone_length), so the tone is exact and the buffer wraps cleanly.
 TX_TONE_SAMPLES = 2 ** 18
 TX_TONE_SCALE = 0.9 * 2 ** 14
 TX_OFF_DB = -88
@@ -307,6 +309,24 @@ def _tx_payload(sdr, iq):
     return [iq, iq] if _tx_channel_count(sdr) > 1 else iq
 
 
+def arm_rx(sdr):
+    """Create the Rx buffer now, so its DMA is waiting before the first burst.
+
+    pyadi otherwise creates it inside the first rx(), and capture_fmcw_frame
+    fires the burst before calling rx(): the burst was over before anything
+    was listening, and the refill waited for a trigger that never came. A
+    256-chirp burst (128 ms) outlasted the buffer setup and got caught; a
+    1-chirp one (1.5 ms) never did, so range_sync timed out from cold. The
+    ChirpSync lab scripts arm with the same call before their first burst.
+
+    `_rx_init_channels` is pyadi's private builder; an SDR without it (the
+    simulator) creates its buffer on demand and needs nothing.
+    """
+    init = getattr(sdr, "_rx_init_channels", None)
+    if init is not None:
+        init()
+
+
 def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
                     phase_cal=None):
     """Program the ramp, sync the capture to it, and start the Tx tone.
@@ -328,7 +348,8 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
     Raises on any failure. The caller unwinds with exit_fmcw_mode, as the
     dispatcher already does for CW.
     """
-    from phaser_cw_radar import apply_boresight, apply_taper, snapshot_sdr
+    from phaser_cw_radar import (apply_boresight, apply_taper, set_rx_buffer_size,
+                                 snapshot_sdr)
 
     cfg = fmcw_config(params)
     synced = ramp_mode == RAMP_SYNCED
@@ -372,6 +393,9 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
         setattr(hw.synth, attr, value)
     actual_us = int(hw.synth.freq_dev_time)
     plan = chirp_plan(cfg, ramp_mode, actual_us, on_ms=0.0)
+    if synced and abs(plan["chirp_phase_step_deg"]) > 0.01:
+        print(f"[FMCW] Warning: {plan['tone_cycles_per_pri']:.4f} tone cycles per PRI; "
+              f"stationary returns will walk {plan['chirp_phase_step_deg']:+.2f} deg a chirp")
 
     # 5. Chirp sync. tdd_ext_sync only where the channel exists: Pluto v0.39
     # has none, and writing it there only sets a plain Python attribute.
@@ -402,7 +426,9 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
 
         hw.phaser_gpios.gpio_burst = 0
 
-    sdr.rx_buffer_size = int(plan["rx_buffer_size"])
+    set_rx_buffer_size(sdr, plan["rx_buffer_size"])
+    if synced:
+        arm_rx(sdr)
 
     # 6. The Tx tone.
     _land(saved, STEP_TX)
@@ -410,7 +436,13 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
         sdr.tx_destroy_buffer()
     except Exception:
         pass
-    iq = build_iq_tone(fs, TX_TONE_SAMPLES, float(cfg["signal_freq"]), scale=TX_TONE_SCALE)
+    tone_freq = float(cfg["signal_freq"])
+    tone_n = coherent_tone_length(fs, tone_freq, TX_TONE_SAMPLES)
+    if tone_n is None:
+        tone_n = TX_TONE_SAMPLES
+        print(f"[FMCW] Warning: no whole-period length for {tone_freq:g} Hz at {fs} S/s; "
+              "the tone will be snapped to a bin and the chirps will not be coherent")
+    iq = build_iq_tone(fs, tone_n, tone_freq, scale=TX_TONE_SCALE)
     sdr.tx(_tx_payload(sdr, iq))
 
     # 7. Throw away the first frame. A buffer filled before the ramp and the
