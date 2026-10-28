@@ -1983,8 +1983,9 @@ class PhaserHeadless:
         self.running = True
 
         # Start command handler thread (ZMQ)
-        cmd_thread = threading.Thread(target=self._command_loop, daemon=True)
-        cmd_thread.start()
+        # Kept so stop() can wait for it before closing its socket.
+        self._cmd_thread = threading.Thread(target=self._command_loop, daemon=True)
+        self._cmd_thread.start()
 
         # Start WebSocket server if available
         if HAS_WEBSOCKETS:
@@ -2050,7 +2051,14 @@ class PhaserHeadless:
         poller.register(self.rep_socket, zmq.POLLIN)
 
         while self.running:
-            socks = dict(poller.poll(100))
+            try:
+                socks = dict(poller.poll(100))
+            except zmq.ZMQError:
+                # stop() closed the socket under us. Only an error while
+                # shutting down is expected; anything else is real.
+                if not self.running:
+                    return
+                raise
             if self.rep_socket in socks:
                 try:
                     msg = self.rep_socket.recv_json()
@@ -2238,6 +2246,15 @@ class PhaserHeadless:
         # Kill any running calibration
         if self.cal_process and self.cal_process.poll() is None:
             self.cal_process.terminate()
+
+        # Let the command thread see running=False and leave its 100 ms poll
+        # before its socket goes. Closing a ZMQ socket another thread is
+        # polling is not thread-safe: it raised in that thread on most stops,
+        # and the process exited mid-traceback, leaving a bare
+        # "Exception in thread Thread-1" in the journal on every restart.
+        cmd_thread = getattr(self, "_cmd_thread", None)
+        if cmd_thread is not None and cmd_thread is not threading.current_thread():
+            cmd_thread.join(timeout=1.0)
 
         self.pub_socket.close()
         self.rep_socket.close()
