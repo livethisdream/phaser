@@ -300,24 +300,38 @@ class FmcwHardware:
 
 
 def release_tdd(tdd):
-    """Put the Pluto TDD back in non-TDD mode, so plain Rx buffers fill.
+    """Put the Pluto TDD back in non-TDD mode, so plain Rx and Tx buffers flow.
 
-    With the engine off, each TDD channel idles at its polarity, and channel 1
+    With the engine off, each TDD channel idles at its polarity. Channel 1
     held low stops the Rx DMA: every new buffer after that waits for samples
-    that never come (Errno 110 with a timeout, a hang without one). Enter sets
-    every polarity to 0, and `enable = False` alone left them there -- on the
-    Pluto, so across service restarts too. It went unseen while the Rx buffer
-    was never rebuilt after startup; once it was, CW after FMCW hung the
-    backend (docs/calibration-bugs.md, bug 6).
+    that never come (Errno 110 with a timeout, a hang without one). Channel 2
+    held low stops the Tx DMA the same way: a cyclic tone is accepted and
+    never leaves, so CW hears no leakage, no echo, nothing but noise. Enter
+    sets every polarity to 0, and `enable = False` alone left them there -- on
+    the Pluto, so across service restarts too (docs/calibration-bugs.md,
+    bug 6).
 
-    Upstream's end_program, in its order: channel 1 idles high, channel 2 low,
-    and an enable toggle latches them.
+    Both idle high, and an enable toggle latches them. Upstream's end_program
+    idles channel 2 at `phaser_enable`, which leaves Tx gated whenever that
+    pin is low; measured on phaser-01, channel 2 low means no CW Tx at all.
     """
     tdd.enable = False
     tdd.channel[1].polarity = True
-    tdd.channel[2].polarity = False
+    tdd.channel[2].polarity = True
     tdd.enable = True
     tdd.enable = False
+
+
+def stop_ramp(synth):
+    """Return the ADF4159 to a fixed LO: no ramp, no trigger, writes latched.
+
+    FMCW exit does this with the LO restore. A session that crashed or was
+    killed leaves the PLL in single_sawtooth_burst, and CW and the sweep then
+    run on a synth still set up to chirp.
+    """
+    synth.ramp_mode = "disabled"
+    synth.tx_trig_en = 0
+    synth.enable = 0  # last: latches the writes above
 
 
 def _land(saved, step):
@@ -522,13 +536,13 @@ def exit_fmcw_mode(sdr, saved, hw, array=None, restore_taper=None,
             attempt(f"restore {attr}", lambda a=attr, v=value: setattr(pins, a, v))
 
     if STEP_RAMP in landed and synth is not None:
-        def stop_ramp():
+        def stop_ramp_and_restore_lo():
             synth.ramp_mode = "disabled"
             synth.tx_trig_en = 0
             if restore_lo_freq:
                 synth.frequency = to_adf4159_hz(restore_lo_freq)
             synth.enable = 0  # last: latches the writes above
-        attempt("stop the ramp and restore the LO", stop_ramp)
+        attempt("stop the ramp and restore the LO", stop_ramp_and_restore_lo)
 
     if STEP_TX in landed:
         attempt("destroy the Tx buffer", sdr.tx_destroy_buffer)

@@ -712,14 +712,15 @@ def test_free_running_enter_does_not_arm():
 # --- the TDD is released on exit (calibration-bugs.md, bug 6) -------------------
 #
 # With the engine off, each TDD channel idles at its polarity, and channel 1
-# low holds the Rx DMA. Disabling the engine alone left every new Rx buffer
-# unable to fill, on the Pluto, across restarts.
+# low holds the Rx DMA, and channel 2 low the Tx DMA. Disabling the engine
+# alone left every new Rx buffer unable to fill and every Tx tone unsent, on
+# the Pluto, across restarts.
 
 def _tdd_writes(log):
     return [(n, a, v) for n, a, v in log if n.startswith("tdd")]
 
 
-def test_release_tdd_idles_channel_1_high_and_latches_with_a_toggle():
+def test_release_tdd_idles_channels_1_and_2_high_and_latches_with_a_toggle():
     log = []
     tdd = _Rec("tdd", log, set(), enable=True,
                channel=[_Rec(f"tdd.ch{i}", log, set()) for i in range(3)])
@@ -727,7 +728,7 @@ def test_release_tdd_idles_channel_1_high_and_latches_with_a_toggle():
     assert log == [
         ("tdd", "enable", False),
         ("tdd.ch1", "polarity", True),
-        ("tdd.ch2", "polarity", False),
+        ("tdd.ch2", "polarity", True),
         ("tdd", "enable", True),
         ("tdd", "enable", False),
     ]
@@ -740,10 +741,22 @@ def test_exit_releases_the_tdd_after_enter_set_every_polarity_low():
     kit.log.clear()
     kit.exit()
     assert kit.tdd.channel[1].polarity is True
-    assert kit.tdd.channel[2].polarity is False
+    assert kit.tdd.channel[2].polarity is True
     tdd = _tdd_writes(kit.log)
     assert tdd[0] == ("tdd", "enable", False)
     assert tdd[-1] == ("tdd", "enable", False) and tdd[-2] == ("tdd", "enable", True)
+
+
+def test_stop_ramp_disables_the_ramp_and_latches_last():
+    log = []
+    synth = _Rec("synth", log, set(), ramp_mode="single_sawtooth_burst",
+                 tx_trig_en=1, enable=1)
+    fm.stop_ramp(synth)
+    assert log == [
+        ("synth", "ramp_mode", "disabled"),
+        ("synth", "tx_trig_en", 0),
+        ("synth", "enable", 0),
+    ]
 
 
 def test_free_running_exit_does_not_touch_a_tdd():
