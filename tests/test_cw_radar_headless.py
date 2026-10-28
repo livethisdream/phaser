@@ -200,3 +200,31 @@ def test_state_reports_defaults_merged_with_overrides():
     assert data["params"]["vel_max"] == 12.0
     # Untouched keys still come from the defaults table.
     assert data["params"]["signal_freq"] == 100_000
+
+
+# --- center_freq defaults to this kit's IF -----------------------------
+#
+# Kits differ by ~200 MHz, so DEFAULTS' 2.2 GHz left phaser-01 (1.8 GHz)
+# deaf. The radar UI sends null for "the kit's IF".
+
+def test_cw_center_freq_defaults_to_the_kit_if():
+    h = _headless()
+    h.Rx_freq = 1.8e9
+    _start(h)
+    assert h.cw_params["center_freq"] == 1.8e9
+
+
+def test_a_center_freq_the_client_sent_wins():
+    h = _headless()
+    h.Rx_freq = 1.8e9
+    _start(h, center_freq=2.0e9)
+    assert h.cw_params["center_freq"] == 2.0e9
+
+
+def test_null_center_freq_returns_to_the_kit_if_after_an_override():
+    h = _headless()
+    h.Rx_freq = 1.8e9
+    _start(h, center_freq=2.0e9)
+    h.stop_cw_radar()
+    _start(h, center_freq=None)
+    assert h.cw_params["center_freq"] == 1.8e9
