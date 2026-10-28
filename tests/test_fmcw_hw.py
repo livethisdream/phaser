@@ -707,3 +707,66 @@ def test_free_running_enter_does_not_arm():
     kit = Kit(synced=False)
     kit.enter()
     assert all(a != "_rx_init_channels()" for _, a, _ in kit.log)
+
+
+# --- the TDD is released on exit (calibration-bugs.md, bug 6) -------------------
+#
+# With the engine off, each TDD channel idles at its polarity, and channel 1
+# low holds the Rx DMA. Disabling the engine alone left every new Rx buffer
+# unable to fill, on the Pluto, across restarts.
+
+def _tdd_writes(log):
+    return [(n, a, v) for n, a, v in log if n.startswith("tdd")]
+
+
+def test_release_tdd_idles_channel_1_high_and_latches_with_a_toggle():
+    log = []
+    tdd = _Rec("tdd", log, set(), enable=True,
+               channel=[_Rec(f"tdd.ch{i}", log, set()) for i in range(3)])
+    fm.release_tdd(tdd)
+    assert log == [
+        ("tdd", "enable", False),
+        ("tdd.ch1", "polarity", True),
+        ("tdd.ch2", "polarity", False),
+        ("tdd", "enable", True),
+        ("tdd", "enable", False),
+    ]
+
+
+def test_exit_releases_the_tdd_after_enter_set_every_polarity_low():
+    kit = Kit()
+    kit.enter()
+    assert all(c.polarity is False for c in kit.tdd.channel)
+    kit.log.clear()
+    kit.exit()
+    assert kit.tdd.channel[1].polarity is True
+    assert kit.tdd.channel[2].polarity is False
+    tdd = _tdd_writes(kit.log)
+    assert tdd[0] == ("tdd", "enable", False)
+    assert tdd[-1] == ("tdd", "enable", False) and tdd[-2] == ("tdd", "enable", True)
+
+
+def test_free_running_exit_does_not_touch_a_tdd():
+    kit = Kit(synced=False)
+    kit.enter()
+    kit.exit()
+    assert _tdd_writes(kit.log) == []
+
+
+# --- CW never waits forever -----------------------------------------------------
+
+class _Ctx:
+    def __init__(self):
+        self.timeouts = []
+
+    def set_timeout(self, ms):
+        self.timeouts.append(ms)
+
+
+def test_cw_sets_a_finite_libiio_timeout():
+    log = []
+    sdr = _SDR("sdr", log, set(), **SDR_INITIAL)
+    sdr._vals["_ctx"] = ctx = _Ctx()
+    phaser_cw_radar.enter_cw_mode(sdr, {}, saved_state={})
+    assert ctx.timeouts and all(t > 0 for t in ctx.timeouts)
+    assert ctx.timeouts[-1] == phaser_cw_radar.RX_TIMEOUT_MS

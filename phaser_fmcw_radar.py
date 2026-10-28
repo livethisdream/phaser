@@ -299,6 +299,27 @@ class FmcwHardware:
         self.pluto_pins = None
 
 
+def release_tdd(tdd):
+    """Put the Pluto TDD back in non-TDD mode, so plain Rx buffers fill.
+
+    With the engine off, each TDD channel idles at its polarity, and channel 1
+    held low stops the Rx DMA: every new buffer after that waits for samples
+    that never come (Errno 110 with a timeout, a hang without one). Enter sets
+    every polarity to 0, and `enable = False` alone left them there -- on the
+    Pluto, so across service restarts too. It went unseen while the Rx buffer
+    was never rebuilt after startup; once it was, CW after FMCW hung the
+    backend (docs/calibration-bugs.md, bug 6).
+
+    Upstream's end_program, in its order: channel 1 idles high, channel 2 low,
+    and an enable toggle latches them.
+    """
+    tdd.enable = False
+    tdd.channel[1].polarity = True
+    tdd.channel[2].polarity = False
+    tdd.enable = True
+    tdd.enable = False
+
+
 def _land(saved, step):
     saved.setdefault("landed", []).append(step)
 
@@ -494,7 +515,7 @@ def exit_fmcw_mode(sdr, saved, hw, array=None, restore_taper=None,
     pins = hw.pluto_pins if hw is not None else None
 
     if STEP_TDD in landed and tdd is not None:
-        attempt("disable the TDD engine", lambda: setattr(tdd, "enable", False))
+        attempt("return the TDD to non-TDD mode", lambda: release_tdd(tdd))
 
     if STEP_PLUTO_GPIOS in landed and pins is not None:
         for attr, value in (saved.get("pluto_gpios") or {}).items():

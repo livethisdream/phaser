@@ -191,3 +191,59 @@ def test_a_failed_boresight_write_fails_the_start_and_unwinds(monkeypatch, mode)
     assert "ADAR1000 write failed" in resp.get("message", "")
     assert h.mode == "idle"
     assert [h.array.elements[i + 1].latched_gain for i in range(8)] == expected_gains
+
+
+# --- the Pluto TDD is released at startup (calibration-bugs.md, bug 6) ----------
+
+def _bare_backend(monkeypatch, tddn):
+    try:
+        import phaser_headless
+    except Exception as exc:  # pragma: no cover - depends on the runner
+        pytest.skip(f"phaser_headless unavailable: {exc}")
+    monkeypatch.setattr(phaser_headless.adi, "tddn", tddn, raising=False)
+    h = phaser_headless.PhaserHeadless.__new__(phaser_headless.PhaserHeadless)
+    h.sim_mode = False
+    h.sdr_ip = "ip:192.168.2.1"
+    return h
+
+
+def test_startup_releases_a_tdd_left_holding_the_rx_dma(monkeypatch):
+    released = []
+
+    class Chan:
+        polarity = False
+
+    class Tdd:
+        def __init__(self, uri):
+            self.uri = uri
+            self.enable = False
+            self.channel = [Chan(), Chan(), Chan()]
+
+        def __setattr__(self, k, v):
+            object.__setattr__(self, k, v)
+            if k == "enable":
+                released.append(v)
+
+    made = []
+    h = _bare_backend(monkeypatch, lambda uri: made.append(Tdd(uri)) or made[-1])
+    h._release_pluto_tdd()
+    assert made[0].uri == "ip:192.168.2.1"
+    assert made[0].channel[1].polarity is True and made[0].channel[2].polarity is False
+    assert released[-2:] == [True, False]
+
+
+def test_startup_survives_a_pluto_without_a_tdd(monkeypatch):
+    def no_tdd(uri):
+        raise OSError("No device found")
+
+    h = _bare_backend(monkeypatch, no_tdd)
+    h._release_pluto_tdd()  # must not raise
+
+
+def test_startup_release_is_skipped_in_sim(monkeypatch):
+    def boom(uri):
+        raise AssertionError("sim must not open a TDD")
+
+    h = _bare_backend(monkeypatch, boom)
+    h.sim_mode = True
+    h._release_pluto_tdd()

@@ -322,6 +322,13 @@ class PhaserHeadless:
             self.Rx_gain + self.channel_cal[1],
         )
 
+        # Free the Rx DMA from whatever TDD state the Pluto was left in. It
+        # outlives this process: an FMCW session that crashed or was killed,
+        # or a lab script, leaves channel 1 idling low, and then no Rx buffer
+        # ever fills. Before the first capture, so the sweep's buffer is not
+        # the first casualty.
+        self._release_pluto_tdd()
+
         # Ask once whether this kit can run FMCW, so the radar UI can say why
         # not instead of showing an empty plot. Read-only, and never raises.
         self.fmcw_capability = self._probe_fmcw()
@@ -1304,6 +1311,20 @@ class PhaserHeadless:
                 print(f"[CW] live param update failed: {e}")
                 return {"status": "error", "message": str(e)}
         return {"status": "ok", "params": self.cw_params}
+
+    def _release_pluto_tdd(self):
+        """phaser_fmcw_radar.release_tdd on the Pluto's TDD, where there is one.
+
+        Never raises: a Pluto without the TDD core (older firmware) has
+        nothing to release, and must still come up for beamforming.
+        """
+        if self.sim_mode or not hasattr(adi, "tddn"):
+            return
+        try:
+            phaser_fmcw_radar.release_tdd(adi.tddn(self.sdr_ip))
+            print("[TDD] Pluto TDD released (non-TDD mode)")
+        except Exception as e:
+            print(f"[TDD] No Pluto TDD to release: {e}")
 
     def _probe_fmcw(self):
         """Run the FMCW capability probe against the contexts already open."""

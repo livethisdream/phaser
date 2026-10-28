@@ -45,6 +45,11 @@ from phaser_radar_dsp import (  # noqa: F401
 _build_iq_tone = build_iq_tone
 
 
+# libiio timeout for radar captures, ms. A CW buffer takes ~110 ms and the
+# longest FMCW one ~430 ms, so this only ever fires on a capture that is stuck.
+RX_TIMEOUT_MS = 5000
+
+
 def apply_taper(array, taper):
     """Latch a taper into the ADAR1000 array. Returns the gains actually sent.
 
@@ -208,8 +213,11 @@ def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None,
 
     # Build cyclic IQ tone
     iq = build_iq_tone(fs, n, sig_freq)
+    # Finite. This was 0 (wait forever), so a capture that never filled hung
+    # the main loop, and with it the WebSocket and every client, instead of
+    # raising something the mode could unwind from.
     try:
-        sdr._ctx.set_timeout(0)
+        sdr._ctx.set_timeout(RX_TIMEOUT_MS)
     except Exception:
         pass
 
