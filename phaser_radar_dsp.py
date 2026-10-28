@@ -37,6 +37,7 @@ DEFAULTS = {
     "fft_window": "blackman",
     "taper": "blackman",  # Blackman ADAR1000 taper
     "vel_max": 30.0,      # m/s; crops the Doppler window sent to the frontend
+    "peak_exclude": 0.3,  # m/s; the peak search skips +/- this around 0
 }
 
 
@@ -155,7 +156,7 @@ _window = window
 
 
 def process_cw_frame(iq, fs, signal_freq, output_freq, fft_window="blackman",
-                     downsample_iq=512, vel_max=None):
+                     downsample_iq=512, vel_max=None, peak_exclude=None):
     """Compute Doppler spectrum, velocity axis, and stats for one CW frame.
 
     The CW radar transmits at signal_freq above DC (the IF tone). A moving
@@ -172,6 +173,16 @@ def process_cw_frame(iq, fs, signal_freq, output_freq, fft_window="blackman",
     than a constant because the UI has a "Velocity Max" control: pinned at a
     hardcoded 30 m/s, asking the UI for a wider window just added empty margin
     to the plot, because the bins were never sent.
+
+    `peak_exclude` keeps the peak readout off the 0 m/s line. The Tx tone
+    leaks straight into the Rx (and every stationary reflector returns it
+    unshifted), so the strongest bin in the window is almost always at
+    0 m/s: the reported velocity sat near zero and jittered whatever moved
+    in front of the array. CW cannot tell a stationary target from that
+    leakage anyway, so the search skips +/- peak_exclude m/s -- about three
+    bins at the defaults (0.11 m/s a bin), which is the Blackman main lobe.
+    The spectrum itself is untouched; only the readout ignores the line.
+    0 restores the old whole-window search.
     """
     n = int(len(iq))
     if n == 0:
@@ -205,7 +216,12 @@ def process_cw_frame(iq, fs, signal_freq, output_freq, fft_window="blackman",
     velocity_out = velocity[mask]
     spectrum_out = spectrum_db[mask]
 
-    peak_idx = int(np.argmax(spectrum_out))
+    if peak_exclude is None:
+        peak_exclude = DEFAULTS["peak_exclude"]
+    search = np.abs(velocity_out) > abs(float(peak_exclude))
+    if not np.any(search):  # window no wider than the exclusion: search it all
+        search[:] = True
+    peak_idx = int(np.argmax(np.where(search, spectrum_out, -np.inf)))
     peak_velocity = float(velocity_out[peak_idx])
     peak_magnitude_db = float(spectrum_out[peak_idx])
 
@@ -220,6 +236,7 @@ def process_cw_frame(iq, fs, signal_freq, output_freq, fft_window="blackman",
         "spectrum_db": spectrum_out.astype(np.float32).tolist(),
         "peak_velocity": peak_velocity,
         "peak_magnitude_db": peak_magnitude_db,
+        "peak_exclude": abs(float(peak_exclude)),
         "n_samples": n,
         "sample_rate": float(fs),
         "signal_freq": float(signal_freq),
