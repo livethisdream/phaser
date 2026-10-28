@@ -322,6 +322,14 @@ class PhaserHeadless:
             self.Rx_gain + self.channel_cal[1],
         )
 
+        # Free the Rx and Tx DMA, the phaser_enable pin and the ADF4159 from
+        # whatever an FMCW session left behind. They outlive this process: a
+        # session that crashed or was killed, or a lab script, leaves the TDD
+        # channels idling low, and then no Rx buffer fills and no Tx tone
+        # leaves. Before the first capture, so the sweep's buffer is not the
+        # first casualty.
+        self._reset_fmcw_leftovers()
+
         # Ask once whether this kit can run FMCW, so the radar UI can say why
         # not instead of showing an empty plot. Read-only, and never raises.
         self.fmcw_capability = self._probe_fmcw()
@@ -1304,6 +1312,36 @@ class PhaserHeadless:
                 print(f"[CW] live param update failed: {e}")
                 return {"status": "error", "message": str(e)}
         return {"status": "ok", "params": self.cw_params}
+
+    def _reset_fmcw_leftovers(self):
+        """Undo what an FMCW session that never exited cleanly left behind.
+
+        Three pieces of state outlive the process, and FMCW exit resets each:
+        the Pluto TDD (release_tdd), the Pluto's phaser_enable pin, and the
+        ADF4159 ramp. Each is reset on its own, and none raises: a Pluto
+        without the TDD core or the pin (older firmware) has nothing to reset,
+        and must still come up for beamforming.
+        """
+        if self.sim_mode:
+            return
+        if hasattr(adi, "tddn"):
+            try:
+                phaser_fmcw_radar.release_tdd(adi.tddn(self.sdr_ip))
+                print("[TDD] Pluto TDD released (non-TDD mode)")
+            except Exception as e:
+                print(f"[TDD] No Pluto TDD to release: {e}")
+        try:
+            pins = adi.one_bit_adc_dac(self.sdr_ip)
+            if hasattr(pins, "gpio_phaser_enable"):
+                pins.gpio_phaser_enable = False
+                print("[TDD] Pluto phaser_enable cleared")
+        except Exception as e:
+            print(f"[TDD] No Pluto phaser_enable to clear: {e}")
+        try:
+            phaser_fmcw_radar.stop_ramp(adi.adf4159(self.rpi_ip))
+            print("[LO] ADF4159 ramp disabled")
+        except Exception as e:
+            print(f"[LO] Could not disable the ADF4159 ramp: {e}")
 
     def _probe_fmcw(self):
         """Run the FMCW capability probe against the contexts already open."""

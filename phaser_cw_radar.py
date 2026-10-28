@@ -45,6 +45,11 @@ from phaser_radar_dsp import (  # noqa: F401
 _build_iq_tone = build_iq_tone
 
 
+# libiio timeout for radar captures, ms. A CW buffer takes ~110 ms and the
+# longest FMCW one ~430 ms, so this only ever fires on a capture that is stuck.
+RX_TIMEOUT_MS = 5000
+
+
 def apply_taper(array, taper):
     """Latch a taper into the ADAR1000 array. Returns the gains actually sent.
 
@@ -85,6 +90,24 @@ def apply_boresight(array, phase_cal=None):
     ADAR_set_Phase(array, 0.0, 1.0, phases)
     print(f"[ADAR] Boresight phases latched: {[round(p, 1) for p in phases]}")
     return phases
+
+
+def set_rx_buffer_size(sdr, n):
+    """Set rx_buffer_size so the next rx() actually uses it.
+
+    pyadi creates the Rx buffer on the first rx() and keeps it: a new
+    rx_buffer_size is only read when a buffer is created. Without the destroy,
+    every mode change went on reading whatever size the first capture after
+    startup had made -- FMCW range_sync read range_doppler's 2**19 samples,
+    and the sweep after a radar mode read the radar's.
+    """
+    destroy = getattr(sdr, "rx_destroy_buffer", None)
+    if destroy is not None:
+        try:
+            destroy()
+        except Exception as e:
+            print(f"[SDR] Warning: could not destroy the Rx buffer: {e}")
+    sdr.rx_buffer_size = int(n)
 
 
 def _tx_channel_count(sdr):
@@ -165,7 +188,7 @@ def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None,
     # Configure SDR for CW
     sdr.sample_rate = fs
     sdr.rx_rf_bandwidth = fs
-    sdr.rx_buffer_size = n
+    set_rx_buffer_size(sdr, n)
     sdr.rx_lo = rx_lo
     sdr.tx_lo = tx_lo
     sdr.gain_control_mode_chan0 = "manual"
@@ -190,8 +213,11 @@ def enter_cw_mode(sdr, params, saved_state=None, array=None, rpi_ip=None,
 
     # Build cyclic IQ tone
     iq = build_iq_tone(fs, n, sig_freq)
+    # Finite. This was 0 (wait forever), so a capture that never filled hung
+    # the main loop, and with it the WebSocket and every client, instead of
+    # raising something the mode could unwind from.
     try:
-        sdr._ctx.set_timeout(0)
+        sdr._ctx.set_timeout(RX_TIMEOUT_MS)
     except Exception:
         pass
 
@@ -285,7 +311,9 @@ def restore_sdr(sdr, saved_state, tag="radar"):
     """Put back whatever snapshot_sdr recorded, and nothing else."""
     try:
         for key in _SDR_SNAPSHOT_KEYS:
-            if key in saved_state:
+            if key == "rx_buffer_size" and key in saved_state:
+                set_rx_buffer_size(sdr, saved_state[key])
+            elif key in saved_state:
                 setattr(sdr, key, int(saved_state[key]))
         for key in _SDR_SNAPSHOT_OPTIONAL:
             if key in saved_state and hasattr(sdr, key):

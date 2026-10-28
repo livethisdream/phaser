@@ -191,3 +191,102 @@ def test_a_failed_boresight_write_fails_the_start_and_unwinds(monkeypatch, mode)
     assert "ADAR1000 write failed" in resp.get("message", "")
     assert h.mode == "idle"
     assert [h.array.elements[i + 1].latched_gain for i in range(8)] == expected_gains
+
+
+# --- FMCW leftovers are reset at startup (calibration-bugs.md, bug 6) ----------
+
+class _Pins:
+    def __init__(self, uri):
+        self.uri = uri
+        self.gpio_phaser_enable = True
+
+
+class _Synth:
+    def __init__(self, uri):
+        self.uri = uri
+        self.ramp_mode = "single_sawtooth_burst"
+        self.tx_trig_en = 1
+        self.enable = 1
+
+
+def _bare_backend(monkeypatch, tddn, pins=_Pins, synth=_Synth):
+    try:
+        import phaser_headless
+    except Exception as exc:  # pragma: no cover - depends on the runner
+        pytest.skip(f"phaser_headless unavailable: {exc}")
+    made = {"pins": [], "synth": []}
+    monkeypatch.setattr(phaser_headless.adi, "tddn", tddn, raising=False)
+    monkeypatch.setattr(phaser_headless.adi, "one_bit_adc_dac",
+                        lambda uri: made["pins"].append(pins(uri)) or made["pins"][-1],
+                        raising=False)
+    monkeypatch.setattr(phaser_headless.adi, "adf4159",
+                        lambda uri: made["synth"].append(synth(uri)) or made["synth"][-1],
+                        raising=False)
+    h = phaser_headless.PhaserHeadless.__new__(phaser_headless.PhaserHeadless)
+    h.sim_mode = False
+    h.sdr_ip = "ip:192.168.2.1"
+    h.rpi_ip = "ip:localhost"
+    h._made = made
+    return h
+
+
+def test_startup_releases_a_tdd_left_holding_the_rx_dma(monkeypatch):
+    released = []
+
+    class Chan:
+        polarity = False
+
+    class Tdd:
+        def __init__(self, uri):
+            self.uri = uri
+            self.enable = False
+            self.channel = [Chan(), Chan(), Chan()]
+
+        def __setattr__(self, k, v):
+            object.__setattr__(self, k, v)
+            if k == "enable":
+                released.append(v)
+
+    made = []
+    h = _bare_backend(monkeypatch, lambda uri: made.append(Tdd(uri)) or made[-1])
+    h._reset_fmcw_leftovers()
+    assert made[0].uri == "ip:192.168.2.1"
+    assert made[0].channel[1].polarity is True and made[0].channel[2].polarity is True
+    assert released[-2:] == [True, False]
+
+
+def test_startup_clears_phaser_enable_and_stops_the_ramp(monkeypatch):
+    def no_tdd(uri):
+        raise OSError("No device found")
+
+    h = _bare_backend(monkeypatch, no_tdd)
+    h._reset_fmcw_leftovers()
+    pins, synth = h._made["pins"][0], h._made["synth"][0]
+    assert pins.uri == "ip:192.168.2.1" and pins.gpio_phaser_enable is False
+    assert synth.uri == "ip:localhost"
+    assert (synth.ramp_mode, synth.tx_trig_en, synth.enable) == ("disabled", 0, 0)
+
+
+def test_startup_survives_a_kit_without_pins_or_synth(monkeypatch):
+    def gone(uri):
+        raise OSError("No device found")
+
+    h = _bare_backend(monkeypatch, gone, pins=gone, synth=gone)
+    h._reset_fmcw_leftovers()  # must not raise
+
+
+def test_startup_survives_a_pluto_without_a_tdd(monkeypatch):
+    def no_tdd(uri):
+        raise OSError("No device found")
+
+    h = _bare_backend(monkeypatch, no_tdd)
+    h._reset_fmcw_leftovers()  # must not raise
+
+
+def test_startup_release_is_skipped_in_sim(monkeypatch):
+    def boom(uri):
+        raise AssertionError("sim must not open a TDD")
+
+    h = _bare_backend(monkeypatch, boom, pins=boom, synth=boom)
+    h.sim_mode = True
+    h._reset_fmcw_leftovers()

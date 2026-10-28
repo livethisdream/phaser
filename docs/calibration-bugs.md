@@ -1,4 +1,4 @@
-# Why calibration goes deaf, and the five bugs behind it
+# Why calibration goes deaf, and the six bugs behind it
 
 Every failure in this document looks identical from the console: calibration
 reports that no signal is reaching the array, or it completes and writes
@@ -7,10 +7,10 @@ writes are accepted, the readbacks agree, and MUXOUT is not wired as lock
 detect on this board — it reads 0 at every LO, including one demonstrably
 producing a 43 dB beam pattern. There is nothing to catch.
 
-**Three of the five come from the upstream ADI examples**, so they are waiting
+**Three of the six come from the upstream ADI examples**, so they are waiting
 in any kit built from
 [`pyadi-iio/examples/phaser`](https://github.com/analogdevicesinc/pyadi-iio/tree/main/examples/phaser),
-not just from this repo. The other two are ours. All five are fixed here; this
+not just from this repo. The other three are ours. All six are fixed here; this
 document exists so the next person who sees a flat beam pattern can tell which
 of them they are looking at, and so the reasoning survives the people who did
 it.
@@ -22,6 +22,7 @@ it.
 | 3 | Captures return the previous tuning | ADI | HB100 search lands ~8 MHz off a real tone |
 | 4 | Phase cal takes an argmax, not a null | **this repo** | Cal completes; reruns disagree by 104° |
 | 5 | Radar modes inherit unwritten phases | **this repo** | After a restart, radar sees only 0 m leakage; upstream on the same kit sees targets |
+| 6 | FMCW exit leaves the TDD gating the Rx and Tx DMA | **this repo** | After any FMCW session, the next new Rx buffer never fills (Errno 110, or a hung backend), and CW transmits nothing |
 
 ---
 
@@ -270,6 +271,55 @@ instead of running deaf. Exit does not restore phases; the sweep rewrites all
 eight on every angle. `tests/test_boresight_phases.py` asserts on the stub's
 *latched* phase, so a write without a latch fails it.
 
+## 6. FMCW exit left the TDD holding the Rx and Tx DMA — ours
+
+Synced FMCW enables the Pluto's TDD engine and sets every channel's polarity
+to 0. With the engine off, each channel idles at its polarity, and channel 1
+low stops the Rx DMA. Our exit only wrote `enable = False`, so after any FMCW
+session the Pluto was left unable to fill an Rx buffer. The state lives on the
+Pluto, so it outlived the process and survived service restarts.
+
+It went unseen until the Rx buffer was rebuilt. pyadi creates the buffer once
+and keeps it, and nothing ever destroyed it, so every capture after startup
+reused a buffer created before the gate closed. Once mode changes rebuilt it
+(so that `rx_buffer_size` took effect), CW after FMCW hung on its first
+capture. CW set the libiio timeout to 0, which is "forever", so the main loop,
+the WebSocket and both UIs went with it.
+
+On phaser-01, a plain capture with a fresh buffer and a 3 s timeout:
+
+| TDD state (engine off) | Capture |
+| --- | --- |
+| As our exit left it: channels enabled, all polarity 0 | Errno 110 |
+| Channels disabled | Errno 110 |
+| `sync_external = 0`, enable toggled | Errno 110 |
+| Channel 1 polarity 1, enable toggled to latch | **OK, 20 ms** |
+| Channel 1 back to 0 / back to 1 | Errno 110 / OK |
+
+Channel 2 does the same to the Tx DMA. The first fix copied upstream's
+`end_program` (channel 1 to `not phaser_enable`, channel 2 to
+`phaser_enable`), with `phaser_enable` taken as 0, so it idled channel 2 low.
+CW then started cleanly, but its cyclic tone never left the Pluto: no Tx→Rx
+leakage line, no echo, a spectrum of pure noise whose "peak" was whichever
+noise bin was loudest. FMCW never shows it, because it runs the engine itself.
+
+On phaser-01, CW at 1.8 GHz, full ±300 kHz band:
+
+| TDD state (engine off) | Line at +100 kHz (0 m/s) |
+| --- | --- |
+| Channel 1 high, channel 2 low | none: floor −115 dB, nothing above it but DC |
+| Same, at 4 MHz instead of 600 kHz | none |
+| Same, after resetting the ramp and `phaser_enable` (below) | none |
+| Channel 2 high, enable toggled to latch | **−46.6 dB, 67 dB over the floor** |
+
+The fix, `phaser_fmcw_radar.release_tdd()`, idles channels 1 and 2 high and
+toggles `enable` to latch them, on exit and again at startup, because a
+session that crashed, was killed, or was a lab script leaves the same state
+behind. Two more things outlive such a session and are reset at startup with
+it: the Pluto's `phaser_enable` pin (left at 1) and the ADF4159 (left in
+`single_sawtooth_burst`, `stop_ramp()`). CW's libiio timeout is now 5 s, so a
+stuck capture raises instead of hanging the backend.
+
 ---
 
 ## How these were separated
@@ -330,6 +380,8 @@ The chain this ran on:
 | Cal completes, reruns disagree by tens of degrees | Bug 4 — check the fit quality line |
 | Cal completes, beam pattern is flat | Phase cal ran against an off-boresight source |
 | Radar peaks pinned at 0 m, MTI shows nothing moving | Bug 5 — check `Boresight phases latched` in the log |
+| Every capture times out (Errno 110), or the UI disconnects after a radar mode | Bug 6 — check `Pluto TDD released` in the log, and `iio_attr -u ip:192.168.2.1 -c iio-axi-tdd-0 channel1 polarity` reads 1 |
+| CW shows only noise, with no line at 0 m/s | Bug 6 — `channel2 polarity` must read 1, or the Tx tone never leaves the Pluto |
 
 ---
 

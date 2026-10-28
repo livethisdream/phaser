@@ -377,6 +377,9 @@ class SimSDR:
     def tx_destroy_buffer(self):
         self._tx_buffer = None
 
+    def rx_destroy_buffer(self):
+        pass
+
     def _synthesize_cw(self):
         """CW radar scene: the IF tone plus one Doppler-shifted line per target.
 
