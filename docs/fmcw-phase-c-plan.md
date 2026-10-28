@@ -468,3 +468,28 @@ first three fixed in `fix/fmcw-coherence`.
   at 2**19 samples: refill ~307 ms, four per-channel reads ~119 ms, ~554 ms
   frame to frame, identical to upstream. 5 fps needs a smaller capture; one
   raw read plus a numpy de-interleave may save ~100 ms (unmeasured).
+
+## Next (as of 2026-10-28)
+
+PR #60 (FMCW coherence, Rx buffer resize and arming, TDD release with
+channel 2 high; calibration-bugs.md bug 6) and PR #61 (CW `center_freq`
+defaults to the kit IF) are merged and verified on phaser-01. Still open,
+in order:
+
+1. **CW peak readout sits on the leakage line.** `process_cw_frame` takes the
+   argmax over the whole window, which includes the 0 m/s Tx→Rx leakage, so
+   the reported velocity is always about 0 m/s and jitters. Exclude about ±0.3 m/s
+   from the peak search. Python first, then `frontend/src/sim/`, plus a case in
+   `tests/test_sim_parity.py`.
+2. **Shutdown traceback.** Every service stop logs `Exception in thread
+   Thread-1` from the exiting process. Harmless so far, but it hides real
+   faults in the journal.
+3. **Capture speed (PR B).** `range_doppler` is ~554 ms a frame, mostly the
+   USB transfer, the same as upstream. Measure before changing anything:
+   raw read and deinterleave instead of the per-channel copies in `rx()`,
+   in-place channel sum.
+4. **C3, C4, C5** above.
+5. **Pi clock.** No RTC and no NTP client; `phaser-clock` tries HTTP once at
+   boot, so a late network leaves the clock wrong (tar warns about future
+   timestamps on install).
+6. **Merge `radar-dev` into `main`** once the radar work is ready.
