@@ -961,11 +961,23 @@ class PhaserHeadless:
 
     # --- CW Radar handlers ------------------------------------------------
 
+    def _cw_params_with_kit_if(self):
+        """cw_params with center_freq defaulted to this kit's characterized IF.
+
+        As FMCW does (_fmcw_effective_cfg): the DEFAULTS value is one kit's IF,
+        and kits differ by ~200 MHz, so it leaves some deaf. One the client
+        sent wins; None (the radar UI's empty field) means "the kit's IF".
+        """
+        params = dict(self.cw_params or {})
+        if params.get("center_freq") is None:
+            params["center_freq"] = self.Rx_freq
+        return params
+
     def _enter_cw(self):
         self.cw_saved_sdr = {}
         self.cw_params = phaser_cw_radar.enter_cw_mode(
             self.sdr,
-            self.cw_params,
+            self._cw_params_with_kit_if(),
             self.cw_saved_sdr,
             array=self.array,
             rpi_ip=self._cw_rpi_ip(),

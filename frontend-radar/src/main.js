@@ -412,18 +412,33 @@ function handleRadarFrame(frame) {
 
 /* --- Param plumbing --- */
 function readParams() {
-    return {
+    const params = {
         sample_rate: parseFloat(document.getElementById('sample-rate').value) * 1e3,
         fft_size: parseInt(document.getElementById('fft-size').value, 10),
         signal_freq: parseFloat(document.getElementById('signal-freq').value) * 1e3,
         output_freq: parseFloat(document.getElementById('output-freq').value) * 1e9,
-        center_freq: parseFloat(document.getElementById('center-freq').value) * 1e9,
         rx_gain: parseFloat(document.getElementById('rx-gain').value),
         tx_gain: parseFloat(document.getElementById('tx-gain').value),
         fft_window: document.getElementById('fft-window').value,
         taper: state.taper,
         vel_max: state.vel_max,
     };
+    // Empty means "this kit's IF": null, not omitted, so the backend drops a
+    // value an earlier Start left in its stored params and uses its own.
+    const center = parseFloat(document.getElementById('center-freq').value);
+    params.center_freq = Number.isFinite(center) ? center * 1e9 : null;
+    return params;
+}
+
+/* Show this kit's measured IF in the Center Freq field. Kits differ by ~200
+   MHz, so a fixed default leaves some deaf. A value the user typed stays. */
+function showKitIf(backendState) {
+    const field = document.getElementById('center-freq');
+    // The state push wraps get_state(), which nests its fields under `data`.
+    const ifHz = Number(backendState?.data?.Rx_freq ?? backendState?.Rx_freq);
+    if (field && field.value === '' && Number.isFinite(ifHz) && ifHz > 0) {
+        field.value = (ifHz / 1e9).toFixed(3);
+    }
 }
 
 let pushTimer = null;
@@ -450,7 +465,8 @@ const transport = createWebTransport({
     },
     onMessage: (msg) => {
         if (msg.type === 'state') {
-            // Initial state push from backend; not radar-specific.
+            // Initial state push from backend. Only the kit's IF is used here.
+            showKitIf(msg.data);
             return;
         }
         if (msg.type === 'response') return;  // handled by invoke()
