@@ -97,7 +97,9 @@ def run_case(velocity, label):
 # monotonic axis, no NaN, peak velocity within three bins, JSON round-trip --
 # but nothing in the file was named test_*, so pytest collected zero tests and
 # passed vacuously. main() is kept so the file still runs as a script.
-CASES = (-12.0, -2.5, 0.0, 5.0, 17.0)
+# No 0.0: the peak search skips the 0 m/s leakage line, so a stationary
+# target is not reported by design (test_stationary_target_* below).
+CASES = (-12.0, -2.5, -0.5, 0.5, 5.0, 17.0)
 
 
 if pytest is not None:
@@ -198,6 +200,52 @@ if pytest is not None:
         wrong = process_cw_frame(iq, fs=fs, signal_freq=sig, output_freq=out_f / 2)
         assert abs(right["peak_velocity"] - 4.0) < 0.2
         assert abs(wrong["peak_velocity"] - 8.0) < 0.4
+
+
+if pytest is not None:
+    def _leaky(velocity, leak=30.0):
+        """synthesize() with the leakage the hardware actually has: the Tx
+        tone arriving direct, far stronger than the echo."""
+        fs, n, sig = DEFAULTS["sample_rate"], DEFAULTS["fft_size"], DEFAULTS["signal_freq"]
+        out_f = DEFAULTS["output_freq"]
+        t = np.arange(n) / fs
+        iq = synthesize(fs, n, sig, velocity, out_f)
+        iq = iq + leak * (2 ** 11) * np.exp(1j * 2 * np.pi * sig * t)
+        return iq, dict(fs=fs, signal_freq=sig, output_freq=out_f)
+
+    @pytest.mark.parametrize("velocity", [-3.0, -0.6, 0.6, 3.0])
+    def test_peak_skips_the_leakage_line(velocity):
+        """The bench bug: with leakage 30 dB over the echo, the old whole-window
+        argmax reported ~0 m/s for any motion."""
+        np.random.seed(0)
+        iq, kw = _leaky(velocity)
+        old = process_cw_frame(iq, peak_exclude=0, **kw)
+        assert abs(old["peak_velocity"]) < 0.2, "fixture lost its leakage line"
+        new = process_cw_frame(iq, **kw)
+        assert abs(new["peak_velocity"] - velocity) < 0.2
+        assert new["peak_exclude"] == DEFAULTS["peak_exclude"]
+
+    def test_peak_exclude_leaves_the_spectrum_alone():
+        np.random.seed(0)
+        iq, kw = _leaky(2.0)
+        a = process_cw_frame(iq, peak_exclude=0, **kw)
+        b = process_cw_frame(iq, peak_exclude=1.0, **kw)
+        assert a["spectrum_db"] == b["spectrum_db"]
+        assert a["velocity_axis"] == b["velocity_axis"]
+
+    def test_stationary_target_is_not_reported_by_design():
+        """CW cannot separate a stationary target from leakage; the readout
+        reports the strongest return outside the exclusion instead."""
+        np.random.seed(0)
+        iq, kw = _leaky(0.0)
+        r = process_cw_frame(iq, **kw)
+        assert abs(r["peak_velocity"]) > DEFAULTS["peak_exclude"]
+
+    def test_exclusion_wider_than_the_window_falls_back_to_all_of_it():
+        np.random.seed(0)
+        iq, kw = _leaky(0.1)
+        r = process_cw_frame(iq, vel_max=0.5, peak_exclude=1.0, **kw)
+        assert abs(r["peak_velocity"]) < 0.2
 
 
 def main():

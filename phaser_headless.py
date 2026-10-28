@@ -1396,6 +1396,7 @@ class PhaserHeadless:
             output_freq=cfg["output_freq"],
             fft_window=cfg.get("fft_window", "blackman"),
             vel_max=cfg.get("vel_max"),
+            peak_exclude=cfg.get("peak_exclude"),
         )
 
     def shutdown_permitted(self):
