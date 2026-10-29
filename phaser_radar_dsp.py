@@ -20,6 +20,14 @@ from math import lcm
 
 import numpy as np
 
+# scipy.fft when present: it keeps complex64 in single precision (numpy.fft
+# only does from numpy 2.0; the Pi runs 1.24) and spreads a 2D transform
+# over every core. Optional, because the DSP must import anywhere.
+try:
+    import scipy.fft as _sfft
+except ImportError:  # pragma: no cover -- exercised by monkeypatching _sfft
+    _sfft = None
+
 
 # Physical constants
 C = 299_792_458.0
@@ -456,6 +464,33 @@ def range_profile(iq, sample_rate, chirp_bw, ramp_time, zero_range_freq=0.0,
     }
 
 
+def _fast_len(n):
+    """Smallest length >= n whose only prime factors are 2, 3 and 5.
+
+    The settled part of a chirp is whatever length the plan gives -- 1079
+    samples for range_doppler, and 1079 = 13 * 83. An FFT of that length took
+    2.5x as long as one of 1080. Zero-padding to here costs nothing in
+    amplitude (the padded samples add nothing to any bin) and only reshapes
+    the range bins, which the axis follows.
+    """
+    k = max(int(n), 1)
+    while True:
+        m = k
+        for p in (2, 3, 5):
+            while m % p == 0:
+                m //= p
+        if m == 1:
+            return k
+        k += 1
+
+
+def _fft(x, axis, n=None):
+    """One FFT along `axis`: scipy on all cores if present, else numpy."""
+    if _sfft is not None:
+        return _sfft.fft(x, n=n, axis=axis, workers=-1)
+    return np.fft.fft(x, n=n, axis=axis)
+
+
 def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq,
                       zero_range_freq=0.0, fft_window="blackman",
                       range_max=None, range_min=0.0, vel_max=None):
@@ -469,6 +504,13 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     The Doppler axis is derived from the matrix's own column count, not from
     any requested num_chirps -- MTI has usually eaten one or two columns by
     the time this runs.
+
+    Cost (phaser-00, 2026-10-29, 1079 x 256, tools/bench_fmcw_capture.py):
+    121 ms as a full map then cropped, 31 ms as now. The range crop happens
+    before the slow-time FFT, so that FFT, the magnitude and the dB run on
+    the ~60 displayed range bins instead of all ~540; the fast-time FFT is
+    padded to a 5-smooth length; and with scipy present the whole thing is
+    complex64 on every core (at most 0.0012 dB from the float64 map).
     """
     matrix = np.asarray(matrix)
     if matrix.ndim != 2:
@@ -477,16 +519,13 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     if n_fast < 2 or n_slow < 2:
         raise ValueError(f"matrix too small for a 2D FFT: {matrix.shape}")
 
-    win_fast = window(fft_window, n_fast)[:, None]
-    win_slow = window(fft_window, n_slow)[None, :]
+    n_fft = _fast_len(n_fast)
+    real, cplx = (np.float32, np.complex64) if _sfft is not None else (np.float64, np.complex128)
+    w_fast = window(fft_window, n_fast)
+    w_slow = window(fft_window, n_slow)
+    win_sum = float(np.sum(w_fast)) * float(np.sum(w_slow)) / n_slow
 
-    spec = np.fft.fft(matrix * win_fast, axis=0)[: n_fast // 2, :]
-    spec = np.fft.fft(spec * win_slow, axis=1)
-    spec = np.fft.fftshift(spec, axes=1)
-
-    map_db = _to_db(np.abs(spec), np.sum(win_fast) * np.sum(win_slow) / n_slow)
-
-    ranges = _range_bins(n_fast, sample_rate, chirp_bw, ramp_time, zero_range_freq)
+    ranges = _range_bins(n_fft, sample_rate, chirp_bw, ramp_time, zero_range_freq)
     doppler_hz = np.fft.fftshift(np.fft.fftfreq(n_slow, float(pri)))
     velocity = C * doppler_hz / (2.0 * float(output_freq))
 
@@ -504,7 +543,11 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
 
     ranges_out = ranges[rmask]
     velocity_out = velocity[vmask]
-    map_out = map_db[np.ix_(rmask, vmask)]
+
+    x = np.asarray(matrix, dtype=cplx) * w_fast.astype(real)[:, None]
+    spec = _fft(x, axis=0, n=n_fft)[: n_fft // 2][rmask]
+    spec = np.fft.fftshift(_fft(spec * w_slow.astype(real)[None, :], axis=1), axes=1)
+    map_out = _to_db(np.abs(spec[:, vmask]), win_sum)
 
     peak_r, peak_v = np.unravel_index(int(np.argmax(map_out)), map_out.shape)
     return {

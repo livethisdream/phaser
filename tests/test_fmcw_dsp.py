@@ -384,3 +384,83 @@ def test_fmcw_defaults_are_the_labs_values():
     assert FMCW_DEFAULTS["chirp_bw"] == 500e6
     assert FMCW_DEFAULTS["ramp_time"] == 1e-3
     assert FMCW_DEFAULTS["mti"] == "none"
+
+
+# --- range-Doppler cost (C3) --------------------------------------------
+#
+# range_doppler_map() crops before the slow-time FFT, pads the fast-time FFT
+# to a 5-smooth length, and uses scipy.fft in complex64 on all cores when
+# scipy is present (121 -> 31 ms on phaser-00). These pin the result to the
+# straightforward full-map algorithm it replaced, on both FFT backends -- CI
+# has no scipy, so without the monkeypatch only the numpy path would run.
+
+import phaser_radar_dsp as _dsp  # noqa: E402
+
+
+def _reference_map(matrix, fs, bw, ramp, pri, f0, zero, range_max):
+    """The pre-C3 range_doppler_map: full float64 map, then crop."""
+    n_fast, n_slow = matrix.shape
+    wf = _dsp.window("blackman", n_fast)[:, None]
+    ws = _dsp.window("blackman", n_slow)[None, :]
+    spec = np.fft.fft(matrix * wf, axis=0)[: n_fast // 2, :]
+    spec = np.fft.fftshift(np.fft.fft(spec * ws, axis=1), axes=1)
+    map_db = _dsp._to_db(np.abs(spec), np.sum(wf) * np.sum(ws) / n_slow)
+    ranges = _dsp._range_bins(n_fast, fs, bw, ramp, zero)
+    rmask = (ranges >= 0.0) & (ranges <= range_max)
+    return map_db[rmask], ranges[rmask]
+
+
+@pytest.fixture(params=["scipy", "numpy"])
+def fft_backend(request, monkeypatch):
+    if request.param == "scipy":
+        pytest.importorskip("scipy.fft")
+        import scipy.fft
+        monkeypatch.setattr(_dsp, "_sfft", scipy.fft)
+    else:
+        monkeypatch.setattr(_dsp, "_sfft", None)
+    return request.param
+
+
+def test_fast_map_matches_the_full_map(fft_backend):
+    """At a length that needs no padding, the result is the old map."""
+    num_chirps = 64
+    iq = beat_signal([(5.0, 1.5, 1.0), (12.0, -2.0, 0.3)], SPC * num_chirps, num_chirps)
+    matrix = chirp_matrix(iq, num_chirps)
+    assert _dsp._fast_len(matrix.shape[0]) == matrix.shape[0], "fixture needs a 5-smooth SPC"
+    out = range_doppler_map(matrix, FS, CHIRP_BW, RAMP_TIME, PRI, OUTPUT_FREQ,
+                            zero_range_freq=SIGNAL_FREQ, range_max=20.0)
+    ref, ref_ranges = _reference_map(matrix, FS, CHIRP_BW, RAMP_TIME, PRI, OUTPUT_FREQ,
+                                     SIGNAL_FREQ, 20.0)
+    got = np.array(out["map_db"])
+    assert got.shape == ref.shape
+    np.testing.assert_allclose(out["range_axis"], ref_ranges, rtol=1e-6)
+    # complex64 moves deep-null cells by a few thousandths of a dB at most.
+    # numpy: only the float32 rounding of the returned list.
+    assert np.max(np.abs(got - ref)) < (0.01 if fft_backend == "scipy" else 1e-4)
+
+
+def test_awkward_chirp_length_is_padded_and_still_finds_the_target(fft_backend):
+    """range_doppler's real chirp is 1079 = 13 * 83 samples."""
+    num_chirps = 64
+    iq = beat_signal([(6.0, 2.0, 1.0)], SPC * num_chirps, num_chirps)
+    matrix = chirp_matrix(iq, num_chirps)[:-1]  # one short: not 5-smooth
+    assert _dsp._fast_len(matrix.shape[0]) > matrix.shape[0]
+    out = range_doppler_map(matrix, FS, CHIRP_BW, RAMP_TIME, PRI, OUTPUT_FREQ,
+                            zero_range_freq=SIGNAL_FREQ, range_max=20.0)
+    m = np.array(out["map_db"])
+    assert m.shape == (len(out["range_axis"]), len(out["velocity_axis"]))
+    bin_m = float(beat_freq_to_range(FS / SPC, CHIRP_BW, RAMP_TIME))
+    assert abs(out["peak_range"] - 6.0) < 2 * bin_m
+    assert abs(out["peak_velocity"] - 2.0) < 2 * out["velocity_resolution"]
+
+
+@pytest.mark.parametrize("n", [1, 2, 7, 13, 1024, 1079, 1080, 1081])
+def test_fast_len_is_the_next_5_smooth_length(n):
+    def smooth(k):
+        for p in (2, 3, 5):
+            while k % p == 0:
+                k //= p
+        return k == 1
+    k = _dsp._fast_len(n)
+    assert k >= n and smooth(k)
+    assert not any(smooth(j) for j in range(n, k))
