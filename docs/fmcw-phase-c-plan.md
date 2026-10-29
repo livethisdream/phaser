@@ -503,8 +503,16 @@ in order:
    script's 4 (2026-10-29 decision): half the buffer, ~90 m to Nyquist
    against a 20 m display, same velocity resolution. `range_doppler_far` is
    the script exactly (4 MS/s, ~180 m, display to 100 m) for outdoor targets,
-   and any value can still be overridden per run. Expected ~190 ms a frame
-   for `range_doppler`, unmeasured until the kit.
+   and any value can still be overridden per run. Measured on phaser-01:
+   262 ms (3.8 fps) for `range_doppler`, 414 ms for `_far`. 5 fps was out of
+   reach as configured: the refill is the burst itself in real time (256
+   chirps x 0.5 ms = 131 ms) plus the transfer (~12 MB/s, 89 ms at 2 MS/s).
+   **Prefetch** (`capture_fmcw_frame`, `prefetch` param, on by default)
+   fires the next burst as soon as a frame's samples are off the Pluto, so
+   those 131 ms overlap the read, DSP and broadcast; expected ~220 ms
+   (~4.5 fps), to measure with `bench_fmcw_capture.py` against
+   `--no-prefetch`. Beyond that only fewer chirps help (128: ~135 ms, at
+   0.24 m/s velocity resolution) -- a possible `range_doppler_fast` preset.
 4. **C3, C4, C5** above.
 5. **Pi clock.** No RTC and no NTP client; `phaser-clock` tries HTTP once at
    boot, so a late network leaves the clock wrong (tar warns about future

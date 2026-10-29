@@ -886,3 +886,80 @@ def test_plan_records_the_read_path():
     kit = Kit()
     _, plan = kit.enter()
     assert plan["raw_read"] is False  # the recording fake has no libiio buffer
+
+
+# --- prefetch: the next burst runs while this frame is processed -----------
+#
+# phaser-01, 2026-10-29: 131 ms of a 262 ms range_doppler frame was the burst
+# itself (256 chirps x 0.5 ms) inside the refill. With prefetch, frame N fires
+# burst N+1 as soon as its own samples are off the Pluto.
+
+def _ops(kit):
+    """The capture's own sequence: bursts (one per 0->1 edge) and reads."""
+    out = []
+    for name, attr, value in kit.log:
+        if name == "gpios" and attr == "gpio_burst" and value == 1:
+            out.append("burst")
+        elif name == "sdr" and attr == "rx()":
+            out.append("rx")
+    return out
+
+
+def test_prefetch_fires_the_next_burst_right_after_the_read():
+    kit = Kit()
+    _, plan = kit.enter()
+    assert plan["prefetch"] is True
+    # enter's discard frame: its own burst, the read, then the prefetch.
+    assert _ops(kit)[-3:] == ["burst", "rx", "burst"]
+    assert kit.hw.burst_pending
+    kit.log.clear()
+    for _ in range(3):
+        fm.capture_fmcw_frame(kit.sdr, kit.hw, plan)
+    # Never a second burst before a read: each frame reads the burst the last
+    # one fired, then fires the next.
+    assert _ops(kit) == ["rx", "burst"] * 3
+
+
+def test_a_failed_read_clears_the_pending_burst():
+    kit = Kit()
+    _, plan = kit.enter()
+    kit.fail.add(("sdr", "rx()"))
+    with pytest.raises(IOError):
+        fm.capture_fmcw_frame(kit.sdr, kit.hw, plan)
+    assert not kit.hw.burst_pending
+    kit.log.clear()
+    fm.capture_fmcw_frame(kit.sdr, kit.hw, plan)
+    assert _ops(kit) == ["burst", "rx", "burst"], "the next frame re-triggers"
+
+
+def test_prefetch_can_be_turned_off():
+    kit = Kit()
+    _, plan = kit.enter(prefetch=False)
+    assert plan["prefetch"] is False
+    kit.log.clear()
+    fm.capture_fmcw_frame(kit.sdr, kit.hw, plan)
+    fm.capture_fmcw_frame(kit.sdr, kit.hw, plan)
+    assert _ops(kit) == ["burst", "rx", "burst", "rx"]
+    assert not kit.hw.burst_pending
+
+
+def test_free_running_never_prefetches():
+    kit = Kit(synced=False)
+    _, plan = kit.enter(preset="range")
+    assert plan["prefetch"] is False
+    assert "burst" not in _ops(kit)
+
+
+def test_a_new_hardware_holder_starts_with_nothing_in_flight():
+    """Re-entering the mode builds a new FmcwHardware; a burst left in flight
+    by the last one must not make the first frame skip its trigger."""
+    assert fm.FmcwHardware(synth=None).burst_pending is False
+
+
+def test_raw_path_prefetches_before_the_de_interleave():
+    sdr = _raw_sdr()
+    order = []
+    real_read = sdr._rxbuf.read
+    sdr._rxbuf.read = lambda: (order.append("read"), real_read())[1]
+    fm.read_summed(sdr, raw=True, after_refill=lambda: order.append("burst"))
+    assert order == ["burst", "read"]

@@ -192,6 +192,8 @@ def main():
     ap.add_argument("--dir", default=INSTALL_DIR, help="installed backend (default: %(default)s)")
     ap.add_argument("--preset", default="range_doppler")
     ap.add_argument("--frames", type=int, default=20)
+    ap.add_argument("--no-prefetch", action="store_true",
+                    help="fire each burst inside its own frame, as before prefetch")
     args = ap.parse_args()
 
     os.chdir(args.dir)
@@ -200,13 +202,16 @@ def main():
 
     h = phaser_headless.PhaserHeadless(pub_port=15555, rep_port=15556)
     try:
-        resp = h.start_fmcw_radar({"preset": args.preset})
+        params = {"preset": args.preset}
+        if args.no_prefetch:
+            params["prefetch"] = False
+        resp = h.start_fmcw_radar(params)
         if resp.get("status") != "ok":
             sys.exit(f"could not enter FMCW: {resp.get('message')}")
         sdr, hw, plan = h.sdr, h.fmcw_hw, h.fmcw_plan
         print(f"\n{args.preset}: {plan['num_chirps']} chirp(s), PRI {plan['pri_ms']} ms, "
               f"buffer {plan['rx_buffer_size']} samples at {plan['sample_rate'] / 1e6:g} MS/s, "
-              f"{args.frames} frames\n")
+              f"prefetch {'on' if plan.get('prefetch') else 'off'}, {args.frames} frames\n")
 
         for _ in range(2):  # warm-up
             h.do_fmcw_radar_frame()
@@ -230,6 +235,12 @@ def main():
         nchan = 2 * len(sdr.rx_enabled_channels)
         if nchan != 4:
             sys.exit(f"expected 2 Rx channels enabled, found {sdr.rx_enabled_channels}")
+
+        # The split below triggers its own bursts; collect the one prefetch
+        # left in flight first, or every refill would return the previous one.
+        if getattr(hw, "burst_pending", False):
+            buf.refill()
+            hw.burst_pending = False
 
         refill, stock, fast, equal, maxdiff = [], [], [], 0, 0.0
         for _ in range(args.frames):

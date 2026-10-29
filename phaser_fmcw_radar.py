@@ -276,6 +276,10 @@ class FmcwHardware:
         self.pluto_pins = pluto_pins
         self.phaser_gpios = phaser_gpios
         self.pluto_labels = set(pluto_labels or ())
+        # A burst fired ahead of the frame that will read it (prefetch). Lives
+        # here, not on the plan, because it is hardware state: a new
+        # FmcwHardware -- every enter -- starts with nothing in flight.
+        self.burst_pending = False
 
     @classmethod
     def open(cls, adi_module, rpi_ip, sdr_ip, phaser_gpios, synced=True):
@@ -466,6 +470,7 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
     if synced:
         arm_rx(sdr)
     plan["raw_read"] = synced and raw_read_ok(sdr)
+    plan["prefetch"] = synced and bool(cfg.get("prefetch", True))
     if plan["raw_read"]:
         print("[FMCW] Rx: one raw buffer read per frame")
 
@@ -524,8 +529,12 @@ def raw_read_ok(sdr):
     return True
 
 
-def read_summed(sdr, raw=False):
-    """One Rx buffer, the two channels summed. `raw` only if raw_read_ok()."""
+def read_summed(sdr, raw=False, after_refill=None):
+    """One Rx buffer, the two channels summed. `raw` only if raw_read_ok().
+
+    `after_refill` runs as soon as the samples are off the Pluto -- before
+    the de-interleave on the raw path, after rx() on the stock one.
+    """
     if raw and getattr(sdr, "_rxbuf", None) is not None:
         buf = sdr._rxbuf
         try:
@@ -535,6 +544,8 @@ def read_summed(sdr, raw=False):
             # the next frame's rx() rebuilds it instead of reusing a dead one.
             sdr._rxbuf = None
             raise
+        if after_refill is not None:
+            after_refill()
         x = np.frombuffer(buf.read(), dtype="<i2").reshape(-1, 4)
         out = np.empty(x.shape[0], dtype=np.complex64)
         out.real = x[:, 0]
@@ -543,21 +554,41 @@ def read_summed(sdr, raw=False):
         out.imag += x[:, 3]
         return out
     data = sdr.rx()
+    if after_refill is not None:
+        after_refill()
     return data[0] + data[1]
+
+
+def fire_burst(hw):
+    """Pulse the Phaser's burst GPIO: one TDD burst of num_chirps chirps."""
+    gpios = hw.phaser_gpios
+    gpios.gpio_burst = 0
+    gpios.gpio_burst = 1
+    gpios.gpio_burst = 0
 
 
 def capture_fmcw_frame(sdr, hw, plan):
     """One frame: trigger the burst (synced only), read, sum, slice.
 
+    With plan["prefetch"], the next frame's burst is fired as soon as this
+    one's samples are off the Pluto, so its chirps -- num_chirps * PRI of real
+    time, 128 ms for range_doppler -- run while this frame is read, processed
+    and broadcast, instead of after. phaser-01, 2026-10-29: of a 262 ms
+    range_doppler frame, 131 ms was the burst itself inside the refill.
+
     Returns slice_chirps' samples x chirps matrix for the synced ramp, or the
     raw summed buffer for the free-running one.
     """
+    after = None
     if plan["synced"]:
-        gpios = hw.phaser_gpios
-        gpios.gpio_burst = 0
-        gpios.gpio_burst = 1
-        gpios.gpio_burst = 0
-    summed = read_summed(sdr, raw=plan.get("raw_read", False))
+        if not (plan.get("prefetch") and hw.burst_pending):
+            fire_burst(hw)
+        hw.burst_pending = False
+        if plan.get("prefetch"):
+            def after():
+                fire_burst(hw)
+                hw.burst_pending = True
+    summed = read_summed(sdr, raw=plan.get("raw_read", False), after_refill=after)
     return slice_chirps(summed, plan)
 
 

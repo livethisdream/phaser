@@ -676,6 +676,7 @@ TDD_OFF_RAW = 10
 FMCW_HW_DEFAULTS = {
     "pri_guard_ms": 1.0,   # PRI = ramp + this; the scripts use 0.2 or 1.0
     "fft_size": 4096,      # free-running Rx buffer (RADAR_FFT_Waterfall.py)
+    "prefetch": True,      # synced: fire the next burst while this frame is processed
 }
 
 # One preset per lab. Values come from the script the lab runs, except where
