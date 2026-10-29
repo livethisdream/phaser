@@ -60,6 +60,7 @@ ADF4159_RAMP_ATTRS = (
 # triangle is what RADAR_FFT_Waterfall.py runs, and needs no TDD at all, so it
 # is the fallback when the sync chain is missing. Defined beside the plans that
 # depend on them, in phaser_radar_dsp.
+import numpy as np  # noqa: E402
 from phaser_radar_dsp import (  # noqa: E402
     RAMP_FREE_RUNNING,
     RAMP_SYNCED,
@@ -464,6 +465,9 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
     set_rx_buffer_size(sdr, plan["rx_buffer_size"])
     if synced:
         arm_rx(sdr)
+    plan["raw_read"] = synced and raw_read_ok(sdr)
+    if plan["raw_read"]:
+        print("[FMCW] Rx: one raw buffer read per frame")
 
     # 6. The Tx tone.
     _land(saved, STEP_TX)
@@ -487,6 +491,61 @@ def enter_fmcw_mode(sdr, params, saved, hw, array=None, ramp_mode=RAMP_SYNCED,
     return cfg, plan
 
 
+def raw_read_ok(sdr):
+    """Whether one raw buffer read can stand in for pyadi's rx() on this SDR.
+
+    pyadi's libiio 0.x path converts the buffer one channel at a time --
+    four full passes for two complex channels -- then builds float64 complex
+    arrays and leaves the channel sum to us. On phaser-00 (2026-10-29,
+    range_doppler, 2**19 samples) that took 244 ms a frame against 39 ms for
+    a single buffer.read() and a numpy de-interleave, and the two gave
+    bit-identical sums on 20 of 20 frames (tools/bench_fmcw_capture.py).
+
+    The raw path assumes what that run verified: two complex channels
+    interleaved I0 Q0 I1 Q1, each little-endian int16, unshifted and
+    already sign-extended (the AD9361 reports 12 bits in 16). Anything else
+    -- the simulator, libiio 1.x's stream path (no _rxbuf), another format
+    -- keeps the stock rx().
+    """
+    if getattr(sdr, "_rxbuf", None) is None:
+        return False
+    try:
+        if list(sdr.rx_enabled_channels) != [0, 1]:
+            return False
+        names = list(sdr._rx_channel_names)[:4]
+        if len(names) != 4:
+            return False
+        for name in names:
+            df = sdr._rxadc.find_channel(name).data_format
+            if df.length != 16 or df.shift != 0 or not df.is_signed or df.is_be:
+                return False
+    except Exception:  # noqa: BLE001 -- any doubt means the stock read
+        return False
+    return True
+
+
+def read_summed(sdr, raw=False):
+    """One Rx buffer, the two channels summed. `raw` only if raw_read_ok()."""
+    if raw and getattr(sdr, "_rxbuf", None) is not None:
+        buf = sdr._rxbuf
+        try:
+            buf.refill()
+        except Exception:
+            # As pyadi does: drop the buffer while the device is alive, so
+            # the next frame's rx() rebuilds it instead of reusing a dead one.
+            sdr._rxbuf = None
+            raise
+        x = np.frombuffer(buf.read(), dtype="<i2").reshape(-1, 4)
+        out = np.empty(x.shape[0], dtype=np.complex64)
+        out.real = x[:, 0]
+        out.real += x[:, 2]
+        out.imag = x[:, 1]
+        out.imag += x[:, 3]
+        return out
+    data = sdr.rx()
+    return data[0] + data[1]
+
+
 def capture_fmcw_frame(sdr, hw, plan):
     """One frame: trigger the burst (synced only), read, sum, slice.
 
@@ -498,8 +557,7 @@ def capture_fmcw_frame(sdr, hw, plan):
         gpios.gpio_burst = 0
         gpios.gpio_burst = 1
         gpios.gpio_burst = 0
-    data = sdr.rx()
-    summed = data[0] + data[1]
+    summed = read_summed(sdr, raw=plan.get("raw_read", False))
     return slice_chirps(summed, plan)
 
 
