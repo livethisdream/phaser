@@ -190,7 +190,28 @@ def test_unknown_preset_is_rejected():
 
 def test_params_override_the_preset():
     cfg = dsp.fmcw_config({"num_chirps": 32}, preset="range_doppler")
-    assert cfg["num_chirps"] == 32 and cfg["sample_rate"] == 4_000_000
+    assert cfg["num_chirps"] == 32 and cfg["sample_rate"] == 2_000_000
+    far = dsp.fmcw_config({"sample_rate": 2_000_000}, preset="range_doppler_far")
+    assert far["sample_rate"] == 2_000_000 and far["range_max"] == 100.0
+
+
+def test_range_doppler_halves_the_capture_and_keeps_the_velocity_resolution():
+    """2 MHz instead of the script's 4: half the samples to move over USB,
+    the same chirps, PRI and so the same velocity resolution."""
+    near = dsp.chirp_plan(_cfg("range_doppler"), dsp.RAMP_SYNCED, 300)
+    far = dsp.chirp_plan(_cfg("range_doppler_far"), dsp.RAMP_SYNCED, 300)
+    assert near["rx_buffer_size"] * 2 == far["rx_buffer_size"]
+    assert near["num_chirps"] == far["num_chirps"] and near["pri_ms"] == far["pri_ms"]
+    assert far["sample_rate"] == 4_000_000
+
+
+@pytest.mark.parametrize("name", sorted(dsp.FMCW_PRESETS))
+def test_every_preset_reaches_the_range_it_displays(name):
+    """The beat for range_max (plus the IF tone it rides on) stays under
+    Nyquist, or the far end of the display would show folded returns."""
+    cfg = _cfg(name)
+    f_beat = float(dsp.range_to_beat_freq(cfg["range_max"], cfg["chirp_bw"], cfg["ramp_time"]))
+    assert cfg["signal_freq"] + f_beat < cfg["sample_rate"] / 2, name
 
 
 # --- ADF4159 registers ----------------------------------------------------
@@ -264,7 +285,7 @@ def test_range_doppler_plan_matches_the_script_and_the_lab():
     1079 and 119, not the 1080 and 120 hand arithmetic gives: the script's
     int() truncates 1079.9999..., and matching the script is the point.
     """
-    plan = dsp.chirp_plan(_cfg("range_doppler"), dsp.RAMP_SYNCED, 300)
+    plan = dsp.chirp_plan(_cfg("range_doppler_far"), dsp.RAMP_SYNCED, 300)
     assert plan["pri_ms"] == pytest.approx(0.5)
     assert plan["frame_samples"] == 2000
     assert plan["good_ramp_samples"] == 1079
@@ -613,7 +634,7 @@ def test_every_preset_puts_a_whole_number_of_tone_cycles_in_a_pri(name):
 
 
 def test_the_plan_reports_the_step_a_bin_snapped_tone_had():
-    cfg = _cfg("range_doppler", signal_freq=round(1e5 / 4e6 * 2 ** 18) * 4e6 / 2 ** 18)
+    cfg = _cfg("range_doppler_far", signal_freq=round(1e5 / 4e6 * 2 ** 18) * 4e6 / 2 ** 18)
     plan = dsp.chirp_plan(cfg, fm.RAMP_SYNCED, dsp.ramp_time_us(cfg))
     assert plan["chirp_phase_step_deg"] > 1.0
 

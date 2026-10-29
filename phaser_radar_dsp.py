@@ -719,9 +719,28 @@ FMCW_PRESETS = {
         "rx_gain": 20,
         "tx_gain": 0,
     },
-    # Lab pp. 33-36, Range_Doppler_Plot.py; the lab confirms 4 MHz, 300 us,
-    # 256 chirps and a 0.5 ms PRI.
+    # Lab pp. 33-36, Range_Doppler_Plot.py, but at half its 4 MHz -- the one
+    # deliberate departure from a script. The USB transfer is most of a frame
+    # (phaser-00, 2026-10-29: a 308 ms refill of 2**19 samples), and 4 MHz
+    # buys range nobody indoors uses: ~180 m to Nyquist against a 20 m
+    # display. 2 MHz halves the buffer for ~90 m and keeps every other value,
+    # so the velocity resolution the hand-wave and fidget-spinner steps show
+    # is unchanged. range_doppler_far is the script exactly.
     "range_doppler": {
+        "sample_rate": 2_000_000,
+        "output_freq": 9.9e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 300e-6,
+        "num_chirps": 256,
+        "pri_guard_ms": 0.2,
+        "rx_gain": 60,
+        "tx_gain": 0,
+    },
+    # Range_Doppler_Plot.py as written, for outdoor targets: the lab confirms
+    # 4 MHz, 300 us, 256 chirps and a 0.5 ms PRI, and the script plots to
+    # 100 m. About half range_doppler's frame rate. Any single value can
+    # still be overridden per run (set_fmcw_radar_params).
+    "range_doppler_far": {
         "sample_rate": 4_000_000,
         "output_freq": 9.9e9,
         "chirp_bw": 500e6,
@@ -730,6 +749,7 @@ FMCW_PRESETS = {
         "pri_guard_ms": 0.2,
         "rx_gain": 60,
         "tx_gain": 0,
+        "range_max": 100.0,
     },
 }
 

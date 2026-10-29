@@ -499,6 +499,12 @@ in order:
    slow-time FFT, pads the fast-time FFT to a 5-smooth length, and uses
    `scipy.fft` in complex64 on all cores when scipy is installed (31 ms
    measured for crop + scipy before the padding; within 0.0012 dB).
+   For the transfer, `range_doppler` now runs at 2 MS/s instead of the
+   script's 4 (2026-10-29 decision): half the buffer, ~90 m to Nyquist
+   against a 20 m display, same velocity resolution. `range_doppler_far` is
+   the script exactly (4 MS/s, ~180 m, display to 100 m) for outdoor targets,
+   and any value can still be overridden per run. Expected ~190 ms a frame
+   for `range_doppler`, unmeasured until the kit.
 4. **C3, C4, C5** above.
 5. **Pi clock.** No RTC and no NTP client; `phaser-clock` tries HTTP once at
    boot, so a late network leaves the clock wrong (tar warns about future
