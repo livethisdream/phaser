@@ -783,3 +783,85 @@ def test_cw_sets_a_finite_libiio_timeout():
     phaser_cw_radar.enter_cw_mode(sdr, {}, saved_state={})
     assert ctx.timeouts and all(t > 0 for t in ctx.timeouts)
     assert ctx.timeouts[-1] == phaser_cw_radar.RX_TIMEOUT_MS
+
+
+# --- raw buffer read ---------------------------------------------------------
+#
+# phaser-00, 2026-10-29: pyadi's per-channel read took 244 ms of a 693 ms
+# range_doppler frame; one buffer.read() and a numpy de-interleave took 39 ms
+# and summed to identical samples (tools/bench_fmcw_capture.py). These fakes
+# model libiio 0.x's shape: sdr._rxbuf with refill()/read(), and channels with
+# a data_format.
+
+class _RawBuf:
+    def __init__(self, inter, fail_refill=False):
+        self.inter = inter
+        self.fail_refill = fail_refill
+        self.refills = 0
+
+    def refill(self):
+        self.refills += 1
+        if self.fail_refill:
+            raise OSError("refill timed out")
+
+    def read(self):
+        return self.inter.tobytes()
+
+
+def _raw_sdr(n=4096, length=16, shift=0, signed=True, be=False, channels=(0, 1),
+             fail_refill=False, seed=0):
+    rng = np.random.default_rng(seed)
+    inter = rng.integers(-2048, 2048, size=(n, 4), dtype=np.int16)
+    df = types.SimpleNamespace(length=length, bits=12, shift=shift,
+                               is_signed=signed, is_be=be)
+    names = ["voltage0", "voltage1", "voltage2", "voltage3"]
+
+    def rx():
+        # What pyadi's stock path returns for the same buffer.
+        return [inter[:, 0] + 1j * inter[:, 1], inter[:, 2] + 1j * inter[:, 3]]
+
+    return types.SimpleNamespace(
+        _rxbuf=_RawBuf(inter, fail_refill), rx_enabled_channels=list(channels),
+        _rx_channel_names=names,
+        _rxadc=types.SimpleNamespace(find_channel=lambda name: types.SimpleNamespace(data_format=df)),
+        rx=rx, inter=inter)
+
+
+def test_raw_read_matches_the_stock_read():
+    sdr = _raw_sdr()
+    assert fm.raw_read_ok(sdr)
+    raw = fm.read_summed(sdr, raw=True)
+    stock = fm.read_summed(sdr, raw=False)
+    assert raw.dtype == np.complex64
+    assert np.array_equal(raw.astype(np.complex128), stock)
+    assert sdr._rxbuf.refills == 1
+
+
+@pytest.mark.parametrize("kw", [
+    dict(length=32), dict(shift=4), dict(signed=False), dict(be=True), dict(channels=(0,)),
+])
+def test_raw_read_refuses_a_format_it_has_not_verified(kw):
+    assert not fm.raw_read_ok(_raw_sdr(**kw))
+
+
+def test_raw_read_refuses_without_a_libiio_0x_buffer():
+    sdr = _raw_sdr()
+    sdr._rxbuf = None
+    assert not fm.raw_read_ok(sdr)
+    # And capture falls back to rx() even if the plan said raw.
+    assert np.array_equal(fm.read_summed(sdr, raw=True), sdr.rx()[0] + sdr.rx()[1])
+
+
+def test_failed_refill_drops_the_buffer_and_the_next_frame_falls_back():
+    sdr = _raw_sdr(fail_refill=True)
+    with pytest.raises(OSError):
+        fm.read_summed(sdr, raw=True)
+    assert sdr._rxbuf is None
+    out = fm.read_summed(sdr, raw=True)
+    assert np.array_equal(out, sdr.rx()[0] + sdr.rx()[1])
+
+
+def test_plan_records_the_read_path():
+    kit = Kit()
+    _, plan = kit.enter()
+    assert plan["raw_read"] is False  # the recording fake has no libiio buffer

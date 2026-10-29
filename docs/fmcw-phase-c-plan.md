@@ -484,10 +484,15 @@ in order:
 2. **Shutdown traceback.** Every service stop logs `Exception in thread
    Thread-1` from the exiting process. Harmless so far, but it hides real
    faults in the journal.
-3. **Capture speed (PR B).** `range_doppler` is ~554 ms a frame, mostly the
-   USB transfer, the same as upstream. Measure before changing anything:
-   raw read and deinterleave instead of the per-channel copies in `rx()`,
-   in-place channel sum.
+3. **Capture speed (PR B).** Measured on phaser-00, 2026-10-29, with
+   `tools/bench_fmcw_capture.py` (`range_doppler`, 2**19 samples, 20 frames,
+   medians): 693 ms end to end = 572 capture + 121 DSP, i.e. 1.4 fps. The
+   capture is a 311 ms refill (the USB transfer, which no read strategy
+   shortens) plus 244 ms of pyadi's per-channel read. One `buffer.read()` and a
+   numpy de-interleave took 39 ms and was bit-identical on 20/20 frames, so the
+   synced capture now uses it (`raw_read_ok`, `read_summed`): about 488 ms, or
+   ~2 fps. **5 fps still needs the transfer cut**: fewer samples per frame
+   (chirps, sample rate, or buffer rounding) and a cheaper DSP; that is C3.
 4. **C3, C4, C5** above.
 5. **Pi clock.** No RTC and no NTP client; `phaser-clock` tries HTTP once at
    boot, so a late network leaves the clock wrong (tar warns about future
