@@ -491,8 +491,20 @@ in order:
    shortens) plus 244 ms of pyadi's per-channel read. One `buffer.read()` and a
    numpy de-interleave took 39 ms and was bit-identical on 20/20 frames, so the
    synced capture now uses it (`raw_read_ok`, `read_summed`): about 488 ms, or
-   ~2 fps. **5 fps still needs the transfer cut**: fewer samples per frame
-   (chirps, sample rate, or buffer rounding) and a cheaper DSP; that is C3.
+   ~2 fps (confirmed: 479 ms). **5 fps still needs the transfer cut**: fewer
+   samples per frame (chirps, sample rate, or buffer rounding); that is C3.
+   The DSP part is done: the same tool's breakdown (numpy 1.24, scipy
+   present, 4 cores) put 121 ms in `range_doppler_map`, 48 of it a fast-time
+   FFT of 1079 = 13 * 83 samples. It now crops to `range_max` before the
+   slow-time FFT, pads the fast-time FFT to a 5-smooth length, and uses
+   `scipy.fft` in complex64 on all cores when scipy is installed (31 ms
+   measured for crop + scipy before the padding; within 0.0012 dB).
+   For the transfer, `range_doppler` now runs at 2 MS/s instead of the
+   script's 4 (2026-10-29 decision): half the buffer, ~90 m to Nyquist
+   against a 20 m display, same velocity resolution. `range_doppler_far` is
+   the script exactly (4 MS/s, ~180 m, display to 100 m) for outdoor targets,
+   and any value can still be overridden per run. Expected ~190 ms a frame
+   for `range_doppler`, unmeasured until the kit.
 4. **C3, C4, C5** above.
 5. **Pi clock.** No RTC and no NTP client; `phaser-clock` tries HTTP once at
    boot, so a late network leaves the clock wrong (tar warns about future

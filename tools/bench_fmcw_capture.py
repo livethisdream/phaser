@@ -22,7 +22,14 @@ buffer sizing the service uses -- and reports, per frame (median, ms):
   raw read     one buffer.read() and a numpy de-interleave, summed in place
 
 and whether the raw read gives bit-identical samples to the stock one on
-the same buffer. It changes nothing on the kit and leaves FMCW mode on exit.
+the same buffer.
+
+For a multi-chirp preset it then breaks the DSP down (C3): each stage of
+range_doppler_map() on one captured matrix, and candidate rewrites -- crop
+to range_max before the slow-time FFT, single precision, scipy.fft on all
+cores -- each checked against the current map before its time counts.
+
+It changes nothing on the kit and leaves FMCW mode on exit.
 """
 
 import argparse
@@ -73,6 +80,107 @@ def raw_read(buf, nchan):
     out.imag = raw[:, 1]
     out.imag += raw[:, 3]
     return out
+
+
+def rd_params(cfg, plan):
+    """The arguments do_fmcw_radar_frame() hands range_doppler_map()."""
+    zero = cfg.get("zero_range_freq")
+    return dict(
+        fs=plan["sample_rate"], bw=cfg["chirp_bw"], ramp=plan["effective_ramp_time"],
+        pri=plan["pri_ms"] / 1e3, f0=cfg["output_freq"],
+        zero=cfg["signal_freq"] if zero is None else zero,
+        win=cfg.get("fft_window", "blackman"),
+        range_max=cfg.get("range_max"), vel_max=cfg.get("vel_max"))
+
+
+def rd_masks(d, n_fast, n_slow, p):
+    """range_doppler_map()'s crop, computed the same way."""
+    ranges = d._range_bins(n_fast, p["fs"], p["bw"], p["ramp"], p["zero"])
+    rmask = ranges >= 0.0
+    if p["range_max"] is not None:
+        rmask &= ranges <= float(p["range_max"])
+    if not np.any(rmask):
+        rmask = np.ones(len(ranges), dtype=bool)
+    velocity = d.C * np.fft.fftshift(np.fft.fftfreq(n_slow, p["pri"])) / (2.0 * p["f0"])
+    vmask = np.ones(n_slow, dtype=bool)
+    if p["vel_max"] is not None:
+        vmask = np.abs(velocity) <= abs(float(p["vel_max"]))
+        if not np.any(vmask):
+            vmask = np.ones(n_slow, dtype=bool)
+    return rmask, vmask
+
+
+def rd_stages(d, matrix, p):
+    """range_doppler_map()'s body, timed stage by stage. Returns (times, map)."""
+    t = [time.perf_counter()]
+    n_fast, n_slow = matrix.shape
+    win_fast = d.window(p["win"], n_fast)[:, None]
+    win_slow = d.window(p["win"], n_slow)[None, :]
+    x = matrix * win_fast
+    t.append(time.perf_counter())
+    spec = np.fft.fft(x, axis=0)[: n_fast // 2, :]
+    t.append(time.perf_counter())
+    spec = np.fft.fftshift(np.fft.fft(spec * win_slow, axis=1), axes=1)
+    t.append(time.perf_counter())
+    map_db = d._to_db(np.abs(spec), np.sum(win_fast) * np.sum(win_slow) / n_slow)
+    t.append(time.perf_counter())
+    rmask, vmask = rd_masks(d, n_fast, n_slow, p)
+    out = map_db[np.ix_(rmask, vmask)]
+    t.append(time.perf_counter())
+    out.astype(np.float32).tolist()
+    t.append(time.perf_counter())
+    names = ("fast window", "fast FFT", "slow window + FFT", "abs + dB", "crop", "tolist")
+    return dict(zip(names, np.diff(t))), out
+
+
+def rd_crop_first(d, matrix, p, dtype=np.complex128, fft=np.fft.fft):
+    """Candidate: cut to the displayed range bins before the slow-time FFT."""
+    n_fast, n_slow = matrix.shape
+    rmask, vmask = rd_masks(d, n_fast, n_slow, p)
+    win_fast = d.window(p["win"], n_fast)[:, None].astype(dtype().real.dtype)
+    win_slow = d.window(p["win"], n_slow)[None, :].astype(dtype().real.dtype)
+    spec = fft(matrix.astype(dtype, copy=False) * win_fast, axis=0)[: n_fast // 2, :][rmask]
+    spec = np.fft.fftshift(fft(spec * win_slow, axis=1), axes=1)[:, vmask]
+    out = d._to_db(np.abs(spec), float(np.sum(win_fast)) * float(np.sum(win_slow)) / n_slow)
+    out.astype(np.float32).tolist()
+    return out
+
+
+def dsp_breakdown(d, matrix, p, reps):
+    """Time each stage, then each candidate against the current map."""
+    print(f"\nDSP on one {matrix.shape[0]} x {matrix.shape[1]} {matrix.dtype} matrix, "
+          f"{reps} reps (numpy {np.__version__}, {os.cpu_count()} CPUs)")
+    runs = [rd_stages(d, matrix, p) for _ in range(reps)]
+    ref = runs[0][1]
+    total = [sum(r[0].values()) for r in runs]
+    for name in runs[0][0]:
+        print(f"  {name:<18} {ms([r[0][name] for r in runs])}")
+    print(f"  {'total':<18} {ms(total)}   ({ref.shape[0]} of {matrix.shape[0] // 2} range bins kept)")
+
+    candidates = [("crop first", dict())]
+    if int(np.__version__.split(".")[0]) >= 2:  # numpy.fft keeps float32 only from 2.0
+        candidates.append(("crop first, complex64", dict(dtype=np.complex64)))
+    try:
+        import scipy.fft as sfft
+        workers = os.cpu_count() or 1
+        candidates.append((f"crop first, scipy x{workers}",
+                           dict(fft=lambda a, axis: sfft.fft(a, axis=axis, workers=workers))))
+        candidates.append((f"crop first, scipy x{workers}, complex64",
+                           dict(dtype=np.complex64,
+                                fft=lambda a, axis: sfft.fft(a, axis=axis, workers=workers))))
+    except ImportError:
+        print("  (no scipy: the scipy.fft candidates are skipped)")
+    for label, kw in candidates:
+        times, out = [], None
+        for _ in range(reps):
+            t0 = time.perf_counter()
+            out = rd_crop_first(d, matrix, p, **kw)
+            times.append(time.perf_counter() - t0)
+        err = float(np.max(np.abs(out - ref))) if out.shape == ref.shape else float("inf")
+        # 0.1 dB: float32 rounding moves deep-null cells by a few hundredths,
+        # invisible on a heatmap; a real mistake moves whole rows by many dB.
+        ok = f"max diff {err:.2g} dB" + ("" if err < 0.1 else "  DIFFERS")
+        print(f"  {label:<32} {ms(times)}   {ok}")
 
 
 def ms(xs):
@@ -146,6 +254,12 @@ def main():
         print(f"raw read     {ms(fast)}   saves {(statistics.median(stock) - statistics.median(fast)) * 1e3:.1f} ms")
         print(f"identical    {equal}/{args.frames} frames"
               + ("" if equal == args.frames else f"  (max |diff| {maxdiff:g}: raw read NOT safe as written)"))
+        if plan["synced"] and plan["num_chirps"] > 1:
+            import phaser_fmcw_radar
+            import phaser_radar_dsp
+            matrix = phaser_fmcw_radar.capture_fmcw_frame(sdr, hw, plan)
+            dsp_breakdown(phaser_radar_dsp, matrix, rd_params(h.fmcw_cfg, plan), args.frames)
+
         df = sdr._rxadc.find_channel(sdr._rx_channel_names[0]).data_format
         print(f"\ndata format  {df.bits} bits in {df.length}, shift {df.shift}, "
               f"signed {df.is_signed}, big-endian {df.is_be}")
