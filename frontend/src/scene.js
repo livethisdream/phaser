@@ -1,17 +1,17 @@
-/* --- Scene: a top-down view of the array and what it is listening to ------
+/* --- Mini scene: a top-down thumbnail of the array and its sources --------
  *
- * The array sits at the bottom centre, boresight straight up, +90 deg to the
- * right (the Polar tab's convention). Drawn over it: the live sum pattern on
- * the same -50..0 dBFS radial scale as the Polar tab, the beam's peak (or
- * held) direction, the simulated HB100 and the synthetic interferer.
+ * Drawn in the plots' top-right corner while the interferer is on, so the
+ * sources stay in view on the tabs that cannot show them (the Polar tab draws
+ * them itself; see polarSources in main.js). The array sits at the bottom
+ * centre, boresight straight up, +90 deg to the right -- the Polar tab's
+ * convention. Over it: the live sum pattern on a fixed -50..0 dBFS radial
+ * scale, the beam's peak (or held) direction, the simulated HB100 and the
+ * synthetic interferer.
  *
  * Both sources are far-field plane waves in the model, so only their angle
- * means anything; they ride a ring near the edge. Dragging one calls back with the
- * new angle and the caller sends it to the backend -- this module owns no
+ * means anything; they ride a ring near the edge. Dragging one calls back with
+ * the new angle and the caller sends it to the backend -- this module owns no
  * state beyond what it last drew.
- *
- * Plain SVG rather than Plotly: dragging a marker is a pointer-capture job,
- * and the two instances (tab and mini pane) share this one renderer.
  */
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -24,7 +24,7 @@ const DB_MIN = -50;
 const RINGS_DB = [-40, -30, -20, -10];
 const SPOKES_DEG = [-90, -60, -30, 0, 30, 60, 90];
 const ANGLE_LIMIT = 90;
-// Sources ride a ring just inside the grid, clear of the angle labels.
+// Sources ride a ring just inside the grid's edge.
 const R_SOURCE = R * 0.9;
 
 function el(name, attrs = {}, parent = null) {
@@ -45,21 +45,19 @@ function dbToR(db) {
     return (R * (clamped - DB_MIN)) / -DB_MIN;
 }
 
-function clampAngle(deg) {
+export function clampAngle(deg) {
     return Math.max(-ANGLE_LIMIT, Math.min(ANGLE_LIMIT, deg));
 }
 
 /**
  * @param {SVGSVGElement} svg
  * @param {object} opts
- * @param {boolean} [opts.compact]  mini pane: no ring labels, bigger strokes
  * @param {(kind: 'target'|'interferer', angleDeg: number) => void} opts.onDrag
  */
-export function createScene(svg, { compact = false, onDrag } = {}) {
+export function createScene(svg, { onDrag } = {}) {
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     svg.setAttribute('preserveAspectRatio', 'xMidYMax meet');
     svg.classList.add('scene-svg');
-    if (compact) svg.classList.add('scene-compact');
     svg.replaceChildren();
 
     // Grid: half-disc rings and angle spokes.
@@ -71,22 +69,10 @@ export function createScene(svg, { compact = false, onDrag } = {}) {
     for (const db of RINGS_DB) {
         const r = dbToR(db);
         el('path', { d: `M ${CX - r} ${CY} A ${r} ${r} 0 0 1 ${CX + r} ${CY}` }, grid);
-        if (!compact) {
-            const t = el('text', { x: CX + 3, y: CY - r - 2, class: 'scene-ring-label' }, grid);
-            t.textContent = `${db}`;
-        }
     }
     for (const deg of SPOKES_DEG) {
         const [x, y] = pt(deg, R);
         el('line', { x1: CX, y1: CY, x2: x, y2: y }, grid);
-        if (!compact) {
-            const [lx, ly] = pt(deg, R + 9);
-            const t = el('text', {
-                x: lx, y: Math.min(ly + 3, CY), class: 'scene-angle-label',
-                'text-anchor': deg < 0 ? 'end' : deg > 0 ? 'start' : 'middle',
-            }, grid);
-            t.textContent = `${deg}°`;
-        }
     }
 
     const pattern = el('path', { class: 'scene-pattern', d: '' }, svg);
@@ -96,7 +82,7 @@ export function createScene(svg, { compact = false, onDrag } = {}) {
 
     // The array: eight elements along the baseline, two sub-arrays of four.
     const arr = el('g', { class: 'scene-array' }, svg);
-    const pitch = compact ? 7 : 6;
+    const pitch = 7;
     for (let k = 0; k < 8; k++) {
         const x = CX + (k - 3.5) * pitch;
         el('rect', {
@@ -115,7 +101,7 @@ export function createScene(svg, { compact = false, onDrag } = {}) {
             'aria-valuemax': String(ANGLE_LIMIT),
         }, svg);
         // A generous invisible hit area, so the handle is easy to grab on touch.
-        el('circle', { r: compact ? 22 : 16, class: 'scene-hit' }, g);
+        el('circle', { r: 22, class: 'scene-hit' }, g);
         if (kind === 'target') {
             // HB100: a small horn-ish box.
             el('rect', { x: -7, y: -5, width: 14, height: 10, rx: 2, class: 'scene-icon' }, g);
@@ -124,17 +110,12 @@ export function createScene(svg, { compact = false, onDrag } = {}) {
             // Interferer: a diamond.
             el('path', { d: 'M 0 -8 L 8 0 L 0 8 L -8 0 Z', class: 'scene-icon' }, g);
         }
-        const text = el('text', { y: compact ? -14 : -12, 'text-anchor': 'middle', class: 'scene-handle-label' }, g);
-        text.textContent = label;
-        const value = el('text', { y: compact ? 30 : 20, 'text-anchor': 'middle', class: 'scene-handle-value' }, g);
+        const value = el('text', { y: 30, 'text-anchor': 'middle', class: 'scene-handle-value' }, g);
         return { g, value, kind, angle: 0, draggable: false };
     }
 
     const target = makeHandle('target', 'HB100');
     const intf = makeHandle('interferer', 'Interferer');
-
-    const readout = el('text', { x: 6, y: compact ? 18 : 14, class: 'scene-readout' }, svg);
-    const note = el('text', { x: CX, y: CY - R * 0.45, 'text-anchor': 'middle', class: 'scene-note' }, svg);
 
     function placeHandle(h, angle) {
         h.angle = angle;
@@ -207,7 +188,6 @@ export function createScene(svg, { compact = false, onDrag } = {}) {
      * @param {number[]|null} s.angles   sweep angles (deg), or null in a hold mode
      * @param {number[]|null} s.gain     sum pattern, dBFS
      * @param {number|null} s.beamAngle  peak of the sweep, or the held angle
-     * @param {boolean} s.held           beamAngle is a held beam, not a peak
      * @param {number|null} s.targetAngle  simulated HB100; null when unknown (hardware)
      * @param {boolean} s.interfererOn
      * @param {number} s.interfererAngle
@@ -244,20 +224,6 @@ export function createScene(svg, { compact = false, onDrag } = {}) {
         if (s.interfererOn && !intf.g.classList.contains('dragging')) {
             placeHandle(intf, s.interfererAngle);
         }
-
-        const parts = [];
-        if (hasBeam) parts.push(`${s.held ? 'Held' : 'Peak'} ${s.beamAngle.toFixed(1)}°`);
-        // With the interferer on, the peak may be the interferer's lobe, and
-        // a pointing error against the HB100 would read as nonsense.
-        if (hasTarget && hasBeam && !s.held && !s.interfererOn) {
-            parts.push(`error ${(s.beamAngle - s.targetAngle).toFixed(1)}°`);
-        }
-        readout.textContent = parts.join(' · ');
-
-        note.textContent = hasTarget
-            ? ''
-            : compact ? '' : 'Real HB100: position not known. The pattern shows where the array hears it.';
-        setVisible(note, !hasTarget && !compact);
     }
 
     return { update };

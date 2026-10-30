@@ -1780,26 +1780,11 @@ input[type=number]::-webkit-outer-spin-button {
   text-transform: uppercase;
 }
 
-/* --- Scene (scene.js) --------------------------------------------------- */
-#tab-scene {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
-  padding: 0.5rem 0.75rem 0.25rem;
-}
-.scene-main {
-  flex: 1 1 auto;
-  width: 100%;
-  min-height: 0;
-}
-.scene-hint {
-  flex: none;
-  margin-top: 0.25rem;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  text-align: center;
-}
+/* --- Sources: mini scene (scene.js) and the Polar tab's markers ------- */
+#chart-polar.polar-source-hover,
+#chart-polar.polar-source-hover * { cursor: grab !important; }
+#chart-polar.polar-source-dragging,
+#chart-polar.polar-source-dragging * { cursor: grabbing !important; }
 
 .scene-svg {
   --scene-target: var(--success);
@@ -1817,20 +1802,15 @@ input[type=number]::-webkit-outer-spin-button {
   stroke-width: 0.8;
 }
 .scene-grid .scene-field { stroke: var(--ctrl-track); }
-.scene-ring-label,
-.scene-angle-label {
-  fill: var(--text-muted);
-  font-size: 8px;
-}
 .scene-pattern {
   fill: rgba(16, 185, 129, 0.14);
   stroke: var(--success);
-  stroke-width: 1.6;
+  stroke-width: 2.4;
   stroke-linejoin: round;
 }
 .scene-beam-ray {
   stroke: var(--scene-beam);
-  stroke-width: 1.4;
+  stroke-width: 2.4;
   stroke-dasharray: 4 3;
 }
 .scene-source-ray {
@@ -1856,29 +1836,13 @@ input[type=number]::-webkit-outer-spin-button {
   stroke: var(--text-muted);
   stroke-width: 0.8;
 }
-.scene-handle-label,
 .scene-handle-value {
-  font-size: 9px;
+  font-size: 22px;
   font-weight: 600;
   pointer-events: none;
 }
 .scene-handle.scene-target text { fill: var(--scene-target); }
 .scene-handle.scene-interferer text { fill: var(--scene-interferer); }
-.scene-readout {
-  fill: var(--text-main);
-  font-size: 10px;
-  font-weight: 600;
-}
-.scene-note {
-  fill: var(--text-muted);
-  font-size: 9px;
-}
-.scene-compact .scene-handle-value { font-size: 22px; }
-/* Too small to read at mini size; the icons' colours carry the names. */
-.scene-compact .scene-handle-label,
-.scene-compact .scene-readout { display: none; }
-.scene-compact .scene-pattern { stroke-width: 2.4; }
-.scene-compact .scene-beam-ray { stroke-width: 2.4; }
 
 /* Mini pane: top right of the plots while the interferer is on. */
 .scene-mini {

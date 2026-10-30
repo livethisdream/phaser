@@ -1,6 +1,6 @@
 import { createTransport, resolveTransportMode } from './transport.js';
 import { autoBackendWsUrl, getBackendUrlOverride, setBackendUrlOverride } from './transport-web.js';
-import { createScene } from './scene.js';
+import { clampAngle, createScene } from './scene.js';
 
 // Application State Structure
 const state = {
@@ -153,6 +153,12 @@ function getPlotPalette() {
         polarGridColor: isLight ? 'rgba(15,23,42,0.22)' : 'rgba(255,255,255,0.2)',
     };
 }
+
+// Polar traces that are always there (sum, two peak markers, two per source);
+// freeze snapshots are added after them.
+const POLAR_LIVE_TRACES = 7;
+// Matches the FFT tab's Target / Interferer markers and the interferer badge.
+const SOURCE_COLORS = { target: '#10b981', interferer: '#f59e0b' };
 
 function toPolarTheta(angleDeg) {
     // Map signed steering angles onto Plotly's upper semicircle:
@@ -516,7 +522,7 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         document.getElementById(targetId).classList.add('active');
 
         updateMemoryButtons();
-        applySceneUi();
+        applySourcesUi();
         const exportBtn = document.getElementById('btn-export-tracking');
         if (exportBtn) {
             exportBtn.hidden = targetId !== 'tab-tracking';
@@ -608,7 +614,7 @@ function rebuildMemoryTraces() {
     }
 
     if (polarEl && polarEl.data) {
-        const liveCount = 3;  // Sum + peak-angle marker + peak-gain marker
+        const liveCount = POLAR_LIVE_TRACES;  // Sum, peak markers, sources
         const extras = polarEl.data.length - liveCount;
         if (extras > 0) {
             const indices = [];
@@ -1331,74 +1337,79 @@ function wireHoldToCommit(el, holdMs, onCommit) {
 // already watching during a run.
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
 
-/* --- Scene ---
-   Top-down view of the array, the HB100 and the interferer (scene.js), as a
-   tab and as a mini pane in the plots' top-right corner while the interferer
-   is on. Dragging a source writes its angle into `state` and syncs it, at
-   most every SCENE_SYNC_MS so a drag does not flood the socket. */
-const SCENE_SYNC_MS = 50;
-// What the last sweep or held update gave the scene to draw.
-let sceneLast = { angles: null, gain: null, beamAngle: null, held: false };
+/* --- Sources: the simulated HB100 and the interferer, by angle ---
+   Drawn on the Polar tab (Plot Options > Show Sources) and in a mini pane in
+   the plots' top-right corner while the interferer is on (scene.js). Both are
+   draggable. The HB100 only in the simulator -- on the kit it is a real one,
+   wherever it was put, and get_state reports sim_target_angle_deg as null. The
+   interferer is computed on the kit too, so dragging it there just moves
+   interferer_angle_deg, as its slider does. A drag writes the angle into
+   `state` and syncs it at most every SOURCE_SYNC_MS, so it does not flood the
+   socket. */
+const SOURCE_SYNC_MS = 50;
+// What the last sweep or held update gave the mini pane to draw.
+let sceneLast = { angles: null, gain: null, beamAngle: null };
 // The mini pane's x: hidden until the interferer is next turned on.
 let sceneMiniDismissed = false;
-let sceneSyncTimer = null;
+let sourceSyncTimer = null;
+// Pending requestAnimationFrame for the Polar tab's source traces. Declared
+// here, not with schedulePolarSources(), because this section calls it first.
+let polarSourcesFrame = null;
 
-function onSceneDrag(kind, angle) {
+function onSourceDrag(kind, angle) {
     if (kind === 'target') {
         state.sim_target_angle_deg = angle;
     } else {
         state.interferer_angle_deg = angle;
         setInterfererPair('interferer-angle', 'val-interferer-angle', angle);
     }
-    renderScenes();
-    if (sceneSyncTimer === null) {
-        sceneSyncTimer = setTimeout(() => {
-            sceneSyncTimer = null;
+    renderSources();
+    if (sourceSyncTimer === null) {
+        sourceSyncTimer = setTimeout(() => {
+            sourceSyncTimer = null;
             syncStateToBackend();
-        }, SCENE_SYNC_MS);
+        }, SOURCE_SYNC_MS);
     }
 }
 
-const scenes = [
-    createScene(document.getElementById('scene-main'), { onDrag: onSceneDrag }),
-    createScene(document.getElementById('scene-mini-svg'), { compact: true, onDrag: onSceneDrag }),
-];
+const miniScene = createScene(document.getElementById('scene-mini-svg'), { onDrag: onSourceDrag });
 
-function renderScenes() {
-    const s = {
+function sourcesOnPolar() {
+    return document.getElementById('opt-show-sources')?.checked ?? true;
+}
+
+// `polar: false` from the sweep and hold paths: new data never moves a source,
+// and the sweep path redraws the Polar tab itself.
+function renderSources({ polar = true } = {}) {
+    miniScene.update({
         ...sceneLast,
         targetAngle: state.sim_target_angle_deg,
         interfererOn: !!state.interferer_enable,
         interfererAngle: state.interferer_angle_deg,
-    };
-    for (const scene of scenes) scene.update(s);
+    });
+    if (polar) schedulePolarSources();
 }
 
-function applySceneUi() {
+function applySourcesUi() {
+    // The Polar tab draws the sources itself; the pane would only repeat it.
     const activeTab = document.querySelector('.tab-btn.active')?.getAttribute('data-target');
+    const polarShowsThem = activeTab === 'tab-polar' && sourcesOnPolar();
     document.getElementById('scene-mini').hidden =
-        !(state.interferer_enable && !sceneMiniDismissed && activeTab !== 'tab-scene');
-    const hint = document.getElementById('scene-hint');
-    if (hint) {
-        const sim = Number.isFinite(state.sim_target_angle_deg);
-        hint.textContent = sim
-            ? 'Drag the HB100 to move the simulated target and watch the beam follow it. '
-              + (state.interferer_enable ? 'Drag the interferer to move it.' : 'Turn on the interferer to add one.')
-            : (state.interferer_enable
-                ? 'Drag the interferer to move it. The HB100 is real here, so it cannot be moved from the browser.'
-                : 'Turn on the interferer to place one. The HB100 is real here, so it cannot be moved from the browser.');
-    }
-    renderScenes();
+        !(state.interferer_enable && !sceneMiniDismissed && !polarShowsThem);
+    renderSources();
 }
 
 document.getElementById('scene-mini-open')?.addEventListener('click', () => {
-    document.querySelector('.tab-btn[data-target="tab-scene"]')?.click();
+    const toggle = document.getElementById('opt-show-sources');
+    if (toggle && !toggle.checked) toggle.checked = true;
+    document.querySelector('.tab-btn[data-target="tab-polar"]')?.click();
 });
 document.getElementById('scene-mini-close')?.addEventListener('click', () => {
     sceneMiniDismissed = true;
-    applySceneUi();
+    applySourcesUi();
 });
-applySceneUi();
+document.getElementById('opt-show-sources')?.addEventListener('change', applySourcesUi);
+applySourcesUi();
 
 /* --- Interferer ---
    The backend computes a jammer and adds it to the received IQ before the
@@ -1445,7 +1456,7 @@ function applyInterfererUi() {
         interfererRatio.mvdr = null;
         clearFftToneMarkers();
     }
-    applySceneUi();
+    applySourcesUi();
 }
 
 function setInterfererPair(slId, inId, value) {
@@ -1478,7 +1489,7 @@ function linkInterfererPair(slId, inId, stateKey, scale = 1, onValue = null) {
         if (Number.isFinite(v)) {
             state[stateKey] = v * scale;
             if (onValue) onValue(v);
-            renderScenes();
+            renderSources();
             syncStateToBackend();
         }
     };
@@ -2127,6 +2138,18 @@ Plotly.newPlot('chart-polar', [
     { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#ef4444', width: 1.5, dash: 'dash' }, hoverinfo: 'skip', showlegend: false, visible: false },
     // Trace 2: peak-gain marker (circle at peak dBFS)
     { r: [], theta: [], type: 'scatterpolar', mode: 'lines', line: { color: '#10b981', width: 1.5, dash: 'dash' }, hoverinfo: 'skip', showlegend: false, visible: false },
+    // Traces 3-6: the sources -- a dotted ray from the array and a marker
+    // near the rim for each. See updatePolarSources.
+    ...['target', 'interferer'].flatMap((kind) => [
+        { r: [], theta: [], type: 'scatterpolar', mode: 'lines',
+          line: { color: SOURCE_COLORS[kind], width: 1.2, dash: 'dot' },
+          hoverinfo: 'skip', showlegend: false, visible: false },
+        { r: [], theta: [], text: [], type: 'scatterpolar', mode: 'markers+text',
+          marker: { color: SOURCE_COLORS[kind], size: 13, symbol: kind === 'target' ? 'square' : 'diamond',
+                    line: { color: 'rgba(15,17,26,0.85)', width: 1.5 } },
+          textposition: 'top center', textfont: { color: SOURCE_COLORS[kind], size: 11 },
+          cliponaxis: false, hoverinfo: 'skip', showlegend: false, visible: false },
+    ]),
 ], Object.assign({}, getLayoutBase(), {
     // The shared margin is sized for a cartesian plot, whose y-axis labels sit
     // well inside the right edge. A [0, 180] sector puts its outermost angular
@@ -2166,6 +2189,141 @@ Plotly.newPlot('chart-polar', [
         }
     }
 }), {displayModeBar: false, responsive: true});
+
+/* Sources on the Polar tab: traces 3-6 above, and dragging their markers.
+   Plotly has no drag for polar points, so the pointer is caught on the chart
+   and turned back into an angle with the subplot's own geometry
+   (_fullLayout.polar._subplot.cx/cy/radius, in the chart's pixels). That is
+   Plotly-internal; it is stable here because Plotly is pinned (2.30.0,
+   tools/vendor_plotly.mjs), and polarGeometry() returns null rather than
+   guessing if an upgrade moves it -- the markers then still draw, they just
+   cannot be dragged. */
+const POLAR_SOURCE_TRACES = { target: [3, 4], interferer: [5, 6] };
+const SOURCE_LABELS = { target: 'HB100', interferer: 'Interferer' };
+// Markers sit this far in from the rim, as a fraction of the radial span.
+const POLAR_SOURCE_INSET = 0.08;
+// How close (px) a press must land to a marker to grab it.
+const POLAR_GRAB_PX = 18;
+
+function polarRadialRange(el) {
+    const range = el.layout?.polar?.radialaxis?.range;
+    return Array.isArray(range) && range.length === 2 ? range : [-50, 0];
+}
+
+/** Angle per draggable source currently on the Polar tab. */
+function polarSourceAngles() {
+    if (!sourcesOnPolar()) return {};
+    const out = {};
+    if (Number.isFinite(state.sim_target_angle_deg)) out.target = state.sim_target_angle_deg;
+    if (state.interferer_enable && Number.isFinite(state.interferer_angle_deg)) {
+        out.interferer = state.interferer_angle_deg;
+    }
+    return out;
+}
+
+function updatePolarSources(redraw = true) {
+    const el = document.getElementById('chart-polar');
+    if (!el || !el.data || el.data.length < POLAR_LIVE_TRACES) return;
+    const [rMin, rMax] = polarRadialRange(el);
+    const rSrc = rMax - POLAR_SOURCE_INSET * (rMax - rMin);
+    const angles = polarSourceAngles();
+    for (const [kind, [rayIdx, markIdx]] of Object.entries(POLAR_SOURCE_TRACES)) {
+        const angle = angles[kind];
+        const on = Number.isFinite(angle);
+        el.data[rayIdx].visible = on;
+        el.data[markIdx].visible = on;
+        if (!on) continue;
+        const theta = toPolarTheta(angle);
+        el.data[rayIdx].r = [rMin, rSrc];
+        el.data[rayIdx].theta = [theta, theta];
+        el.data[markIdx].r = [rSrc];
+        el.data[markIdx].theta = [theta];
+        el.data[markIdx].text = [`${SOURCE_LABELS[kind]} ${Math.round(angle)}°`];
+    }
+    if (redraw) Plotly.redraw('chart-polar');
+}
+
+// A drag fires pointermove far faster than the chart needs redrawing.
+function schedulePolarSources() {
+    if (polarSourcesFrame !== null) return;
+    polarSourcesFrame = requestAnimationFrame(() => {
+        polarSourcesFrame = null;
+        updatePolarSources();
+    });
+}
+
+function polarGeometry(el) {
+    const sp = el._fullLayout?.polar?._subplot;
+    if (!sp || ![sp.cx, sp.cy, sp.radius].every(Number.isFinite) || sp.radius <= 0) return null;
+    return sp;
+}
+
+/** The source under the pointer, if any, nearest first. */
+function polarSourceAt(el, evt) {
+    const geo = polarGeometry(el);
+    if (!geo) return null;
+    const box = el.getBoundingClientRect();
+    const px = evt.clientX - box.left;
+    const py = evt.clientY - box.top;
+    const rPx = geo.radius * (1 - POLAR_SOURCE_INSET);
+    let best = null;
+    for (const [kind, angle] of Object.entries(polarSourceAngles())) {
+        const a = (angle * Math.PI) / 180;
+        const d = Math.hypot(px - (geo.cx + rPx * Math.sin(a)), py - (geo.cy - rPx * Math.cos(a)));
+        if (d <= POLAR_GRAB_PX && (!best || d < best.d)) best = { kind, d };
+    }
+    return best?.kind ?? null;
+}
+
+function polarPointerAngle(el, evt) {
+    const geo = polarGeometry(el);
+    if (!geo) return null;
+    const box = el.getBoundingClientRect();
+    const dx = evt.clientX - box.left - geo.cx;
+    // Below the baseline, keep the side the pointer is on.
+    const dy = Math.max(geo.cy - (evt.clientY - box.top), 0);
+    if (dx === 0 && dy === 0) return null;
+    return clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI));
+}
+
+(function wirePolarSourceDrag() {
+    const el = document.getElementById('chart-polar');
+    if (!el) return;
+    let dragging = null;
+    // Capture phase, so a press on a marker never reaches Plotly's own drag
+    // handlers. Cancelling pointerdown also suppresses the mousedown Plotly
+    // listens for; touchstart is stopped separately below.
+    el.addEventListener('pointerdown', (evt) => {
+        const kind = polarSourceAt(el, evt);
+        if (!kind) return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        dragging = kind;
+        el.setPointerCapture(evt.pointerId);
+        el.classList.add('polar-source-dragging');
+    }, true);
+    el.addEventListener('touchstart', (evt) => {
+        if (dragging) evt.stopPropagation();
+    }, { capture: true, passive: true });
+    el.addEventListener('pointermove', (evt) => {
+        if (!dragging) {
+            el.classList.toggle('polar-source-hover', polarSourceAt(el, evt) !== null);
+            return;
+        }
+        evt.stopPropagation();
+        const angle = polarPointerAngle(el, evt);
+        const current = dragging === 'target' ? state.sim_target_angle_deg : state.interferer_angle_deg;
+        if (angle !== null && angle !== current) onSourceDrag(dragging, angle);
+    }, true);
+    const end = (evt) => {
+        if (!dragging) return;
+        dragging = null;
+        if (el.hasPointerCapture(evt.pointerId)) el.releasePointerCapture(evt.pointerId);
+        el.classList.remove('polar-source-dragging');
+    };
+    el.addEventListener('pointerup', end, true);
+    el.addEventListener('pointercancel', end, true);
+})();
 
 Plotly.newPlot('chart-fft', [{
     x: [], y: [], type: 'scatter', mode: 'lines', line: { color: '#8b5cf6', width: 2 }
@@ -2313,6 +2471,8 @@ function updatePlotLimits() {
         'polar.radialaxis.range': [yMin, yMax],
         'polar.radialaxis.autorange': false
     });
+    // The source markers sit a fixed fraction in from the rim.
+    updatePolarSources();
 }
 updatePlotLimits();
 
@@ -3311,8 +3471,8 @@ function updateCharts(data) {
         lastLiveTrace = { x: xData.slice(), y: yData.slice() };
         updateMemoryButtons();
 
-        sceneLast = { angles: xData, gain: yData, beamAngle: xData[peakIndex], held: false };
-        renderScenes();
+        sceneLast = { angles: xData, gain: yData, beamAngle: xData[peakIndex] };
+        renderSources({ polar: false });
 
         // Update rectangular plot (Sum beam)
         const rectEl = document.getElementById('chart-rect');
@@ -3379,6 +3539,7 @@ function updateCharts(data) {
                 }
             }
 
+            updatePolarSources(false);
             Plotly.redraw('chart-polar');
         }
 
@@ -3481,8 +3642,8 @@ function updateSignalVsTime(data) {
     svtStamp.push(now);
     svtHold.push(hold);
     // A held beam has no pattern to draw, only its direction.
-    sceneLast = { angles: null, gain: null, beamAngle: hold, held: true };
-    renderScenes();
+    sceneLast = { angles: null, gain: null, beamAngle: hold };
+    renderSources({ polar: false });
     const last = svtTime[svtTime.length - 1];
     while (svtTime.length > SVT_HISTORY_MAX
            || (svtTime.length > 1 && last - svtTime[0] > SVT_WINDOW_S)) {
