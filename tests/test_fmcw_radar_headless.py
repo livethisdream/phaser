@@ -370,6 +370,7 @@ def test_a_transition_waits_for_the_frame_in_progress(monkeypatch):
 # --- frame payload (C3) -------------------------------------------------
 
 import json  # noqa: E402
+import time  # noqa: E402
 
 # Per-frame JSON budgets. range_doppler at ~5 fps is the one that matters:
 # 32 KB there is ~160 KB/s to each browser.
@@ -416,3 +417,51 @@ def test_cfar_arrays_are_absent_when_cfar_is_off():
     _start(h, preset="range_sync")
     f = h.do_fmcw_radar_frame()
     assert "cfar_threshold_db" not in f and "detection_indices" not in f
+
+
+def test_null_center_freq_means_this_kits_if():
+    """The radar UI sends center_freq: null for an empty field, as for CW."""
+    h = _headless()
+    h.fmcw_params = {"preset": "range_doppler", "center_freq": 2.0e9}
+    _start(h, center_freq=None)
+    assert h.fmcw_cfg["center_freq"] == h.Rx_freq
+
+
+def test_null_range_max_means_the_presets_own():
+    """An empty Range Max field: the preset's range, not an uncropped one --
+    at start, and as a live update."""
+    h = _headless()
+    _start(h, preset="range_doppler_far", range_max=None)
+    assert h.fmcw_cfg["range_max"] == 100.0
+    h.set_fmcw_radar_params({"range_max": 30.0})
+    assert h.fmcw_cfg["range_max"] == 30.0
+    h.set_fmcw_radar_params({"range_max": None})
+    assert h.fmcw_cfg["range_max"] == 100.0
+
+
+def test_start_while_running_applies_the_new_params():
+    """A Start from a reloaded page used to be a silent no-op on the config."""
+    h = _headless()
+    _start(h, preset="range_doppler")
+    assert h.fmcw_preset == "range_doppler"
+    resp = h.start_fmcw_radar({"preset": "range_sync"})
+    assert resp["status"] == "ok"
+    assert h.fmcw_preset == "range_sync" and h.mode == "fmcw_radar"
+    h.start_fmcw_radar({"mti": "2pulse"})
+    assert h.fmcw_cfg["mti"] == "2pulse"
+
+
+def test_radar_frames_are_paced_to_the_cap(monkeypatch):
+    """range_sync ran at ~475 fps in --sim and drowned the browser."""
+    h = _headless()
+    clock = {"t": 0.0}
+    slept = []
+    monkeypatch.setattr(time, "perf_counter", lambda: clock["t"])
+    monkeypatch.setattr(time, "sleep", lambda s: (slept.append(s), clock.__setitem__("t", clock["t"] + s)))
+    h._pace_radar_frames()            # first frame: nothing to wait for
+    clock["t"] += 0.002               # a 2 ms frame
+    h._pace_radar_frames()
+    assert slept == [pytest.approx(1 / h.RADAR_MAX_FPS - 0.002)]
+    clock["t"] += 0.5                 # a slow frame: no sleep
+    h._pace_radar_frames()
+    assert len(slept) == 1

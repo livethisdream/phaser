@@ -1322,3 +1322,40 @@ input[type=number]::-webkit-outer-spin-button {
 .cal-output:empty {
   display: none;
 }
+
+/* --- CW / FMCW mode switch and the FMCW section ------------------------ */
+.mode-switch {
+    display: inline-flex;
+    gap: 0;
+}
+.mode-switch .btn {
+    border-radius: 0;
+}
+.mode-switch .btn:first-child {
+    border-radius: 8px 0 0 8px;
+}
+.mode-switch .btn:last-child {
+    border-radius: 0 8px 8px 0;
+    border-left: none;
+}
+.mode-switch .btn.active,
+.taper-buttons .btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+.fmcw-capability {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+.fmcw-capability.ok {
+    color: var(--success);
+}
+.fmcw-capability.unavailable {
+    color: var(--error);
+}
+.tab-btn[hidden],
+.stat-box[hidden] {
+    display: none;
+}
