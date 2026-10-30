@@ -25,6 +25,12 @@ const state = {
         waterfall: null,     // rows = frames, cols = range bins
         last: null,          // the last frame, for "Set 0 m Here"
         span_db: 60,         // colour scale: the frame's peak down this far
+        // Range-Doppler: the waterfall and "moving" trace skip |v| below
+        // this, as the CW peak readout does. The strongest cell per range bin
+        // over every velocity is the stationary clutter at 0 m/s -- walls,
+        // furniture, Tx->Rx leakage -- which a hand never outshines, so a
+        // waterfall built from it showed fixed stripes (phaser-01, 2026-10-30).
+        moving_min_mps: 0.3,
     },
 };
 
@@ -347,6 +353,8 @@ Plotly.newPlot('chart-time', [{
 Plotly.newPlot('chart-fmcw-range', [
     { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Range profile',
       line: { color: '#10b981', width: 2 } },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Moving only',
+      line: { color: '#8b5cf6', width: 2 } },
     { x: [], y: [], type: 'scatter', mode: 'lines', name: 'CFAR threshold',
       line: { color: '#ef4444', width: 1.5, dash: 'dash' } },
     { x: [], y: [], type: 'scatter', mode: 'markers', name: 'Detections',
@@ -354,6 +362,8 @@ Plotly.newPlot('chart-fmcw-range', [
 ], Object.assign({}, getLayoutBase(), {
     xaxis: { title: 'Range (m)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
     yaxis: { title: 'Magnitude (dB)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    showlegend: true,
+    legend: { orientation: 'h', x: 0, y: 1.08 },
 }), { displayModeBar: false, responsive: true });
 
 // Range waterfall: x = range, y = frames ago (lab "Range Waterfall Plot").
@@ -561,16 +571,24 @@ function renderFmcwFrame(frame) {
             z: [z], x: [frame.velocity_axis], y: [range],
             zauto: false, zmin: zmax - state.fmcw.span_db, zmax,
         });
-        // The range plot and waterfall get the strongest return per range bin.
-        trace = z.map(row => Math.max(...row));
-        Plotly.restyle('chart-fmcw-range', { x: [range, [], []], y: [trace, [], []] });
+        // The range plot shows the strongest return per range bin twice: over
+        // every velocity, and over the moving ones only. The waterfall gets
+        // the moving one, so a hand shows against the static clutter.
+        const vel = frame.velocity_axis || [];
+        const moving = [];
+        vel.forEach((v, i) => { if (Math.abs(v) >= state.fmcw.moving_min_mps) moving.push(i); });
+        const all = z.map(row => Math.max(...row));
+        trace = moving.length ? z.map(row => Math.max(...moving.map(i => row[i]))) : all;
+        Plotly.restyle('chart-fmcw-range', {
+            x: [range, range, [], []], y: [all, trace, [], []],
+        });
     } else {
         trace = frame.profile_db || [];
         const thr = frame.cfar_threshold_db || [];
         const idx = frame.detection_indices || [];
         Plotly.restyle('chart-fmcw-range', {
-            x: [range, thr.length ? range : [], idx.map(i => range[i])],
-            y: [trace, thr, idx.map(i => trace[i])],
+            x: [range, [], thr.length ? range : [], idx.map(i => range[i])],
+            y: [trace, [], thr, idx.map(i => trace[i])],
         });
     }
     pushRangeWaterfall(range, trace);
