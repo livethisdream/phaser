@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CLyUES0Y.js"></script>
+  <script type="module" crossorigin src="./assets/index-CEI0G4DQ.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-CCrhPIyt.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -76,7 +76,7 @@
               <path d="M6.7 6.7l2.1 2.1M15.2 15.2l2.1 2.1M17.3 6.7l-2.1 2.1M8.8 15.2l-2.1 2.1"></path>
             </svg>
           </button>
-          <button class="sidebar-icon-btn" data-section="6" title="Interferer" aria-label="Interferer">
+          <button class="sidebar-icon-btn" data-section="6" title="Simulated Sources" aria-label="Simulated Sources">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"></path>
             </svg>
@@ -359,10 +359,25 @@
                 </div>
             </div>
 
-            <!-- 6. Interferer -->
+            <!-- 6. Simulated Sources: the simulator's HB100 (range; hidden on a
+                 kit) and the computed interferer (kit and simulator alike). -->
             <div class="accordion-item" id="accordion-interferer">
-                <button class="accordion-header" title="Add a computed jammer to the received signal to see what MVDR does about it"><span class="accordion-icon" data-icon="7"></span> Interferer <span>▼</span></button>
+                <button class="accordion-header" title="The simulated HB100's range, and a computed jammer added to the received signal to see what MVDR does about it"><span class="accordion-icon" data-icon="7"></span> Simulated Sources <span>▼</span></button>
                 <div class="accordion-body">
+                    <div id="sim-hb100-group" hidden>
+                      <div class="control-group combo-group">
+                        <label title="Received level goes as 1/r from 1 m: 2 m reads 6 dB lower">HB100 Range (m)</label>
+                        <div class="combo-inputs">
+                          <input type="range" id="hb100-range" min="0" max="1000" step="1" value="188" class="modern-slider" aria-label="HB100 range, log scale">
+                          <input type="number" id="val-hb100-range" min="0.5" max="20" step="0.1" value="1" class="modern-input-small">
+                        </div>
+                      </div>
+                      <p class="interferer-note">
+                        Simulator only. Range sets the HB100's level; drag it on the Polar
+                        plot to turn it, or scroll over it to move it nearer or farther.
+                      </p>
+                      <hr class="divider" />
+                    </div>
                     <button class="btn btn-outline interferer-toggle" id="btn-interferer" aria-pressed="false">Inject Interferer</button>
                     <p class="interferer-note">
                       Computed, not radiated: a second source at the angle below is added to the
