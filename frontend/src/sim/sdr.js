@@ -57,6 +57,8 @@ export function createSimSdr({
         sampleRate,
         bufferSize,
         noiseSigma,
+        // Where the simulated HB100 sits; SimSDR.target_angle_deg.
+        targetAngleDeg: TARGET_ANGLE_DEG,
     };
 
     /**
@@ -100,7 +102,7 @@ export function createSimSdr({
             byIf.set(ifHz, cur);
         }
 
-        add(TARGET_IF_HZ, TARGET_ANGLE_DEG, 1);
+        add(TARGET_IF_HZ, state.targetAngleDeg, 1);
         return byIf;
     }
 
@@ -170,6 +172,8 @@ export function createSimSdr({
         setSignalFreq(hz) { state.signalFreq = hz; },
 
         setNoiseSigma(sigma) { state.noiseSigma = sigma; },
+
+        setTargetAngle(deg) { state.targetAngleDeg = deg; },
 
         rx() { return synthesizeChannels(); },
     };

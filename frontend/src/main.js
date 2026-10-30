@@ -1,5 +1,6 @@
 import { createTransport, resolveTransportMode } from './transport.js';
 import { autoBackendWsUrl, getBackendUrlOverride, setBackendUrlOverride } from './transport-web.js';
+import { createScene } from './scene.js';
 
 // Application State Structure
 const state = {
@@ -36,6 +37,10 @@ const state = {
     interferer_power_dbfs: -10,
     interferer_offset_hz: 100e3,
     interferer_phase_deg: 0,
+
+    // Simulated HB100 position, from get_state; the Scene tab drags it.
+    // null on hardware, where the backend ignores it.
+    sim_target_angle_deg: null,
 };
 
 /* Read a `?name=1` flag from the URL, matching the parameter name
@@ -511,6 +516,7 @@ document.querySelectorAll('.tab-btn').forEach(button => {
         document.getElementById(targetId).classList.add('active');
 
         updateMemoryButtons();
+        applySceneUi();
         const exportBtn = document.getElementById('btn-export-tracking');
         if (exportBtn) {
             exportBtn.hidden = targetId !== 'tab-tracking';
@@ -1325,6 +1331,75 @@ function wireHoldToCommit(el, holdMs, onCommit) {
 // already watching during a run.
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
 
+/* --- Scene ---
+   Top-down view of the array, the HB100 and the interferer (scene.js), as a
+   tab and as a mini pane in the plots' top-right corner while the interferer
+   is on. Dragging a source writes its angle into `state` and syncs it, at
+   most every SCENE_SYNC_MS so a drag does not flood the socket. */
+const SCENE_SYNC_MS = 50;
+// What the last sweep or held update gave the scene to draw.
+let sceneLast = { angles: null, gain: null, beamAngle: null, held: false };
+// The mini pane's x: hidden until the interferer is next turned on.
+let sceneMiniDismissed = false;
+let sceneSyncTimer = null;
+
+function onSceneDrag(kind, angle) {
+    if (kind === 'target') {
+        state.sim_target_angle_deg = angle;
+    } else {
+        state.interferer_angle_deg = angle;
+        setInterfererPair('interferer-angle', 'val-interferer-angle', angle);
+    }
+    renderScenes();
+    if (sceneSyncTimer === null) {
+        sceneSyncTimer = setTimeout(() => {
+            sceneSyncTimer = null;
+            syncStateToBackend();
+        }, SCENE_SYNC_MS);
+    }
+}
+
+const scenes = [
+    createScene(document.getElementById('scene-main'), { onDrag: onSceneDrag }),
+    createScene(document.getElementById('scene-mini-svg'), { compact: true, onDrag: onSceneDrag }),
+];
+
+function renderScenes() {
+    const s = {
+        ...sceneLast,
+        targetAngle: state.sim_target_angle_deg,
+        interfererOn: !!state.interferer_enable,
+        interfererAngle: state.interferer_angle_deg,
+    };
+    for (const scene of scenes) scene.update(s);
+}
+
+function applySceneUi() {
+    const activeTab = document.querySelector('.tab-btn.active')?.getAttribute('data-target');
+    document.getElementById('scene-mini').hidden =
+        !(state.interferer_enable && !sceneMiniDismissed && activeTab !== 'tab-scene');
+    const hint = document.getElementById('scene-hint');
+    if (hint) {
+        const sim = Number.isFinite(state.sim_target_angle_deg);
+        hint.textContent = sim
+            ? 'Drag the HB100 to move the simulated target and watch the beam follow it. '
+              + (state.interferer_enable ? 'Drag the interferer to move it.' : 'Turn on the interferer to add one.')
+            : (state.interferer_enable
+                ? 'Drag the interferer to move it. The HB100 is real here, so it cannot be moved from the browser.'
+                : 'Turn on the interferer to place one. The HB100 is real here, so it cannot be moved from the browser.');
+    }
+    renderScenes();
+}
+
+document.getElementById('scene-mini-open')?.addEventListener('click', () => {
+    document.querySelector('.tab-btn[data-target="tab-scene"]')?.click();
+});
+document.getElementById('scene-mini-close')?.addEventListener('click', () => {
+    sceneMiniDismissed = true;
+    applySceneUi();
+});
+applySceneUi();
+
 /* --- Interferer ---
    The backend computes a jammer and adds it to the received IQ before the
    digital beamformer (phaser_headless._interferer_channels), on the kit and
@@ -1370,6 +1445,7 @@ function applyInterfererUi() {
         interfererRatio.mvdr = null;
         clearFftToneMarkers();
     }
+    applySceneUi();
 }
 
 function setInterfererPair(slId, inId, value) {
@@ -1381,6 +1457,7 @@ function setInterfererPair(slId, inId, value) {
 
 interfererBtn?.addEventListener('click', () => {
     state.interferer_enable = !state.interferer_enable;
+    if (state.interferer_enable) sceneMiniDismissed = false;
     applyInterfererUi();
     syncStateToBackend();
 });
@@ -1401,6 +1478,7 @@ function linkInterfererPair(slId, inId, stateKey, scale = 1, onValue = null) {
         if (Number.isFinite(v)) {
             state[stateKey] = v * scale;
             if (onValue) onValue(v);
+            renderScenes();
             syncStateToBackend();
         }
     };
@@ -1904,6 +1982,8 @@ async function loadStateFromServer() {
         armShutdownIfPermitted(msg.data.shutdown_available === true);
 
         revealCtfIfEligible();
+        state.sim_target_angle_deg = Number.isFinite(msg.data.sim_target_angle_deg)
+            ? msg.data.sim_target_angle_deg : null;
         loadInterfererState(msg.data);
         applyInitialStateToControls();
     } catch (err) {
@@ -3231,6 +3311,9 @@ function updateCharts(data) {
         lastLiveTrace = { x: xData.slice(), y: yData.slice() };
         updateMemoryButtons();
 
+        sceneLast = { angles: xData, gain: yData, beamAngle: xData[peakIndex], held: false };
+        renderScenes();
+
         // Update rectangular plot (Sum beam)
         const rectEl = document.getElementById('chart-rect');
         if (rectEl && rectEl.data && rectEl.data[0]) {
@@ -3397,6 +3480,9 @@ function updateSignalVsTime(data) {
     svtGain.push(peak);
     svtStamp.push(now);
     svtHold.push(hold);
+    // A held beam has no pattern to draw, only its direction.
+    sceneLast = { angles: null, gain: null, beamAngle: hold, held: true };
+    renderScenes();
     const last = svtTime[svtTime.length - 1];
     while (svtTime.length > SVT_HISTORY_MAX
            || (svtTime.length > 1 && last - svtTime[0] > SVT_WINDOW_S)) {

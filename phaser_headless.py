@@ -247,6 +247,12 @@ class PhaserHeadless:
                 sample_rate=self.SampleRate,
                 buffer_size=config.buffer_size,
             )
+            # The operator's, like the interferer settings: a re-init after
+            # Find HB100 or Calibrate must not snap the target back.
+            self.sim_target_angle_deg = getattr(
+                self, "sim_target_angle_deg", phaser_sim.SimSDR.TARGET_ANGLE_DEG
+            )
+            self.sdr.target_angle_deg = self.sim_target_angle_deg
             for device in self.array.devices.values():
                 ADAR_init(device)
                 ADAR_set_mode(device, "rx")
@@ -1048,6 +1054,11 @@ class PhaserHeadless:
                 "interferer_power_dbfs": self.interferer_power_dbfs,
                 "interferer_offset_hz": self.interferer_offset_hz,
                 "interferer_phase_deg": self.interferer_phase_deg,
+                # Where the simulated HB100 sits. None on hardware: the real
+                # one is wherever it was put, and nothing here measures that.
+                "sim_target_angle_deg": (
+                    self.sim_target_angle_deg if self.sim_mode else None
+                ),
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
                 # Lets the UI hide the affordance where it would only fail.
@@ -1421,6 +1432,14 @@ class PhaserHeadless:
                 self.interferer_offset_hz = max(-lim, min(lim, v))
             if "interferer_phase_deg" in state:
                 self.interferer_phase_deg = float(state["interferer_phase_deg"]) % 360.0
+            # Simulated HB100 position (Scene tab). Ignored on hardware, where
+            # there is no simulated target to move.
+            if "sim_target_angle_deg" in state and self.sim_mode:
+                v = state["sim_target_angle_deg"]
+                if v is not None:
+                    v = max(-90.0, min(90.0, float(v)))
+                    self.sim_target_angle_deg = v
+                    self.sdr.target_angle_deg = v
             # Phase LSB and steering resolution are independent knobs, so
             # take both whenever the frontend sends them. ignore_res only
             # decides which one drives the sweep -- it must not make the
