@@ -195,11 +195,18 @@ jobs:
             const sp = el?._fullLayout?.polar?._subplot;
             if (!sp || ![sp.cx, sp.cy, sp.radius].every(Number.isFinite)) return null;
             const box = el.getBoundingClientRect();
-            return { cx: box.left + sp.cx, cy: box.top + sp.cy, r: sp.radius };
+            // The HB100 marker (trace 4): its radius is where its range puts
+            // it, read back off the trace rather than assumed.
+            const [rMin, rMax] = el.layout.polar.radialaxis.range;
+            const m = el.data[4];
+            const frac = (m.r[0] - rMin) / (rMax - rMin);
+            const a = ((90 - m.theta[0]) * Math.PI) / 180;
+            return { cx: box.left + sp.cx, cy: box.top + sp.cy, r: sp.radius,
+                     mx: box.left + sp.cx + sp.radius * frac * Math.sin(a),
+                     my: box.top + sp.cy - sp.radius * frac * Math.cos(a) };
           });
           if (!geo) throw new Error('Plotly polar geometry (_fullLayout.polar._subplot cx/cy/radius) is gone; the Polar source drag in main.js needs updating');
-          // The HB100 marker starts at boresight, POLAR_SOURCE_INSET in from the rim.
-          await page.mouse.move(geo.cx, geo.cy - geo.r * 0.92);
+          await page.mouse.move(geo.mx, geo.my);
           await page.mouse.down();
           const a = (30 * Math.PI) / 180;
           await page.mouse.move(geo.cx + geo.r * 0.7 * Math.sin(a), geo.cy - geo.r * 0.7 * Math.cos(a), { steps: 10 });
@@ -212,6 +219,11 @@ jobs:
             return t.x[pk];
           });
           if (Math.abs(dragged - 30) > 3) throw new Error(`after dragging the HB100 to 30 deg the beam peaked at ${dragged} deg`);
+          // The drag also moved it outward, so its label carries a new range.
+          const label = await page.evaluate(() => document.getElementById('chart-polar').data[4].text[0]);
+          if (!/^HB100 30° · [\d.]+ m$/.test(label) || label.endsWith(' 1.0 m')) {
+            throw new Error(`HB100 label after the drag was ${JSON.stringify(label)}; expected 30° at a new range`);
+          }
           console.log(`OK: Polar drag moved the HB100; beam now peaks at ${dragged} deg`);
 
           if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);

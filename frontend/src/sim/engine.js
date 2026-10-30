@@ -45,6 +45,9 @@ import {
     STEER_PI,
     STEER_RES_DEG,
     TARGET_ANGLE_DEG,
+    TARGET_RANGE_M,
+    TARGET_RANGE_MAX_M,
+    TARGET_RANGE_MIN_M,
     TX_FREQ_HZ,
     TX_GAIN_DB,
 } from './constants.generated.js';
@@ -129,6 +132,7 @@ export function createEngine(options = {}) {
         interferer_offset_hz: INTERFERER_OFFSET_HZ,
         interferer_phase_deg: INTERFERER_PHASE_DEG,
         sim_target_angle_deg: TARGET_ANGLE_DEG,
+        sim_target_range_m: TARGET_RANGE_M,
         sweeping: false,
     };
 
@@ -690,10 +694,15 @@ export function createEngine(options = {}) {
             // Python's % takes the sign of the divisor; JS's of the dividend.
             state.interferer_phase_deg = ((patch.interferer_phase_deg % 360) + 360) % 360;
         }
-        // Simulated HB100 position (Scene tab).
+        // Simulated HB100 position (Polar tab).
         if (Number.isFinite(patch.sim_target_angle_deg)) {
             state.sim_target_angle_deg = Math.max(-90, Math.min(90, patch.sim_target_angle_deg));
             sdr.setTargetAngle(state.sim_target_angle_deg);
+        }
+        if (Number.isFinite(patch.sim_target_range_m)) {
+            state.sim_target_range_m = Math.max(
+                TARGET_RANGE_MIN_M, Math.min(TARGET_RANGE_MAX_M, patch.sim_target_range_m));
+            sdr.setTargetRange(state.sim_target_range_m);
         }
 
         // Phase LSB and steering resolution are independent knobs. ignore_res

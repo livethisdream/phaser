@@ -118,6 +118,20 @@ class SimSDR:
     # Scene tab drags it via set_state's sim_target_angle_deg.
     TARGET_ANGLE_DEG = 0.0
 
+    # Range to the simulated HB100, metres. It is a one-way beacon, so the
+    # received amplitude goes as 1/r (power as 1/r^2), referenced to
+    # TARGET_RANGE_M: the default range reproduces the level AMP_SCALE sets,
+    # and 2 m reads 6 dB lower. The wavefront stays planar at every range --
+    # only the level moves. Below the array's far-field distance (2D^2/lambda,
+    # ~0.9 m at 10.5 GHz) a real HB100 would also defocus the beam, which this
+    # does not model. The limits run from ~6 dB above today's level (headroom
+    # before full scale) to ~26 dB below it, which is down at this simulator's
+    # noise floor (about -38 dBFS in a default sweep): past ~5 m the measured
+    # peak reads high by the noise, and at 20 m the beam is sinking into it.
+    TARGET_RANGE_M = 1.0
+    TARGET_RANGE_MIN_M = 0.5
+    TARGET_RANGE_MAX_M = 20.0
+
     # IF tone the sim places in the baseband spectrum (Hz). Real target
     # appears at some frequency after downconversion; we just pick a value
     # inside the passband so the FFT plot shows a peak.
@@ -161,8 +175,9 @@ class SimSDR:
 
         self._rng = np.random.default_rng(0)
 
-        # Where the simulated HB100 sits, degrees from boresight.
+        # Where the simulated HB100 sits: degrees from boresight, metres away.
         self.target_angle_deg = self.TARGET_ANGLE_DEG
+        self.target_range_m = self.TARGET_RANGE_M
 
     def set_signal_freq(self, freq_hz):
         """Kept in sync from phaser_headless.set_signal_freq so the spatial
@@ -208,7 +223,8 @@ class SimSDR:
         """Return (chan0, chan1) as 1D complex arrays, shape (buffer_size,).
 
         Sums:
-          - Target: plane wave at target_angle_deg, IF = TARGET_IF_HZ, unit amp
+          - Target: plane wave at target_angle_deg, IF = TARGET_IF_HZ,
+            amplitude TARGET_RANGE_M / target_range_m (1/r, one way)
           - Independent complex noise per sub-array
 
         No interferer here: that is injected by PhaserHeadless.do_sweep()
@@ -231,7 +247,7 @@ class SimSDR:
             chan_sub, t,
             if_hz=self.TARGET_IF_HZ,
             arrival_angle_deg=self.target_angle_deg,
-            amplitude=1.0,
+            amplitude=self.TARGET_RANGE_M / self.target_range_m,
             wavelength=wavelength,
         )
 

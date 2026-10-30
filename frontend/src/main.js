@@ -1,6 +1,9 @@
 import { createTransport, resolveTransportMode } from './transport.js';
 import { autoBackendWsUrl, getBackendUrlOverride, setBackendUrlOverride } from './transport-web.js';
-import { clampAngle, createScene } from './scene.js';
+import {
+    SOURCE_RING_FRAC, clampAngle, createScene, formatRange, fracToRange, rangeToFrac,
+} from './scene.js';
+import { TARGET_RANGE_M } from './sim/constants.generated.js';
 
 // Application State Structure
 const state = {
@@ -41,6 +44,7 @@ const state = {
     // Simulated HB100 position, from get_state; the Scene tab drags it.
     // null on hardware, where the backend ignores it.
     sim_target_angle_deg: null,
+    sim_target_range_m: null,
 };
 
 /* Read a `?name=1` flag from the URL, matching the parameter name
@@ -1345,15 +1349,16 @@ function wireHoldToCommit(el, holdMs, onCommit) {
 // already watching during a run.
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
 
-/* --- Sources: the simulated HB100 and the interferer, by angle ---
+/* --- Sources: the simulated HB100 and the interferer ---
    Drawn on the Polar tab (Plot Options > Show Sources) and in a mini pane in
    the plots' top-right corner while the interferer is on (scene.js). Both are
    draggable. The HB100 only in the simulator -- on the kit it is a real one,
-   wherever it was put, and get_state reports sim_target_angle_deg as null. The
-   interferer is computed on the kit too, so dragging it there just moves
-   interferer_angle_deg, as its slider does. A drag writes the angle into
-   `state` and syncs it at most every SOURCE_SYNC_MS, so it does not flood the
-   socket. */
+   wherever it was put, and get_state reports sim_target_angle_deg and
+   sim_target_range_m as null. Its drag sets angle and range (radius is
+   log(range); see rangeToFrac). The interferer is computed on the kit too and
+   has only an angle, so dragging it there just moves interferer_angle_deg, as
+   its slider does. A drag writes into `state` and syncs at most every
+   SOURCE_SYNC_MS, so it does not flood the socket. */
 const SOURCE_SYNC_MS = 50;
 // What the last sweep or held update gave the mini pane to draw.
 let sceneLast = { angles: null, gain: null, beamAngle: null };
@@ -1364,9 +1369,10 @@ let sourceSyncTimer = null;
 // here, not with schedulePolarSources(), because this section calls it first.
 let polarSourcesFrame = null;
 
-function onSourceDrag(kind, angle) {
+function onSourceDrag(kind, angle, range = null) {
     if (kind === 'target') {
         state.sim_target_angle_deg = angle;
+        if (Number.isFinite(range)) state.sim_target_range_m = range;
     } else {
         state.interferer_angle_deg = angle;
         setInterfererPair('interferer-angle', 'val-interferer-angle', angle);
@@ -1392,6 +1398,7 @@ function renderSources({ polar = true } = {}) {
     miniScene.update({
         ...sceneLast,
         targetAngle: state.sim_target_angle_deg,
+        targetRange: state.sim_target_range_m,
         interfererOn: !!state.interferer_enable,
         interfererAngle: state.interferer_angle_deg,
     });
@@ -2003,6 +2010,8 @@ async function loadStateFromServer() {
         revealCtfIfEligible();
         state.sim_target_angle_deg = Number.isFinite(msg.data.sim_target_angle_deg)
             ? msg.data.sim_target_angle_deg : null;
+        state.sim_target_range_m = Number.isFinite(msg.data.sim_target_range_m)
+            ? msg.data.sim_target_range_m : null;
         loadInterfererState(msg.data);
         applyInitialStateToControls();
     } catch (err) {
@@ -2208,8 +2217,6 @@ Plotly.newPlot('chart-polar', [
    cannot be dragged. */
 const POLAR_SOURCE_TRACES = { target: [3, 4], interferer: [5, 6] };
 const SOURCE_LABELS = { target: 'HB100', interferer: 'Interferer' };
-// Markers sit this far in from the rim, as a fraction of the radial span.
-const POLAR_SOURCE_INSET = 0.08;
 // How close (px) a press must land to a marker to grab it.
 const POLAR_GRAB_PX = 18;
 
@@ -2218,13 +2225,19 @@ function polarRadialRange(el) {
     return Array.isArray(range) && range.length === 2 ? range : [-50, 0];
 }
 
-/** Angle per draggable source currently on the Polar tab. */
-function polarSourceAngles() {
+/** { angle, range, frac } per draggable source currently on the Polar tab;
+    frac is its radius over the plot's (scene.js rangeToFrac). */
+function polarSources() {
     if (!sourcesOnPolar()) return {};
     const out = {};
-    if (Number.isFinite(state.sim_target_angle_deg)) out.target = state.sim_target_angle_deg;
+    if (Number.isFinite(state.sim_target_angle_deg)) {
+        // A backend from before ranges existed sends none: the reference range.
+        const range = Number.isFinite(state.sim_target_range_m)
+            ? state.sim_target_range_m : TARGET_RANGE_M;
+        out.target = { angle: state.sim_target_angle_deg, range, frac: rangeToFrac(range) };
+    }
     if (state.interferer_enable && Number.isFinite(state.interferer_angle_deg)) {
-        out.interferer = state.interferer_angle_deg;
+        out.interferer = { angle: state.interferer_angle_deg, range: null, frac: SOURCE_RING_FRAC };
     }
     return out;
 }
@@ -2233,20 +2246,22 @@ function updatePolarSources(redraw = true) {
     const el = document.getElementById('chart-polar');
     if (!el || !el.data || el.data.length < POLAR_LIVE_TRACES) return;
     const [rMin, rMax] = polarRadialRange(el);
-    const rSrc = rMax - POLAR_SOURCE_INSET * (rMax - rMin);
-    const angles = polarSourceAngles();
+    const sources = polarSources();
     for (const [kind, [rayIdx, markIdx]] of Object.entries(POLAR_SOURCE_TRACES)) {
-        const angle = angles[kind];
-        const on = Number.isFinite(angle);
-        el.data[rayIdx].visible = on;
-        el.data[markIdx].visible = on;
-        if (!on) continue;
-        const theta = toPolarTheta(angle);
+        const src = sources[kind];
+        el.data[rayIdx].visible = !!src;
+        el.data[markIdx].visible = !!src;
+        if (!src) continue;
+        // The radial axis is dB; a source's radius is not a level, only where
+        // to draw it (frac of the way out).
+        const rSrc = rMin + src.frac * (rMax - rMin);
+        const theta = toPolarTheta(src.angle);
         el.data[rayIdx].r = [rMin, rSrc];
         el.data[rayIdx].theta = [theta, theta];
         el.data[markIdx].r = [rSrc];
         el.data[markIdx].theta = [theta];
-        el.data[markIdx].text = [`${SOURCE_LABELS[kind]} ${Math.round(angle)}°`];
+        el.data[markIdx].text = [`${SOURCE_LABELS[kind]} ${Math.round(src.angle)}°`
+            + (src.range !== null ? ` · ${formatRange(src.range)}` : '')];
     }
     if (redraw) Plotly.redraw('chart-polar');
 }
@@ -2273,17 +2288,18 @@ function polarSourceAt(el, evt) {
     const box = el.getBoundingClientRect();
     const px = evt.clientX - box.left;
     const py = evt.clientY - box.top;
-    const rPx = geo.radius * (1 - POLAR_SOURCE_INSET);
     let best = null;
-    for (const [kind, angle] of Object.entries(polarSourceAngles())) {
+    for (const [kind, { angle, frac }] of Object.entries(polarSources())) {
         const a = (angle * Math.PI) / 180;
+        const rPx = geo.radius * frac;
         const d = Math.hypot(px - (geo.cx + rPx * Math.sin(a)), py - (geo.cy - rPx * Math.cos(a)));
         if (d <= POLAR_GRAB_PX && (!best || d < best.d)) best = { kind, d };
     }
     return best?.kind ?? null;
 }
 
-function polarPointerAngle(el, evt) {
+/** Pointer -> { angle, frac }, frac being its radius over the plot's. */
+function polarPointer(el, evt) {
     const geo = polarGeometry(el);
     if (!geo) return null;
     const box = el.getBoundingClientRect();
@@ -2291,7 +2307,10 @@ function polarPointerAngle(el, evt) {
     // Below the baseline, keep the side the pointer is on.
     const dy = Math.max(geo.cy - (evt.clientY - box.top), 0);
     if (dx === 0 && dy === 0) return null;
-    return clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI));
+    return {
+        angle: clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI)),
+        frac: Math.hypot(dx, dy) / geo.radius,
+    };
 }
 
 (function wirePolarSourceDrag() {
@@ -2319,9 +2338,16 @@ function polarPointerAngle(el, evt) {
             return;
         }
         evt.stopPropagation();
-        const angle = polarPointerAngle(el, evt);
-        const current = dragging === 'target' ? state.sim_target_angle_deg : state.interferer_angle_deg;
-        if (angle !== null && angle !== current) onSourceDrag(dragging, angle);
+        const p = polarPointer(el, evt);
+        if (!p) return;
+        if (dragging === 'target') {
+            const range = fracToRange(p.frac);
+            if (p.angle !== state.sim_target_angle_deg || range !== state.sim_target_range_m) {
+                onSourceDrag('target', p.angle, range);
+            }
+        } else if (p.angle !== state.interferer_angle_deg) {
+            onSourceDrag('interferer', p.angle);
+        }
     }, true);
     const end = (evt) => {
         if (!dragging) return;
