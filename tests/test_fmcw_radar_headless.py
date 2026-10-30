@@ -481,3 +481,13 @@ def test_range_doppler_peak_follows_the_moving_target():
     f0 = h.do_fmcw_radar_frame()
     assert abs(f0["peak_velocity"]) < 0.3
     assert f0["peak_magnitude_db"] > f["peak_magnitude_db"]
+
+
+def test_state_lists_each_presets_chirp_count():
+    """The UI greys MTI out on single-chirp presets and CFAR on multi-chirp
+    ones, before Start, from this."""
+    h = _headless()
+    info = h.get_fmcw_radar_state()["data"]["preset_info"]
+    assert set(info) == set(dsp.FMCW_PRESETS)
+    assert info["range_doppler"]["num_chirps"] > 1
+    assert info["range_sync"]["num_chirps"] == 1

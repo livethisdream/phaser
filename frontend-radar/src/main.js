@@ -25,6 +25,7 @@ const state = {
         waterfall: null,     // rows = frames, cols = range bins
         last: null,          // the last frame, for "Set 0 m Here"
         span_db: 60,         // colour scale: the frame's peak down this far
+        preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
         // Range-Doppler: the waterfall and "moving" trace skip |v| below
         // this, as the CW peak readout does. The strongest cell per range bin
         // over every velocity is the stationary clutter at 0 m/s -- walls,
@@ -590,6 +591,12 @@ function renderFmcwFrame(frame) {
         trace = frame.profile_db || [];
         const thr = frame.cfar_threshold_db || [];
         const idx = frame.detection_indices || [];
+        // "Apply CFAR Threshold" (lab step 4): everything at or below the
+        // threshold goes to the trace's floor, in the plot and the waterfall.
+        if (thr.length === trace.length && fmcwEl('fmcw-cfar-apply')?.checked) {
+            const floor = Math.min(...trace);
+            trace = trace.map((v, i) => (v > thr[i] ? v : floor));
+        }
         Plotly.restyle('chart-fmcw-range', {
             x: [range, [], thr.length ? range : [], idx.map(i => range[i])],
             y: [trace, [], thr, idx.map(i => trace[i])],
@@ -648,6 +655,7 @@ async function refreshFmcwState() {
                 : cap.reason ? `FMCW limited: ${cap.reason}`
                 : `FMCW ready (${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''})`;
         }
+        state.fmcw.preset_info = d.preset_info || {};
         const sel = fmcwEl('fmcw-preset');
         if (sel && Array.isArray(d.presets) && sel.options.length !== d.presets.length) {
             const keep = sel.value || d.preset;
@@ -655,6 +663,7 @@ async function refreshFmcwState() {
             d.presets.forEach(p => sel.add(new Option(p, p)));
             sel.value = d.presets.includes(keep) ? keep : d.presets[0];
         }
+        updateFmcwControlGating();
         setRunningUi(state.running, state.runningMode || state.uiMode);
         return d;
     } catch (e) {
@@ -704,7 +713,30 @@ async function pushFmcwParams(partial) {
     }
 }
 
-fmcwEl('fmcw-preset')?.addEventListener('change', (e) => pushFmcwParams({ preset: e.target.value }));
+// MTI cancels between chirps, so it needs a multi-chirp preset; CFAR runs on
+// the single-chirp range profile, as the lab's CFAR script does. Each used to
+// sit there doing nothing silently on the other kind of preset.
+function updateFmcwControlGating() {
+    const preset = fmcwEl('fmcw-preset')?.value;
+    const n = state.fmcw.preset_info?.[preset]?.num_chirps;
+    if (!n) return;  // not known yet
+    const multi = n > 1;
+    const mtiRow = fmcwEl('fmcw-mti')?.closest('.control-group');
+    mtiRow?.classList.toggle('fmcw-disabled', !multi);
+    ['fmcw-cfar', 'fmcw-cfar-apply'].forEach(id => fmcwEl(id)?.closest('label')?.classList.toggle('fmcw-disabled', multi));
+    ['fmcw-cfar-guard', 'fmcw-cfar-bias'].forEach(id => fmcwEl(id)?.closest('.control-group')?.classList.toggle('fmcw-disabled', multi));
+    const hint = fmcwEl('fmcw-mode-hint');
+    if (hint) {
+        hint.textContent = multi
+            ? `${preset}: ${n} chirps. MTI applies; CFAR is for the single-chirp presets (range, range_sync, cfar).`
+            : `${preset}: 1 chirp. CFAR applies; MTI needs a multi-chirp preset (range_doppler).`;
+    }
+}
+
+fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
+    updateFmcwControlGating();
+    pushFmcwParams({ preset: e.target.value });
+});
 fmcwEl('fmcw-mti')?.addEventListener('change', (e) => pushFmcwParams({ mti: e.target.value }));
 fmcwEl('fmcw-range-max')?.addEventListener('change', () => {
     state.fmcw.waterfall = null;

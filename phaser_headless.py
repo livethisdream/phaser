@@ -1182,6 +1182,12 @@ class PhaserHeadless:
             "running": running,
             "preset": preset,
             "presets": sorted(phaser_radar_dsp.FMCW_PRESETS),
+            # Per preset, what the UI needs to know before Start: chirp count
+            # decides whether MTI (multi-chirp) or CFAR (single-chirp) applies.
+            "preset_info": {
+                name: {"num_chirps": int(phaser_radar_dsp.fmcw_config(preset=name)["num_chirps"])}
+                for name in phaser_radar_dsp.FMCW_PRESETS
+            },
             "params": dict(getattr(self, "fmcw_params", None) or {}),
             "cfg": cfg,
             "plan": getattr(self, "fmcw_plan", None) if running else None,
