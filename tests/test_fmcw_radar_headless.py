@@ -393,11 +393,13 @@ def test_range_doppler_frame_carries_a_decodable_map_on_its_axes():
     f = h.do_fmcw_radar_frame()
     m = dsp.decode_db_u8(f["map"])
     assert m.shape == (len(f["range_axis"]), len(f["velocity_axis"]))
-    r, v = np.unravel_index(int(np.argmax(m)), m.shape)
-    # The brightest decoded cell is the peak the frame reports.
+    # The reported peak is the brightest decoded cell outside the zero-Doppler
+    # exclusion (peak_exclude), not the brightest overall.
+    vel = np.array(f["velocity_axis"])
+    moving = np.where(np.abs(vel)[None, :] >= dsp.FMCW_PROC_DEFAULTS["peak_exclude"], m, -np.inf)
+    r, v = np.unravel_index(int(np.argmax(moving)), m.shape)
     assert f["range_axis"][r] == pytest.approx(f["peak_range"], abs=1e-3)
     assert f["velocity_axis"][v] == pytest.approx(f["peak_velocity"], abs=1e-3)
-    assert f["map"]["db_max"] == pytest.approx(f["peak_magnitude_db"], abs=0.01)
 
 
 def test_range_profile_frame_carries_its_trace_and_cfar():
@@ -465,3 +467,17 @@ def test_radar_frames_are_paced_to_the_cap(monkeypatch):
     clock["t"] += 0.5                 # a slow frame: no sleep
     h._pace_radar_frames()
     assert len(slept) == 1
+
+
+def test_range_doppler_peak_follows_the_moving_target():
+    """phaser-01, 2026-10-30: Peak Range / Velocity sat at 0 m, 0 m/s -- the
+    leakage, put at 0 m by the calibration -- while the map showed a hand.
+    The simulator's strongest return is its stationary 1 m target."""
+    h = _headless()
+    _start(h, preset="range_doppler")
+    f = h.do_fmcw_radar_frame()
+    assert abs(f["peak_velocity"]) >= 0.3
+    h.set_fmcw_radar_params({"peak_exclude": 0.0})   # live; 0 = the old search
+    f0 = h.do_fmcw_radar_frame()
+    assert abs(f0["peak_velocity"]) < 0.3
+    assert f0["peak_magnitude_db"] > f["peak_magnitude_db"]

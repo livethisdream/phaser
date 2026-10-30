@@ -492,9 +492,15 @@ def _fft(x, axis, n=None):
     return np.fft.fft(x, n=n, axis=axis)
 
 
+# Half-width of each window's main lobe, in bins: a return spreads this far
+# either side of its own bin before the first null.
+MAINLOBE_HALF_BINS = {"blackman": 3, "hann": 2, "hamming": 2, "rect": 1}
+
+
 def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq,
                       zero_range_freq=0.0, fft_window="blackman",
-                      range_max=None, range_min=0.0, vel_max=None):
+                      range_max=None, range_min=0.0, vel_max=None,
+                      peak_exclude=0.0):
     """2D FFT of the chirp matrix -> range vs velocity.
 
     Range comes from the fast-time FFT down each column, velocity from the
@@ -550,7 +556,25 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     spec = np.fft.fftshift(_fft(spec * w_slow.astype(real)[None, :], axis=1), axes=1)
     map_out = _to_db(np.abs(spec[:, vmask]), win_sum)
 
-    peak_r, peak_v = np.unravel_index(int(np.argmax(map_out)), map_out.shape)
+    # The peak readout skips the zero-Doppler cells. The strongest cell in a
+    # room is the Tx->Rx leakage and stationary clutter at 0 m/s -- after the
+    # 0 m calibration, at exactly 0 m too -- so an unrestricted argmax read
+    # 0 m, 0 m/s whatever moved (phaser-01, 2026-10-30). The exclusion is the
+    # wider of peak_exclude and the slow-time window's main lobe, counted in
+    # bins: that clutter is tens of dB above a hand, and its own main lobe
+    # out to +/-3 bins (Blackman) otherwise wins at 0.3 m/s whenever a bin is
+    # coarser than 0.1 m/s. 0 turns it off. As for CW, the map is untouched;
+    # with no column outside the exclusion, search them all.
+    search = np.ones(len(velocity_out), dtype=bool)
+    if peak_exclude:
+        dv = float(velocity_resolution(n_slow, pri, output_freq))
+        lobe = MAINLOBE_HALF_BINS.get(str(fft_window).lower(), 3)
+        half = max(lobe, int(np.ceil(abs(float(peak_exclude)) / dv - 1e-9)))
+        search = np.abs(np.rint(velocity_out / dv)) >= half
+    if not np.any(search):
+        search[:] = True
+    masked = np.where(search[None, :], map_out, -np.inf)
+    peak_r, peak_v = np.unravel_index(int(np.argmax(masked)), map_out.shape)
     return {
         "map_db": map_out.astype(np.float32).tolist(),
         "range_axis": ranges_out.astype(np.float32).tolist(),
@@ -818,6 +842,7 @@ FMCW_PROC_DEFAULTS = {
     "cfar_guard": 4,
     "cfar_ref": 16,
     "cfar_bias_db": 6.0,
+    "peak_exclude": 0.3,    # m/s; range-Doppler peak readout skips |v| below this
 }
 
 # The first FMCW lab, and what start_fmcw_radar runs when no preset is named.

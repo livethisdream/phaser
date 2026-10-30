@@ -1006,7 +1006,7 @@ class PhaserHeadless:
 
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
-        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq",
+        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
     # Params written straight to the hardware while running, as CW does.
@@ -1222,7 +1222,8 @@ class PhaserHeadless:
             rd = phaser_radar_dsp.range_doppler_map(
                 matrix, fs, cfg["chirp_bw"], ramp, plan["pri_ms"] / 1e3,
                 cfg["output_freq"], zero_range_freq=zero, fft_window=window,
-                range_max=cfg.get("range_max"), vel_max=cfg.get("vel_max"))
+                range_max=cfg.get("range_max"), vel_max=cfg.get("vel_max"),
+                peak_exclude=cfg.get("peak_exclude", 0.0))
             out.update({
                 "kind": "range_doppler",
                 "peak_range": rd["peak_range"],

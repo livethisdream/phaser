@@ -574,9 +574,13 @@ function renderFmcwFrame(frame) {
         // The range plot shows the strongest return per range bin twice: over
         // every velocity, and over the moving ones only. The waterfall gets
         // the moving one, so a hand shows against the static clutter.
+        // Skip the clutter's whole main lobe too, as the backend's peak
+        // search does: at least 3 bins (Blackman) either side of 0 m/s.
         const vel = frame.velocity_axis || [];
+        const dv = vel.length > 1 ? Math.abs(vel[1] - vel[0]) : 0;
+        const vmin = Math.max(state.fmcw.moving_min_mps, 3 * dv) - 1e-9;
         const moving = [];
-        vel.forEach((v, i) => { if (Math.abs(v) >= state.fmcw.moving_min_mps) moving.push(i); });
+        vel.forEach((v, i) => { if (Math.abs(v) >= vmin) moving.push(i); });
         const all = z.map(row => Math.max(...row));
         trace = moving.length ? z.map(row => Math.max(...moving.map(i => row[i]))) : all;
         Plotly.restyle('chart-fmcw-range', {
