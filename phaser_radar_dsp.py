@@ -15,6 +15,7 @@ phaser_cw_radar re-exports the names below, so `from phaser_cw_radar import
 process_cw_frame, DEFAULTS` keeps working for anything that already does it.
 """
 
+import base64
 from fractions import Fraction
 from math import lcm
 
@@ -562,6 +563,61 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
         "max_velocity": float(max_unambiguous_velocity(pri, output_freq)),
         "num_chirps": int(n_slow),
     }
+
+
+# --- frame payload (C3) ----------------------------------------------------
+#
+# What the backend sends the browser each frame. A range_doppler map is ~60 x
+# 256 cells; as a JSON list of floats that is ~300 KB a frame, as one byte a
+# cell in base64 ~20 KB. One byte is 0.4 dB a step over MAP_SPAN_DB, far finer
+# than a heatmap's colour scale resolves.
+
+MAP_SPAN_DB = 100.0   # quantize from the frame's peak down to this far below
+AXIS_DECIMALS = 4     # m and m/s: 0.1 mm, far under any bin
+DB_DECIMALS = 2       # 1D traces in dB
+
+
+def encode_db_u8(map_db, span_db=MAP_SPAN_DB):
+    """A 2D dB array as one byte a cell, base64, with its own scale.
+
+    Quantized from the array's peak down to `span_db` below it; anything lower
+    is clipped to the floor rather than stretching the scale to the 1e-15
+    clamp in _to_db. Row-major, so for a range-Doppler map rows are range and
+    columns velocity, matching map_db. decode_db_u8() inverts it.
+    """
+    m = np.asarray(map_db, dtype=np.float32)
+    if m.ndim != 2:
+        raise ValueError("encode_db_u8 needs a 2D array")
+    hi = float(np.max(m)) if m.size else 0.0
+    lo = max(float(np.min(m)) if m.size else 0.0, hi - float(span_db))
+    if hi <= lo:  # flat map: any non-zero span keeps decoding finite
+        lo = hi - 1.0
+    q = np.rint((m - lo) * (255.0 / (hi - lo)))
+    q = np.clip(q, 0, 255).astype(np.uint8)
+    return {
+        "encoding": "u8-base64",
+        "rows": int(m.shape[0]),
+        "cols": int(m.shape[1]),
+        "db_min": round(lo, DB_DECIMALS),
+        "db_max": round(hi, DB_DECIMALS),
+        "data": base64.b64encode(q.tobytes()).decode("ascii"),
+    }
+
+
+def decode_db_u8(enc):
+    """encode_db_u8()'s output back to a rows x cols float32 dB array.
+
+    The browser does the same: dB = db_min + byte * (db_max - db_min) / 255.
+    """
+    q = np.frombuffer(base64.b64decode(enc["data"]), dtype=np.uint8)
+    q = q.reshape(enc["rows"], enc["cols"]).astype(np.float32)
+    return enc["db_min"] + q * ((enc["db_max"] - enc["db_min"]) / 255.0)
+
+
+def rounded(values, decimals):
+    """A 1D array as a JSON-friendly list, rounded (float32 tolist() spells
+    every value out to 17 digits, tripling the bytes for nothing)."""
+    return np.round(np.asarray(values, dtype=float), decimals).tolist()
 
 
 def ca_cfar(spectrum_db, num_guard=4, num_ref=16, bias_db=6.0):

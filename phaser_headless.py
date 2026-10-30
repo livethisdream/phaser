@@ -1210,6 +1210,11 @@ class PhaserHeadless:
                 "range_resolution": rd["range_resolution"],
                 "velocity_resolution": rd["velocity_resolution"],
                 "max_velocity": rd["max_velocity"],
+                "map": phaser_radar_dsp.encode_db_u8(rd["map_db"]),
+                "range_axis": phaser_radar_dsp.rounded(
+                    rd["range_axis"], phaser_radar_dsp.AXIS_DECIMALS),
+                "velocity_axis": phaser_radar_dsp.rounded(
+                    rd["velocity_axis"], phaser_radar_dsp.AXIS_DECIMALS),
             })
         else:
             iq = data[:, 0] if np.ndim(data) == 2 else data
@@ -1222,6 +1227,10 @@ class PhaserHeadless:
                 "peak_magnitude_db": prof["peak_magnitude_db"],
                 "range_resolution": prof["range_resolution"],
                 "max_range": prof["max_range"],
+                "range_axis": phaser_radar_dsp.rounded(
+                    prof["range_axis"], phaser_radar_dsp.AXIS_DECIMALS),
+                "profile_db": phaser_radar_dsp.rounded(
+                    prof["profile_db"], phaser_radar_dsp.DB_DECIMALS),
             })
             if cfg.get("cfar"):
                 spectrum = np.asarray(prof["profile_db"], dtype=float)
@@ -1230,6 +1239,11 @@ class PhaserHeadless:
                     num_ref=int(cfg["cfar_ref"]), bias_db=float(cfg["cfar_bias_db"]))
                 _, detections = phaser_radar_dsp.apply_cfar(spectrum, threshold)
                 out["detections"] = int(len(detections))
+                # The lab's two checkboxes: draw the threshold, then blank
+                # below it. The browser does the blanking from these.
+                out["cfar_threshold_db"] = phaser_radar_dsp.rounded(
+                    threshold, phaser_radar_dsp.DB_DECIMALS)
+                out["detection_indices"] = [int(i) for i in detections]
 
         out["capture_ms"] = (t1 - t0) * 1e3
         out["process_ms"] = (time.perf_counter() - t1) * 1e3
@@ -1921,12 +1935,14 @@ class PhaserHeadless:
         if not self.ws_clients:
             return
 
+        # Serialize once, not once per client: an FMCW frame carries its map.
+        text = json.dumps(message)
         with self.ws_lock:
             dead_clients = set()
             for client in self.ws_clients:
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        client.send(json.dumps(message)),
+                        client.send(text),
                         self.ws_loop
                     )
                 except Exception:

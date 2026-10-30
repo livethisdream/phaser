@@ -375,6 +375,27 @@ scale and offset in the header, plus the CFAR threshold and detections. A
 single-chirp range profile ships as float32. The size budget is enforced by a
 test.
 
+**Done (2026-10-30).** `fmcw_radar_frame` messages carry, in `data`:
+
+- every frame: `kind`, `preset`, `ramp_mode`, `num_chirps`, `pri_ms`,
+  `ramp_time`, `peak_range`, `peak_magnitude_db`, `range_resolution`,
+  `capture_ms`, `process_ms`.
+- `kind: "range_doppler"`: `peak_velocity`, `velocity_resolution`,
+  `max_velocity`, `range_axis` and `velocity_axis` (m, m/s, 4 decimals), and
+  `map` = `{encoding: "u8-base64", rows, cols, db_min, db_max, data}`:
+  rows are range and columns velocity, row-major, one byte a cell, and
+  `dB = db_min + byte * (db_max - db_min) / 255`. Quantized from the frame's
+  peak down to 100 dB below it (`MAP_SPAN_DB`); lower is clipped to the floor.
+- `kind: "range_profile"`: `max_range`, `range_axis`, `profile_db` (2
+  decimals), and with `cfar` on, `cfar_threshold_db` (same length),
+  `detections` (count) and `detection_indices` (into the profile).
+
+`encode_db_u8` / `decode_db_u8` in `phaser_radar_dsp` are the reference.
+Measured under `--sim`: `range_doppler` 23.6 KB a frame (61 x 256), `_far`
+106 KB (301 x 256), profiles under 2 KB; JSON serialization under 0.4 ms.
+Budgets (32 / 128 / 8 KB) are enforced in `tests/test_fmcw_radar_headless.py`,
+and `broadcast_to_ws` now serializes once per frame rather than per client.
+
 ### C4. Minimal bench UI in `frontend-radar/`
 An FMCW tab with: a range profile (with a frequency/range toggle and a 0 m
 calibrate button), a range waterfall, a range-Doppler heatmap, and the ramp,

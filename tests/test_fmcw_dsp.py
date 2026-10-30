@@ -464,3 +464,45 @@ def test_fast_len_is_the_next_5_smooth_length(n):
     k = _dsp._fast_len(n)
     assert k >= n and smooth(k)
     assert not any(smooth(j) for j in range(n, k))
+
+
+# --- frame payload (C3) -------------------------------------------------
+
+from phaser_radar_dsp import decode_db_u8, encode_db_u8, rounded  # noqa: E402
+
+
+def test_db_u8_round_trips_within_half_a_step():
+    rng = np.random.default_rng(0)
+    m = rng.uniform(-90, -10, size=(61, 256)).astype(np.float32)
+    enc = encode_db_u8(m)
+    assert (enc["rows"], enc["cols"]) == m.shape
+    assert enc["data"].isascii()
+    step = (enc["db_max"] - enc["db_min"]) / 255
+    back = decode_db_u8(enc)
+    assert back.shape == m.shape
+    assert np.max(np.abs(back - m)) <= step / 2 + 0.01  # + the 2-decimal scale rounding
+
+
+def test_db_u8_clips_below_the_span_instead_of_stretching():
+    """_to_db clamps silence to ~-300 dB; one such cell must not squash the
+    real 80 dB of the map into a handful of codes."""
+    m = np.full((4, 4), -40.0)
+    m[0, 0] = -10.0
+    m[3, 3] = -300.0
+    enc = encode_db_u8(m, span_db=100.0)
+    assert enc["db_max"] == pytest.approx(-10.0)
+    assert enc["db_min"] == pytest.approx(-110.0)
+    back = decode_db_u8(enc)
+    assert back[3, 3] == pytest.approx(-110.0)
+    assert back[1, 1] == pytest.approx(-40.0, abs=0.25)
+
+
+def test_db_u8_survives_a_flat_map():
+    back = decode_db_u8(encode_db_u8(np.full((2, 3), -50.0)))
+    assert np.all(np.isfinite(back))
+    assert back[0, 0] == pytest.approx(-50.0, abs=0.01)
+
+
+def test_rounded_is_plain_floats():
+    out = rounded(np.array([1.23456789, 2.0], dtype=np.float32), 4)
+    assert out == [1.2346, 2.0] and all(type(v) is float for v in out)
