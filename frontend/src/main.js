@@ -87,6 +87,14 @@ const backendProbeState = {
     probing: false,
     retries: 0,
 };
+// Declared up here, not with the transport below: updateSweepAvailability()
+// and syncStateToBackend() read them during module setup, before that point.
+// Vite's dev server runs this file as a real ES module, where reading a `let`
+// before its declaration throws and the page never connects; the production
+// bundle rewrites top-level `let` to `var`, which hid it.
+let isConnected = false;
+// True once `state` holds the backend's values rather than this file's defaults.
+let backendStateLoaded = false;
 const BACKEND_PROBE_TIMEOUT_MS = 2000;
 const BACKEND_PROBE_RETRY_MS = 2000;
 const MAX_BACKEND_PROBE_RETRIES = 6;
@@ -2237,9 +2245,6 @@ function updatePlotLimits() {
 updatePlotLimits();
 
 /* --- Transport Setup --- */
-let isConnected = false;
-// True once `state` holds the backend's values rather than this file's defaults.
-let backendStateLoaded = false;
 let sweepCounter = 0;
 
 const transport = createTransport({
