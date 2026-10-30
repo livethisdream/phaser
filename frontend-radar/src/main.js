@@ -14,7 +14,30 @@ const state = {
     db_ceil: 0,
     vel_max: 20,
     taper: 'blackman',
+    // CW or FMCW: which controls, tabs and Start the page shows, and which
+    // mode is running on the backend (null when idle).
+    uiMode: 'cw',
+    runningMode: null,
+    fmcw: {
+        available: null,     // from get_fmcw_radar_state's capability
+        cfg: null,           // the running config, for the 0 m calibration
+        plan: null,
+        waterfall: null,     // rows = frames, cols = range bins
+        last: null,          // the last frame, for "Set 0 m Here"
+        span_db: 60,         // colour scale: the frame's peak down this far
+        // Range-Doppler: the waterfall and "moving" trace skip |v| below
+        // this, as the CW peak readout does. The strongest cell per range bin
+        // over every velocity is the stationary clutter at 0 m/s -- walls,
+        // furniture, Tx->Rx leakage -- which a hand never outshines, so a
+        // waterfall built from it showed fixed stripes (phaser-01, 2026-10-30).
+        moving_min_mps: 0.3,
+    },
 };
+
+// Every Plotly chart on the page, for the resize-after-layout-change passes.
+const ALL_CHARTS = ['chart-waterfall', 'chart-spectrum', 'chart-time',
+                    'chart-fmcw-range', 'chart-fmcw-wf', 'chart-fmcw-rd'];
+const C_LIGHT = 299792458;
 
 /* --- Theme --- */
 const THEME_KEY = 'phaser_radar_theme';
@@ -88,6 +111,8 @@ const accordionIcons = [
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M5 19V13M9 19V8M13 19V11M17 19V6M21 19V14"></path></svg>',
     // 3. Display (monitor)
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M3.5 5h17v11h-17z"></path><path d="M9 19h6M12 16v3"></path></svg>',
+    // 4. FMCW (sawtooth ramps)
+    '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M4 18L10 6M10 18l6-12M16 18l4-8"></path></svg>',
 ];
 
 document.querySelectorAll('.accordion-icon[data-icon]').forEach(iconEl => {
@@ -110,7 +135,7 @@ let currentExpandedSection = 0;
 
 function resizePlotsAfterSidebarTransition() {
     setTimeout(() => {
-        ['chart-waterfall', 'chart-spectrum', 'chart-time'].forEach(id => {
+        ALL_CHARTS.forEach(id => {
             const el = document.getElementById(id);
             if (el) Plotly.Plots.resize(el);
         });
@@ -193,7 +218,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         document.getElementById(targetId)?.classList.add('active');
         // resize plots after tab switch
         setTimeout(() => {
-            ['chart-waterfall', 'chart-spectrum', 'chart-time'].forEach(id => {
+            ALL_CHARTS.forEach(id => {
                 const el = document.getElementById(id);
                 if (el) Plotly.Plots.resize(el);
             });
@@ -228,6 +253,7 @@ linkComboSlider('vel-max', 'val-vel-max', (v) => {
 linkComboSlider('waterfall-depth', 'val-waterfall-depth', (v) => {
     state.waterfall_depth = parseInt(v, 10);
     state.waterfall = null;  // reset; will reinit on next frame
+    state.fmcw.waterfall = null;
 });
 
 document.getElementById('opt-autoscale')?.addEventListener('change', (e) => {
@@ -274,7 +300,7 @@ function applyPlotTheme() {
         'paper_bgcolor': 'transparent',
         'plot_bgcolor': 'transparent',
     };
-    ['chart-waterfall', 'chart-spectrum', 'chart-time'].forEach(id => {
+    ALL_CHARTS.forEach(id => {
         if (!document.getElementById(id)) return;
         try {
             Plotly.relayout(id, {
@@ -321,6 +347,45 @@ Plotly.newPlot('chart-time', [{
     yaxis: { title: '|IQ| (counts)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
 }), { displayModeBar: false, responsive: true });
 
+// --- FMCW plots (C4) ---
+// Range: the profile (or, for range-Doppler, the strongest cell per range
+// bin), the CFAR threshold and the detections.
+Plotly.newPlot('chart-fmcw-range', [
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Range profile',
+      line: { color: '#10b981', width: 2 } },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Moving only',
+      line: { color: '#8b5cf6', width: 2 } },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'CFAR threshold',
+      line: { color: '#ef4444', width: 1.5, dash: 'dash' } },
+    { x: [], y: [], type: 'scatter', mode: 'markers', name: 'Detections',
+      marker: { color: '#f59e0b', size: 8, symbol: 'triangle-down' } },
+], Object.assign({}, getLayoutBase(), {
+    xaxis: { title: 'Range (m)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Magnitude (dB)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    showlegend: true,
+    legend: { orientation: 'h', x: 0, y: 1.08 },
+}), { displayModeBar: false, responsive: true });
+
+// Range waterfall: x = range, y = frames ago (lab "Range Waterfall Plot").
+Plotly.newPlot('chart-fmcw-wf', [{
+    z: [[]], x: [], y: [], type: 'heatmap', colorscale: 'Viridis',
+    colorbar: { title: 'dB', thickness: 12 },
+    hovertemplate: 'R=%{x:.2f} m<br>t=-%{y}<br>%{z:.1f} dB<extra></extra>',
+}], Object.assign({}, getLayoutBase(), {
+    xaxis: { title: 'Range (m)' },
+    yaxis: { title: 'Time (frames ago)', autorange: 'reversed' },
+}), { displayModeBar: false, responsive: true });
+
+// Range-Doppler: x = velocity, y = range (lab "Range Doppler Plotting").
+Plotly.newPlot('chart-fmcw-rd', [{
+    z: [[]], x: [], y: [], type: 'heatmap', colorscale: 'Electric',
+    colorbar: { title: 'dB', thickness: 12 },
+    hovertemplate: 'v=%{x:.2f} m/s<br>R=%{y:.2f} m<br>%{z:.1f} dB<extra></extra>',
+}], Object.assign({}, getLayoutBase(), {
+    xaxis: { title: 'Velocity (m/s)' },
+    yaxis: { title: 'Range (m)' },
+}), { displayModeBar: false, responsive: true });
+
 function refreshWaterfallScale() {
     if (state.autoscale) {
         Plotly.relayout('chart-waterfall', { 'zauto': true });
@@ -328,6 +393,9 @@ function refreshWaterfallScale() {
         Plotly.relayout('chart-waterfall', { 'zmin': state.db_floor, 'zmax': state.db_ceil, 'zauto': false });
     }
     Plotly.relayout('chart-spectrum', { 'yaxis.range': [state.db_floor, state.db_ceil] });
+    // FMCW plots keep their own scale (fmcw.span_db, from each frame's peak):
+    // its levels sit tens of dB above CW's, so the CW floor/ceiling clipped
+    // every target to white.
 }
 function refreshAxisRanges() {
     Plotly.relayout('chart-waterfall', { 'xaxis.range': [-state.vel_max, state.vel_max] });
@@ -345,14 +413,53 @@ function setConnectionStatus(connected) {
     if (text) text.textContent = connected ? 'Connected' : 'Disconnected';
 }
 
-function setRunningUi(running) {
+function setRunningUi(running, mode = state.uiMode) {
     state.running = running;
+    state.runningMode = running ? mode : null;
     const btn = document.getElementById('btn-radar');
     if (btn) {
-        btn.textContent = running ? 'Stop' : 'Start CW';
+        btn.textContent = running ? 'Stop' : (state.uiMode === 'fmcw' ? 'Start FMCW' : 'Start CW');
         btn.classList.toggle('btn-primary', !running);
         btn.classList.toggle('btn-danger', running);
+        // FMCW on a kit that cannot run it: say why instead of failing.
+        btn.disabled = !running && state.uiMode === 'fmcw' && state.fmcw.available === false;
     }
+    // One mode at a time on the backend: switch only while idle.
+    document.querySelectorAll('#mode-cw, #mode-fmcw').forEach(b => { b.disabled = running; });
+}
+
+/* --- CW / FMCW mode switch --- */
+function setUiMode(mode) {
+    state.uiMode = mode === 'fmcw' ? 'fmcw' : 'cw';
+    document.getElementById('mode-cw')?.classList.toggle('active', state.uiMode === 'cw');
+    document.getElementById('mode-fmcw')?.classList.toggle('active', state.uiMode === 'fmcw');
+    // Show the mode's tabs (and Logs), and land on its first one.
+    let first = null;
+    document.querySelectorAll('.tab-btn').forEach(b => {
+        const m = b.dataset.mode;
+        b.hidden = Boolean(m) && m !== state.uiMode;
+        if (!first && m === state.uiMode) first = b;
+    });
+    first?.click();
+    document.getElementById('box-peak-range').hidden = state.uiMode !== 'fmcw';
+    // The FMCW settings open with FMCW; CW keeps the Hardware section.
+    activateSidebarSection(state.uiMode === 'fmcw' ? 4 : 0);
+    setRunningUi(state.running, state.runningMode || state.uiMode);
+}
+document.getElementById('mode-cw')?.addEventListener('click', () => setUiMode('cw'));
+document.getElementById('mode-fmcw')?.addEventListener('click', () => setUiMode('fmcw'));
+
+/* --- Frame rate, shared by both modes --- */
+function noteFrameRate() {
+    const now = performance.now();
+    if (state.last_frame_t) {
+        const dt = (now - state.last_frame_t) / 1000;
+        const inst = dt > 0 ? 1 / dt : 0;
+        state.fps = state.fps_alpha * inst + (1 - state.fps_alpha) * state.fps;
+        const el = document.getElementById('stat-rate');
+        if (el) el.textContent = `${state.fps.toFixed(1)} fps`;
+    }
+    state.last_frame_t = now;
 }
 
 /* --- Frame handling --- */
@@ -388,18 +495,7 @@ function handleRadarFrame(frame) {
         document.getElementById('stat-peak-mag').textContent = `${frame.peak_magnitude_db.toFixed(1)} dB`;
     }
 
-    // FPS — log periodically (every ~3s) instead of cluttering the stat row
-    const now = performance.now();
-    if (state.last_frame_t) {
-        const dt = (now - state.last_frame_t) / 1000;
-        const inst = dt > 0 ? 1 / dt : 0;
-        state.fps = state.fps_alpha * inst + (1 - state.fps_alpha) * state.fps;
-        if (!state.last_fps_log_t || (now - state.last_fps_log_t) > 3000) {
-            log('info', 'Radar', `Frame rate: ${state.fps.toFixed(1)} Hz`);
-            state.last_fps_log_t = now;
-        }
-    }
-    state.last_frame_t = now;
+    noteFrameRate();
 
     // Time-domain (optional — only if backend includes a downsampled iq trace)
     if (frame.iq_mag && frame.iq_mag.length) {
@@ -409,6 +505,243 @@ function handleRadarFrame(frame) {
         });
     }
 }
+
+/* --- FMCW frames (C4) --- */
+
+// The backend's u8-base64 map (phaser_radar_dsp.encode_db_u8) back to dB.
+// Rows are range, columns velocity; dB = db_min + byte * (db_max - db_min) / 255.
+function decodeDbU8(enc) {
+    const bin = atob(enc.data);
+    const scale = (enc.db_max - enc.db_min) / 255;
+    const z = new Array(enc.rows);
+    for (let r = 0; r < enc.rows; r++) {
+        const row = new Array(enc.cols);
+        const off = r * enc.cols;
+        for (let c = 0; c < enc.cols; c++) row[c] = enc.db_min + bin.charCodeAt(off + c) * scale;
+        z[r] = row;
+    }
+    return z;
+}
+
+function pushRangeWaterfall(rangeAxis, trace) {
+    const depth = state.waterfall_depth;
+    let wf = state.fmcw.waterfall;
+    if (!wf || wf.length !== depth || (wf[0] && wf[0].length !== trace.length)) {
+        const floor = Math.min(...trace);
+        wf = [];
+        for (let i = 0; i < depth; i++) wf.push(new Array(trace.length).fill(floor));
+    }
+    wf.pop();
+    wf.unshift(trace);
+    state.fmcw.waterfall = wf;
+    const zmax = Math.max(...trace);
+    Plotly.restyle('chart-fmcw-wf', {
+        z: [wf], x: [rangeAxis], y: [Array.from({ length: depth }, (_, i) => i)],
+        zauto: false, zmin: zmax - state.fmcw.span_db, zmax,
+    });
+}
+
+// Frames are drawn at most once per display refresh, newest first: Plotly
+// cannot redraw three charts at the rates a single-chirp preset can deliver,
+// and a backlog of redraws delays every click behind it.
+let fmcwPending = null;
+function handleFmcwFrame(frame) {
+    if (!frame || !frame.range_axis) return;
+    state.fmcw.last = frame;
+    noteFrameRate();
+    const scheduled = fmcwPending !== null;
+    fmcwPending = frame;
+    if (!scheduled) {
+        requestAnimationFrame(() => {
+            const f = fmcwPending;
+            fmcwPending = null;
+            renderFmcwFrame(f);
+        });
+    }
+}
+
+function renderFmcwFrame(frame) {
+    const range = frame.range_axis;
+    let trace;
+
+    if (frame.kind === 'range_doppler' && frame.map) {
+        const z = decodeDbU8(frame.map);
+        const zmax = frame.map.db_max;
+        Plotly.restyle('chart-fmcw-rd', {
+            z: [z], x: [frame.velocity_axis], y: [range],
+            zauto: false, zmin: zmax - state.fmcw.span_db, zmax,
+        });
+        // The range plot shows the strongest return per range bin twice: over
+        // every velocity, and over the moving ones only. The waterfall gets
+        // the moving one, so a hand shows against the static clutter.
+        const vel = frame.velocity_axis || [];
+        const moving = [];
+        vel.forEach((v, i) => { if (Math.abs(v) >= state.fmcw.moving_min_mps) moving.push(i); });
+        const all = z.map(row => Math.max(...row));
+        trace = moving.length ? z.map(row => Math.max(...moving.map(i => row[i]))) : all;
+        Plotly.restyle('chart-fmcw-range', {
+            x: [range, range, [], []], y: [all, trace, [], []],
+        });
+    } else {
+        trace = frame.profile_db || [];
+        const thr = frame.cfar_threshold_db || [];
+        const idx = frame.detection_indices || [];
+        Plotly.restyle('chart-fmcw-range', {
+            x: [range, [], thr.length ? range : [], idx.map(i => range[i])],
+            y: [trace, [], thr, idx.map(i => trace[i])],
+        });
+    }
+    pushRangeWaterfall(range, trace);
+
+    if (typeof frame.peak_range === 'number') {
+        document.getElementById('stat-peak-range').textContent = `${frame.peak_range.toFixed(2)} m`;
+    }
+    document.getElementById('stat-peak-vel').textContent =
+        typeof frame.peak_velocity === 'number' ? `${frame.peak_velocity.toFixed(2)} m/s` : '-- m/s';
+    if (typeof frame.peak_magnitude_db === 'number') {
+        document.getElementById('stat-peak-mag').textContent = `${frame.peak_magnitude_db.toFixed(1)} dB`;
+    }
+}
+
+/* --- FMCW controls --- */
+const fmcwEl = (id) => document.getElementById(id);
+
+function readFmcwParams() {
+    const params = {
+        preset: fmcwEl('fmcw-preset').value || undefined,
+        mti: fmcwEl('fmcw-mti').value,
+        cfar: fmcwEl('fmcw-cfar').checked,
+        cfar_guard: parseInt(fmcwEl('fmcw-cfar-guard').value, 10),
+        cfar_ref: parseInt(fmcwEl('fmcw-cfar-ref').value, 10),
+        cfar_bias_db: parseFloat(fmcwEl('fmcw-cfar-bias').value),
+        taper: state.taper,
+    };
+    // Empty fields mean "the preset's own" / "the IF tone": null, so a value
+    // sent on an earlier Start does not linger on the backend.
+    const rmax = parseFloat(fmcwEl('fmcw-range-max').value);
+    params.range_max = Number.isFinite(rmax) && rmax > 0 ? rmax : null;
+    const zero = parseFloat(fmcwEl('fmcw-zero-khz').value);
+    params.zero_range_freq = Number.isFinite(zero) ? zero * 1e3 : null;
+    const center = parseFloat(document.getElementById('center-freq').value);
+    params.center_freq = Number.isFinite(center) ? center * 1e9 : null;
+    return params;
+}
+
+async function refreshFmcwState() {
+    try {
+        const resp = await transport.getFmcwRadarState();
+        const d = resp.data || {};
+        state.fmcw.cfg = d.cfg || null;
+        state.fmcw.plan = d.plan || null;
+        const cap = d.capability || {};
+        state.fmcw.available = Boolean(cap.available);
+        const capEl = fmcwEl('fmcw-capability');
+        if (capEl) {
+            capEl.classList.toggle('ok', state.fmcw.available && !cap.reason);
+            capEl.classList.toggle('unavailable', !state.fmcw.available);
+            capEl.textContent = !state.fmcw.available
+                ? `FMCW unavailable: ${cap.reason || 'unknown reason'}`
+                : cap.reason ? `FMCW limited: ${cap.reason}`
+                : `FMCW ready (${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''})`;
+        }
+        const sel = fmcwEl('fmcw-preset');
+        if (sel && Array.isArray(d.presets) && sel.options.length !== d.presets.length) {
+            const keep = sel.value || d.preset;
+            sel.innerHTML = '';
+            d.presets.forEach(p => sel.add(new Option(p, p)));
+            sel.value = d.presets.includes(keep) ? keep : d.presets[0];
+        }
+        setRunningUi(state.running, state.runningMode || state.uiMode);
+        return d;
+    } catch (e) {
+        log('error', 'FMCW', `get_fmcw_radar_state failed: ${e.message || e}`);
+        return null;
+    }
+}
+
+// On (re)connect, show what the backend is actually doing: a page reloaded,
+// or opened in a second tab, while a mode runs used to offer "Start".
+async function syncRunningFromBackend() {
+    const fmcw = await refreshFmcwState();
+    if (fmcw?.running) {
+        setUiMode('fmcw');
+        setRunningUi(true, 'fmcw');
+        return;
+    }
+    try {
+        const cw = await transport.getCwRadarState();
+        if (cw?.data?.running) {
+            setUiMode('cw');
+            setRunningUi(true, 'cw');
+        }
+    } catch (e) {
+        log('error', 'CW', `get_cw_radar_state failed: ${e.message || e}`);
+    }
+}
+
+// Processing params apply on the next frame; preset changes make the backend
+// leave and re-enter the mode itself, after which the plan is refetched.
+async function pushFmcwParams(partial) {
+    if (state.runningMode !== 'fmcw') return;
+    try {
+        const resp = await transport.setFmcwRadarParams(partial);
+        if (resp.status !== 'ok') {
+            log('error', 'FMCW', `set_fmcw_radar_params: ${resp.message || JSON.stringify(resp)}`);
+            return;
+        }
+        if (resp.reentered) {
+            state.fmcw.waterfall = null;
+            await refreshFmcwState();
+        } else if (state.fmcw.cfg) {
+            Object.assign(state.fmcw.cfg, partial);
+        }
+    } catch (e) {
+        log('error', 'FMCW', `set_fmcw_radar_params failed: ${e.message || e}`);
+    }
+}
+
+fmcwEl('fmcw-preset')?.addEventListener('change', (e) => pushFmcwParams({ preset: e.target.value }));
+fmcwEl('fmcw-mti')?.addEventListener('change', (e) => pushFmcwParams({ mti: e.target.value }));
+fmcwEl('fmcw-range-max')?.addEventListener('change', () => {
+    state.fmcw.waterfall = null;
+    pushFmcwParams({ range_max: readFmcwParams().range_max });
+});
+['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias'].forEach(id => {
+    fmcwEl(id)?.addEventListener('change', () => {
+        const p = readFmcwParams();
+        pushFmcwParams({ cfar: p.cfar, cfar_guard: p.cfar_guard, cfar_ref: p.cfar_ref,
+                         cfar_bias_db: p.cfar_bias_db });
+    });
+});
+fmcwEl('fmcw-span')?.addEventListener('change', (e) => {
+    const v = parseFloat(e.target.value);
+    if (Number.isFinite(v) && v > 0) state.fmcw.span_db = v;
+});
+fmcwEl('fmcw-zero-khz')?.addEventListener('change', () => {
+    pushFmcwParams({ zero_range_freq: readFmcwParams().zero_range_freq });
+});
+
+// Lab step 21: hold the reflector at the array, and its peak becomes 0 m.
+// The frame's peak range was computed against the current 0 m beat, so the
+// new one is that plus the beat the peak range stands for: f = 2 S R / c,
+// with S the slope over the ramp time the plan actually uses.
+fmcwEl('fmcw-zero-set')?.addEventListener('click', () => {
+    const f = state.fmcw.last, cfg = state.fmcw.cfg, plan = state.fmcw.plan;
+    if (state.runningMode !== 'fmcw' || !f || !cfg || !plan) {
+        log('error', 'FMCW', 'Start FMCW with a reflector at 0 m first');
+        return;
+    }
+    const current = cfg.zero_range_freq ?? cfg.signal_freq;
+    const slope = cfg.chirp_bw / plan.effective_ramp_time;
+    const zero = current + 2 * slope * f.peak_range / C_LIGHT;
+    fmcwEl('fmcw-zero-khz').value = (zero / 1e3).toFixed(2);
+    pushFmcwParams({ zero_range_freq: zero });
+    log('info', 'FMCW', `0 m set to ${(zero / 1e3).toFixed(2)} kHz (peak was at ${f.peak_range.toFixed(2)} m)`);
+});
+fmcwEl('fmcw-zero-reset')?.addEventListener('click', () => {
+    fmcwEl('fmcw-zero-khz').value = '';
+    pushFmcwParams({ zero_range_freq: null });
+});
 
 /* --- Param plumbing --- */
 function readParams() {
@@ -447,6 +780,11 @@ function maybePushParams(partial) {
     // Debounce live updates
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = setTimeout(() => {
+        // Gains, taper and vel_max apply live in whichever mode is running.
+        if (state.runningMode === 'fmcw') {
+            pushFmcwParams(partial);
+            return;
+        }
         transport.setCwRadarParams(partial)
             .catch(e => log('error', 'WS', `set_cw_radar_params failed: ${e.message || e}`));
     }, 100);
@@ -458,6 +796,7 @@ const transport = createWebTransport({
     onOpen: () => {
         setConnectionStatus(true);
         log('info', 'WS', 'Connected to backend');
+        syncRunningFromBackend();
     },
     onClose: () => {
         setConnectionStatus(false);
@@ -472,24 +811,34 @@ const transport = createWebTransport({
         if (msg.type === 'response') return;  // handled by invoke()
     },
     onRadarFrame: handleRadarFrame,
+    onFmcwFrame: handleFmcwFrame,
 });
 
 document.getElementById('btn-radar').addEventListener('click', async () => {
     if (state.running) {
         try {
-            await transport.stopCwRadar();
+            if (state.runningMode === 'fmcw') {
+                await transport.stopFmcwRadar();
+            } else {
+                await transport.stopCwRadar();
+            }
             setRunningUi(false);
             log('info', 'Radar', 'Stopped');
         } catch (e) {
             log('error', 'Radar', `Stop failed: ${e.message || e}`);
         }
     } else {
-        const params = readParams();
+        const mode = state.uiMode;
         try {
-            const resp = await transport.startCwRadar(params);
+            const resp = mode === 'fmcw'
+                ? await transport.startFmcwRadar(readFmcwParams())
+                : await transport.startCwRadar(readParams());
             if (resp.status === 'ok') {
-                setRunningUi(true);
-                log('info', 'Radar', 'Started');
+                state.last_frame_t = null;
+                state.fmcw.waterfall = null;
+                setRunningUi(true, mode);
+                log('info', 'Radar', `Started ${mode.toUpperCase()}`);
+                if (mode === 'fmcw') await refreshFmcwState();
             } else {
                 log('error', 'Radar', `Start failed: ${resp.message || JSON.stringify(resp)}`);
             }
@@ -505,7 +854,7 @@ refreshAxisRanges();
 transport.connect();
 
 setTimeout(() => {
-    ['chart-waterfall', 'chart-spectrum', 'chart-time'].forEach(id => {
+    ALL_CHARTS.forEach(id => {
         const el = document.getElementById(id);
         if (el) Plotly.Plots.resize(el);
     });

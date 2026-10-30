@@ -402,6 +402,31 @@ calibrate button), a range waterfall, a range-Doppler heatmap, and the ramp,
 MTI and CFAR controls. Only enough to run the bench checklist below; layout
 and polish are Phase D.
 
+**Done (2026-10-30), checked in headless Chromium against `--sim`.** A CW /
+FMCW switch in the header swaps the tabs, the Start button and the open
+settings section. FMCW tabs: **Range** (the profile, or the strongest cell
+per range bin for range-Doppler, with the CFAR threshold and detection
+markers), **Range Waterfall**, and **Range-Doppler** (the decoded map). The
+FMCW section has the preset, Range Max (empty = the preset's), MTI, Dynamic
+Range (the maps' colour scale runs from each frame's peak down this far --
+FMCW levels sit tens of dB above CW's, so the CW floor/ceiling saturated
+them), CFAR with guard/ref/bias, and the 0 m calibration: a 0 m Beat field
+plus "Set 0 m Here", which turns the current peak into 0 m (lab step 21),
+and Reset. The capability check shows there, and FMCW Start is disabled with
+the reason on a kit that cannot run it.
+
+Found while testing it, and fixed:
+- `range_sync` ran at ~475 fps in --sim (~5 ms refills on a kit too), and
+  the page fell minutes behind its own clicks redrawing every frame. Radar
+  frames are now capped at `RADAR_MAX_FPS` = 20 in the backend, and the page
+  draws at most once per display refresh, newest frame first.
+- A start on an already running FMCW mode stored the new params and kept the
+  old config; it now applies them as `set_fmcw_radar_params` does.
+- A page loaded while a mode ran offered Start; it now syncs from
+  `get_fmcw_radar_state` / `get_cw_radar_state` on connect.
+- `center_freq: null` and `range_max: null` (empty fields) now mean the kit's
+  IF and the preset's range, not a crash and an uncropped profile.
+
 ### C5. Bench validation (needs you and the kit)
 1. Probe reports FMCW available; an older Pluto firmware reports the reason.
 2. Corner reflector at ~0 m: read the 0 m frequency (lab step 21) and store it

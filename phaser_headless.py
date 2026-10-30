@@ -1021,7 +1021,15 @@ class PhaserHeadless:
         """
         params = dict(getattr(self, "fmcw_params", None) or {})
         preset = params.pop("preset", None) or phaser_radar_dsp.FMCW_DEFAULT_PRESET
-        params.setdefault("center_freq", self.Rx_freq)
+        # None means "this kit's IF" too: the radar UI sends it for an empty
+        # Center Freq field, as it does for CW, so a value typed earlier and
+        # then cleared does not linger in fmcw_params.
+        if params.get("center_freq") is None:
+            params["center_freq"] = self.Rx_freq
+        # And None range_max means the preset's own (range_doppler_far shows
+        # 100 m), not "no crop": the UI sends it for an empty field.
+        if "range_max" in params and params["range_max"] is None:
+            del params["range_max"]
         return phaser_radar_dsp.fmcw_config(params, preset=preset), preset
 
     def _enter_fmcw(self):
@@ -1098,7 +1106,15 @@ class PhaserHeadless:
             print(f"[FMCW] sim set_fmcw_mode failed: {e}")
 
     def start_fmcw_radar(self, params):
-        """Switch to FMCW radar. `params` may name a `preset` (a lab)."""
+        """Switch to FMCW radar. `params` may name a `preset` (a lab).
+
+        Already running, it applies `params` the way set_fmcw_radar_params
+        does. It used to store them and return ok without touching the
+        running config, so a Start from a reloaded page or a second tab
+        silently kept the old preset.
+        """
+        if self.mode == "fmcw_radar" and params:
+            return self.set_fmcw_radar_params(params)
         if params:
             self.fmcw_params = {**(getattr(self, "fmcw_params", None) or {}), **params}
         return self._set_mode("fmcw_radar")
@@ -1133,7 +1149,11 @@ class PhaserHeadless:
         with self._get_mode_lock():
             if self.mode != "fmcw_radar" or self.fmcw_cfg is None:
                 return {"status": "ok", "params": self.fmcw_params, "reentered": False}
-            self.fmcw_cfg = {**self.fmcw_cfg, **params}
+            live = dict(params)
+            if "range_max" in live and live["range_max"] is None:
+                live["range_max"] = phaser_radar_dsp.fmcw_config(
+                    preset=getattr(self, "fmcw_preset", None))["range_max"]
+            self.fmcw_cfg = {**self.fmcw_cfg, **live}
             try:
                 if "taper" in params:
                     phaser_cw_radar.apply_taper(self.array, params["taper"])
@@ -1174,8 +1194,9 @@ class PhaserHeadless:
     def do_fmcw_radar_frame(self):
         """Capture and process one FMCW frame. Returns the broadcast payload.
 
-        Scalars only for now: the peaks, the plan and how long capture and
-        processing took. The arrays and their encoding are C3.
+        The peaks and timings, and the arrays the plots need: the encoded
+        range-Doppler map or the range profile (and CFAR). The format is in
+        docs/fmcw-phase-c-plan.md, C3.
         """
         cfg, plan = self.fmcw_cfg, self.fmcw_plan
         t0 = time.perf_counter()
@@ -1950,11 +1971,29 @@ class PhaserHeadless:
 
             self.ws_clients -= dead_clients
 
+    # Radar frames are capped at this rate. A single-chirp FMCW capture
+    # refills in ~5 ms on a kit and in well under that in --sim (range_sync
+    # ran at ~475 fps there): every frame is a WebSocket message and a
+    # browser redraw, and at those rates the page fell minutes behind its
+    # own clicks. CW (~9 fps) and range_doppler (~5 fps) never reach it.
+    RADAR_MAX_FPS = 20.0
+
     # Radar modes the main loop drives: {mode: (frame method, frame type)}.
     _RADAR_FRAMES = {
         "cw_radar": ("do_cw_radar_frame", "cw_radar_frame"),
         "fmcw_radar": ("do_fmcw_radar_frame", "fmcw_radar_frame"),
     }
+
+    def _pace_radar_frames(self):
+        """Sleep off whatever is left of this frame's 1/RADAR_MAX_FPS slot."""
+        now = time.perf_counter()
+        last = getattr(self, "_last_radar_frame_t", None)
+        if last is not None:
+            wait = 1.0 / self.RADAR_MAX_FPS - (now - last)
+            if wait > 0:
+                time.sleep(wait)
+                now = time.perf_counter()
+        self._last_radar_frame_t = now
 
     def _radar_frame_step(self):
         """One radar frame, under mode_lock.
@@ -2057,6 +2096,7 @@ class PhaserHeadless:
 
             elif self.mode in self._RADAR_FRAMES:
                 self._radar_frame_step()
+                self._pace_radar_frames()
 
             else:
                 time.sleep(0.1)
