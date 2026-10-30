@@ -195,8 +195,8 @@ jobs:
             const sp = el?._fullLayout?.polar?._subplot;
             if (!sp || ![sp.cx, sp.cy, sp.radius].every(Number.isFinite)) return null;
             const box = el.getBoundingClientRect();
-            // The HB100 marker (trace 4): its radius is where its range puts
-            // it, read back off the trace rather than assumed.
+            // The HB100 marker (trace 4), read back off the trace rather than
+            // assumed, so a change to where markers sit cannot break this.
             const [rMin, rMax] = el.layout.polar.radialaxis.range;
             const m = el.data[4];
             const frac = (m.r[0] - rMin) / (rMax - rMin);
@@ -219,11 +219,25 @@ jobs:
             return t.x[pk];
           });
           if (Math.abs(dragged - 30) > 3) throw new Error(`after dragging the HB100 to 30 deg the beam peaked at ${dragged} deg`);
-          // The drag also moved it outward, so its label carries a new range.
-          const label = await page.evaluate(() => document.getElementById('chart-polar').data[4].text[0]);
-          if (!/^HB100 30° · [\d.]+ m$/.test(label) || label.endsWith(' 1.0 m')) {
-            throw new Error(`HB100 label after the drag was ${JSON.stringify(label)}; expected 30° at a new range`);
+          // A drag only turns it: the range stays at the 1 m default.
+          const label = () => page.evaluate(() => document.getElementById('chart-polar').data[4].text[0]);
+          if ((await label()) !== 'HB100 30° · 1.0 m') {
+            throw new Error(`HB100 label after the drag was ${JSON.stringify(await label())}; expected 30° at 1.0 m`);
           }
+
+          // Range comes from the Simulated Sources box: 4 m is 12 dB down
+          // (1/r), a little less with the simulator's noise on top.
+          const peakDb = () => page.evaluate(() => Math.max(...document.getElementById('chart-rect').data[0].y));
+          const before = await peakDb();
+          await page.fill('#val-hb100-range', '4');
+          await page.dispatchEvent('#val-hb100-range', 'change');
+          await page.waitForTimeout(4000);
+          const drop = before - (await peakDb());
+          if ((await label()) !== 'HB100 30° · 4.0 m') {
+            throw new Error(`HB100 label after setting 4 m was ${JSON.stringify(await label())}`);
+          }
+          if (drop < 9 || drop > 14) throw new Error(`moving the HB100 from 1 m to 4 m dropped the peak by ${drop.toFixed(1)} dB, expected ~12`);
+          console.log(`OK: HB100 at 4 m reads ${drop.toFixed(1)} dB lower`);
           console.log(`OK: Polar drag moved the HB100; beam now peaks at ${dragged} deg`);
 
           if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);

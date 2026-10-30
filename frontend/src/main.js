@@ -1,7 +1,7 @@
 import { createTransport, resolveTransportMode } from './transport.js';
 import { autoBackendWsUrl, getBackendUrlOverride, setBackendUrlOverride } from './transport-web.js';
 import {
-    SOURCE_RING_FRAC, clampAngle, createScene, formatRange, fracToRange, rangeToFrac,
+    SOURCE_RING_FRAC, clampAngle, createScene, formatRange, rangeToUnit, stepRange, unitToRange,
 } from './scene.js';
 import { TARGET_RANGE_M } from './sim/constants.generated.js';
 
@@ -34,7 +34,7 @@ const state = {
     mvdrDiagLoad: 0.001,    // MVDR diagonal loading factor
 
     // Computed interferer, added to the received IQ by the backend (real
-    // hardware and simulator alike) for the MVDR lab. Interferer pane.
+    // hardware and simulator alike) for the MVDR lab. Simulated Sources pane.
     interferer_enable: false,
     interferer_angle_deg: -20,
     interferer_power_dbfs: -10,
@@ -1352,13 +1352,15 @@ wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfRe
 /* --- Sources: the simulated HB100 and the interferer ---
    Drawn on the Polar tab (Plot Options > Show Sources) and in a mini pane in
    the plots' top-right corner while the interferer is on (scene.js). Both are
-   draggable. The HB100 only in the simulator -- on the kit it is a real one,
+   draggable, and both sit near the rim, clear of the pattern: a drag only
+   turns one. The HB100 only in the simulator -- on the kit it is a real one,
    wherever it was put, and get_state reports sim_target_angle_deg and
-   sim_target_range_m as null. Its drag sets angle and range (radius is
-   log(range); see rangeToFrac). The interferer is computed on the kit too and
-   has only an angle, so dragging it there just moves interferer_angle_deg, as
-   its slider does. A drag writes into `state` and syncs at most every
-   SOURCE_SYNC_MS, so it does not flood the socket. */
+   sim_target_range_m as null. Its range is set on the Simulated Sources
+   slider, or by the wheel over its marker, and shown in its label. The
+   interferer is computed on the kit too and has only an angle, so dragging it
+   there just moves interferer_angle_deg, as its slider does. A change writes
+   into `state` and syncs at most every SOURCE_SYNC_MS, so a drag does not
+   flood the socket. */
 const SOURCE_SYNC_MS = 50;
 // What the last sweep or held update gave the mini pane to draw.
 let sceneLast = { angles: null, gain: null, beamAngle: null };
@@ -1369,10 +1371,44 @@ let sourceSyncTimer = null;
 // here, not with schedulePolarSources(), because this section calls it first.
 let polarSourcesFrame = null;
 
+// The HB100's range. A backend from before ranges existed sends none; the
+// simulator then still has it at the reference range.
+function simTargetRange() {
+    return Number.isFinite(state.sim_target_range_m) ? state.sim_target_range_m : TARGET_RANGE_M;
+}
+
+// Range slider (log scale, 0..1000) and its number box. The group shows only
+// when the backend reports a simulated HB100.
+const hb100RangeSlider = document.getElementById('hb100-range');
+const hb100RangeInput = document.getElementById('val-hb100-range');
+const RANGE_SLIDER_MAX = 1000;
+
+function applyRangeControls() {
+    const sim = Number.isFinite(state.sim_target_angle_deg);
+    document.getElementById('sim-hb100-group').hidden = !sim;
+    if (!sim) return;
+    const m = simTargetRange();
+    if (hb100RangeSlider) hb100RangeSlider.value = String(Math.round(rangeToUnit(m) * RANGE_SLIDER_MAX));
+    if (hb100RangeInput && document.activeElement !== hb100RangeInput) hb100RangeInput.value = String(m);
+}
+
+hb100RangeSlider?.addEventListener('input', (e) => {
+    const m = unitToRange(parseFloat(e.target.value) / RANGE_SLIDER_MAX);
+    onSourceDrag('target', state.sim_target_angle_deg, m);
+});
+hb100RangeInput?.addEventListener('change', (e) => {
+    const v = parseFloat(e.target.value);
+    if (!Number.isFinite(v)) return;
+    // The backend clamps too; this keeps the box from showing what it won't take.
+    onSourceDrag('target', state.sim_target_angle_deg, stepRange(v, 0));
+    hb100RangeInput.value = String(state.sim_target_range_m);
+});
+
 function onSourceDrag(kind, angle, range = null) {
     if (kind === 'target') {
         state.sim_target_angle_deg = angle;
         if (Number.isFinite(range)) state.sim_target_range_m = range;
+        applyRangeControls();
     } else {
         state.interferer_angle_deg = angle;
         setInterfererPair('interferer-angle', 'val-interferer-angle', angle);
@@ -2012,6 +2048,7 @@ async function loadStateFromServer() {
             ? msg.data.sim_target_angle_deg : null;
         state.sim_target_range_m = Number.isFinite(msg.data.sim_target_range_m)
             ? msg.data.sim_target_range_m : null;
+        applyRangeControls();
         loadInterfererState(msg.data);
         applyInitialStateToControls();
     } catch (err) {
@@ -2225,19 +2262,15 @@ function polarRadialRange(el) {
     return Array.isArray(range) && range.length === 2 ? range : [-50, 0];
 }
 
-/** { angle, range, frac } per draggable source currently on the Polar tab;
-    frac is its radius over the plot's (scene.js rangeToFrac). */
+/** { angle, range } per draggable source currently on the Polar tab. */
 function polarSources() {
     if (!sourcesOnPolar()) return {};
     const out = {};
     if (Number.isFinite(state.sim_target_angle_deg)) {
-        // A backend from before ranges existed sends none: the reference range.
-        const range = Number.isFinite(state.sim_target_range_m)
-            ? state.sim_target_range_m : TARGET_RANGE_M;
-        out.target = { angle: state.sim_target_angle_deg, range, frac: rangeToFrac(range) };
+        out.target = { angle: state.sim_target_angle_deg, range: simTargetRange() };
     }
     if (state.interferer_enable && Number.isFinite(state.interferer_angle_deg)) {
-        out.interferer = { angle: state.interferer_angle_deg, range: null, frac: SOURCE_RING_FRAC };
+        out.interferer = { angle: state.interferer_angle_deg, range: null };
     }
     return out;
 }
@@ -2253,8 +2286,8 @@ function updatePolarSources(redraw = true) {
         el.data[markIdx].visible = !!src;
         if (!src) continue;
         // The radial axis is dB; a source's radius is not a level, only where
-        // to draw it (frac of the way out).
-        const rSrc = rMin + src.frac * (rMax - rMin);
+        // to draw it: near the rim, clear of the pattern.
+        const rSrc = rMin + SOURCE_RING_FRAC * (rMax - rMin);
         const theta = toPolarTheta(src.angle);
         el.data[rayIdx].r = [rMin, rSrc];
         el.data[rayIdx].theta = [theta, theta];
@@ -2288,18 +2321,17 @@ function polarSourceAt(el, evt) {
     const box = el.getBoundingClientRect();
     const px = evt.clientX - box.left;
     const py = evt.clientY - box.top;
+    const rPx = geo.radius * SOURCE_RING_FRAC;
     let best = null;
-    for (const [kind, { angle, frac }] of Object.entries(polarSources())) {
+    for (const [kind, { angle }] of Object.entries(polarSources())) {
         const a = (angle * Math.PI) / 180;
-        const rPx = geo.radius * frac;
         const d = Math.hypot(px - (geo.cx + rPx * Math.sin(a)), py - (geo.cy - rPx * Math.cos(a)));
         if (d <= POLAR_GRAB_PX && (!best || d < best.d)) best = { kind, d };
     }
     return best?.kind ?? null;
 }
 
-/** Pointer -> { angle, frac }, frac being its radius over the plot's. */
-function polarPointer(el, evt) {
+function polarPointerAngle(el, evt) {
     const geo = polarGeometry(el);
     if (!geo) return null;
     const box = el.getBoundingClientRect();
@@ -2307,10 +2339,7 @@ function polarPointer(el, evt) {
     // Below the baseline, keep the side the pointer is on.
     const dy = Math.max(geo.cy - (evt.clientY - box.top), 0);
     if (dx === 0 && dy === 0) return null;
-    return {
-        angle: clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI)),
-        frac: Math.hypot(dx, dy) / geo.radius,
-    };
+    return clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI));
 }
 
 (function wirePolarSourceDrag() {
@@ -2338,17 +2367,19 @@ function polarPointer(el, evt) {
             return;
         }
         evt.stopPropagation();
-        const p = polarPointer(el, evt);
-        if (!p) return;
-        if (dragging === 'target') {
-            const range = fracToRange(p.frac);
-            if (p.angle !== state.sim_target_angle_deg || range !== state.sim_target_range_m) {
-                onSourceDrag('target', p.angle, range);
-            }
-        } else if (p.angle !== state.interferer_angle_deg) {
-            onSourceDrag('interferer', p.angle);
-        }
+        const angle = polarPointerAngle(el, evt);
+        const current = dragging === 'target' ? state.sim_target_angle_deg : state.interferer_angle_deg;
+        if (angle !== null && angle !== current) onSourceDrag(dragging, angle);
     }, true);
+    // Wheel over the HB100: up moves it away, down brings it closer. Stopped
+    // here so it never reaches Plotly as a zoom.
+    el.addEventListener('wheel', (evt) => {
+        if (evt.deltaY === 0 || polarSourceAt(el, evt) !== 'target') return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        onSourceDrag('target', state.sim_target_angle_deg,
+            stepRange(simTargetRange(), evt.deltaY < 0 ? 1 : -1));
+    }, { capture: true, passive: false });
     const end = (evt) => {
         if (!dragging) return;
         dragging = null;
