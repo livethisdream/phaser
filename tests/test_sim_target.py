@@ -95,3 +95,19 @@ def test_ignored_off_the_simulator():
     _set(h, {"sim_target_angle_deg": 30.0})
     assert h.sim_target_angle_deg == 0.0
     assert h.sdr.target_angle_deg == 0.0
+
+
+def test_hardware_shaped_instance_never_needs_the_setting():
+    """On the kit _do_init_hardware takes the real branch, which never sets
+    sim_target_angle_deg. The browser still sends the key (as null, echoed
+    from get_state) with every set_state, and get_state must still answer.
+    Neither may touch the attribute or the SDR."""
+    h = _headless()
+    h.sim_mode = False
+    del h.sim_target_angle_deg
+    sdr_angle = h.sdr.target_angle_deg
+    for value in (None, 30.0):
+        _set(h, {"sim_target_angle_deg": value, "Rx_gain": 20})
+    assert not hasattr(h, "sim_target_angle_deg")
+    assert h.sdr.target_angle_deg == sdr_angle
+    assert h.get_state()["data"]["sim_target_angle_deg"] is None
