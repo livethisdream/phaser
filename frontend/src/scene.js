@@ -8,13 +8,12 @@
  * scale, the beam's peak (or held) direction, the simulated HB100 and the
  * synthetic interferer.
  *
- * Both sources are far-field plane waves in the model. The interferer has
- * only an angle and rides a ring near the edge. The HB100 also has a range,
- * which sets its level (1/r) and here its distance from the array: radius is
- * log(range), shared with the Polar tab through rangeToFrac/fracToRange.
- * Dragging a source calls back with its new angle (and the HB100's range);
- * the caller sends them to the backend -- this module owns no state beyond
- * what it last drew.
+ * Both sources are far-field plane waves in the model, so both ride a ring
+ * near the edge, clear of the pattern, and dragging one only turns it. The
+ * HB100 also has a range, which sets its level (1/r): the wheel or Up/Down
+ * over it steps it (stepRange), as does the Simulated Sources slider. A change calls back with the source's angle (and the
+ * HB100's range); the caller sends them to the backend -- this module owns no
+ * state beyond what it last drew.
  */
 
 import {
@@ -34,27 +33,30 @@ const RINGS_DB = [-40, -30, -20, -10];
 const SPOKES_DEG = [-90, -60, -30, 0, 30, 60, 90];
 const ANGLE_LIMIT = 90;
 
-// Source radii as a fraction of the plot's radius. The interferer rides the
-// outer ring. The HB100's range maps log-linearly onto [RANGE_FRAC_NEAR,
-// SOURCE_RING_FRAC]: nearest allowed range innermost, farthest on the ring.
+// Where both sources sit, as a fraction of the plot's radius: near the rim,
+// outside the pattern's usual extent.
 export const SOURCE_RING_FRAC = 0.92;
-const RANGE_FRAC_NEAR = 0.3;
 const LOG_RANGE_SPAN = Math.log(TARGET_RANGE_MAX_M / TARGET_RANGE_MIN_M);
 
 export function clampRange(m) {
     return Math.max(TARGET_RANGE_MIN_M, Math.min(TARGET_RANGE_MAX_M, m));
 }
 
-export function rangeToFrac(m) {
-    const t = Math.log(clampRange(m) / TARGET_RANGE_MIN_M) / LOG_RANGE_SPAN;
-    return RANGE_FRAC_NEAR + t * (SOURCE_RING_FRAC - RANGE_FRAC_NEAR);
+// Ranges are kept to two significant figures: 0.53, 2.4, 13.
+const roundRange = (m) => clampRange(Number(m.toPrecision(2)));
+
+/** Range -> 0..1 on a log scale, for the range slider. */
+export function rangeToUnit(m) {
+    return Math.log(clampRange(m) / TARGET_RANGE_MIN_M) / LOG_RANGE_SPAN;
 }
 
-/** Inverse of rangeToFrac, to two significant figures: 0.53, 2.4, 13. */
-export function fracToRange(frac) {
-    const t = (frac - RANGE_FRAC_NEAR) / (SOURCE_RING_FRAC - RANGE_FRAC_NEAR);
-    const m = TARGET_RANGE_MIN_M * Math.exp(Math.max(0, Math.min(1, t)) * LOG_RANGE_SPAN);
-    return clampRange(Number(m.toPrecision(2)));
+export function unitToRange(u) {
+    return roundRange(TARGET_RANGE_MIN_M * Math.exp(Math.max(0, Math.min(1, u)) * LOG_RANGE_SPAN));
+}
+
+/** `steps` 10% steps farther (negative: closer), for the wheel and arrow keys. */
+export function stepRange(m, steps) {
+    return roundRange(m * Math.pow(1.1, steps));
 }
 
 export function formatRange(m) {
@@ -145,7 +147,7 @@ export function createScene(svg, { onDrag } = {}) {
             el('path', { d: 'M 0 -8 L 8 0 L 0 8 L -8 0 Z', class: 'scene-icon' }, g);
         }
         const value = el('text', { y: 30, 'text-anchor': 'middle', class: 'scene-handle-value' }, g);
-        return { g, value, kind, angle: 0, frac: SOURCE_RING_FRAC, range: null, draggable: false };
+        return { g, value, kind, angle: 0, range: null, draggable: false };
     }
 
     const target = makeHandle('target', 'HB100');
@@ -154,12 +156,11 @@ export function createScene(svg, { onDrag } = {}) {
     function placeHandle(h, angle, range = null) {
         h.angle = angle;
         h.range = range;
-        h.frac = Number.isFinite(range) ? rangeToFrac(range) : SOURCE_RING_FRAC;
-        const [x, y] = pt(angle, R * h.frac);
+        const [x, y] = pt(angle, R * SOURCE_RING_FRAC);
         h.g.setAttribute('transform', `translate(${x} ${y})`);
-        h.value.textContent = Number.isFinite(range)
-            ? `${Math.round(angle)}° · ${formatRange(range)}`
-            : `${Math.round(angle)}°`;
+        // Angle only: at thumbnail size a range would collide with the other
+        // source's label. The Polar label and the slider show the range.
+        h.value.textContent = `${Math.round(angle)}°`;
         h.g.setAttribute('aria-valuenow', String(Math.round(angle)));
         const ray = h.kind === 'target' ? targetRay : intfRay;
         ray.setAttribute('x2', x);
@@ -172,8 +173,7 @@ export function createScene(svg, { onDrag } = {}) {
 
     // --- dragging --------------------------------------------------------
 
-    /** Pointer -> { angle, frac }, frac being the radius over R. */
-    function pointerPolar(evt) {
+    function pointerAngle(evt) {
         const ctm = svg.getScreenCTM();
         if (!ctm) return null;
         const p = new DOMPoint(evt.clientX, evt.clientY).matrixTransform(ctm.inverse());
@@ -181,10 +181,7 @@ export function createScene(svg, { onDrag } = {}) {
         const dy = Math.max(CY - p.y, 0);
         const dx = p.x - CX;
         if (dx === 0 && dy === 0) return null;
-        return {
-            angle: clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI)),
-            frac: Math.hypot(dx, dy) / R,
-        };
+        return clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI));
     }
 
     // Only the HB100 has a range; the interferer keeps null.
@@ -195,9 +192,8 @@ export function createScene(svg, { onDrag } = {}) {
     }
 
     function dragTo(h, evt) {
-        const p = pointerPolar(evt);
-        if (!p) return;
-        commit(h, p.angle, Number.isFinite(h.range) ? fracToRange(p.frac) : null);
+        const angle = pointerAngle(evt);
+        if (angle !== null) commit(h, angle, h.range);
     }
 
     for (const h of [target, intf]) {
@@ -217,6 +213,12 @@ export function createScene(svg, { onDrag } = {}) {
         };
         h.g.addEventListener('pointerup', end);
         h.g.addEventListener('pointercancel', end);
+        // Wheel over the HB100: up moves it away, down brings it closer.
+        h.g.addEventListener('wheel', (evt) => {
+            if (!h.draggable || !Number.isFinite(h.range) || evt.deltaY === 0) return;
+            evt.preventDefault();
+            commit(h, h.angle, stepRange(h.range, evt.deltaY < 0 ? 1 : -1));
+        }, { passive: false });
         h.g.addEventListener('keydown', (evt) => {
             if (!h.draggable) return;
             // Left/Right turn it. Up/Down move the HB100 away/closer, and turn
@@ -227,8 +229,8 @@ export function createScene(svg, { onDrag } = {}) {
             let range = h.range;
             if (evt.key === 'ArrowLeft' || (!hasRange && evt.key === 'ArrowDown')) angle -= step;
             else if (evt.key === 'ArrowRight' || (!hasRange && evt.key === 'ArrowUp')) angle += step;
-            else if (hasRange && evt.key === 'ArrowUp') range = clampRange(Number((range * 1.1).toPrecision(2)));
-            else if (hasRange && evt.key === 'ArrowDown') range = clampRange(Number((range / 1.1).toPrecision(2)));
+            else if (hasRange && evt.key === 'ArrowUp') range = stepRange(range, 1);
+            else if (hasRange && evt.key === 'ArrowDown') range = stepRange(range, -1);
             else if (evt.key === 'Home') angle = 0;
             else return;
             evt.preventDefault();
