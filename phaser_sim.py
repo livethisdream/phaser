@@ -112,8 +112,10 @@ class SimSDR:
     beam response.
     """
 
-    # Target sits at boresight (0°) — matches an HB100 pointed straight at
-    # the array, per user preference.
+    # Target sits at boresight (0°) by default — matches an HB100 pointed
+    # straight at the array, per user preference. This is only the start
+    # value: target_angle_deg on the instance is what rx() uses, and the
+    # Scene tab drags it via set_state's sim_target_angle_deg.
     TARGET_ANGLE_DEG = 0.0
 
     # IF tone the sim places in the baseband spectrum (Hz). Real target
@@ -159,6 +161,9 @@ class SimSDR:
 
         self._rng = np.random.default_rng(0)
 
+        # Where the simulated HB100 sits, degrees from boresight.
+        self.target_angle_deg = self.TARGET_ANGLE_DEG
+
     def set_signal_freq(self, freq_hz):
         """Kept in sync from phaser_headless.set_signal_freq so the spatial
         phase progression uses the current SignalFreq."""
@@ -203,7 +208,7 @@ class SimSDR:
         """Return (chan0, chan1) as 1D complex arrays, shape (buffer_size,).
 
         Sums:
-          - Target: plane wave at TARGET_ANGLE_DEG, IF = TARGET_IF_HZ, unit amp
+          - Target: plane wave at target_angle_deg, IF = TARGET_IF_HZ, unit amp
           - Independent complex noise per sub-array
 
         No interferer here: that is injected by PhaserHeadless.do_sweep()
@@ -225,7 +230,7 @@ class SimSDR:
         self._superpose_source(
             chan_sub, t,
             if_hz=self.TARGET_IF_HZ,
-            arrival_angle_deg=self.TARGET_ANGLE_DEG,
+            arrival_angle_deg=self.target_angle_deg,
             amplitude=1.0,
             wavelength=wavelength,
         )
