@@ -36,6 +36,7 @@ import {
     SIM_PI,
     TARGET_ANGLE_DEG,
     TARGET_IF_HZ,
+    TARGET_RANGE_M,
 } from './constants.generated.js';
 import { createRng } from './rng.js';
 
@@ -57,6 +58,9 @@ export function createSimSdr({
         sampleRate,
         bufferSize,
         noiseSigma,
+        // Where the simulated HB100 sits; SimSDR.target_angle_deg.
+        targetAngleDeg: TARGET_ANGLE_DEG,
+        targetRangeM: TARGET_RANGE_M,
     };
 
     /**
@@ -100,7 +104,8 @@ export function createSimSdr({
             byIf.set(ifHz, cur);
         }
 
-        add(TARGET_IF_HZ, TARGET_ANGLE_DEG, 1);
+        // 1/r, one way: SimSDR._synthesize_channels.
+        add(TARGET_IF_HZ, state.targetAngleDeg, TARGET_RANGE_M / state.targetRangeM);
         return byIf;
     }
 
@@ -170,6 +175,10 @@ export function createSimSdr({
         setSignalFreq(hz) { state.signalFreq = hz; },
 
         setNoiseSigma(sigma) { state.noiseSigma = sigma; },
+
+        setTargetAngle(deg) { state.targetAngleDeg = deg; },
+
+        setTargetRange(m) { state.targetRangeM = m; },
 
         rx() { return synthesizeChannels(); },
     };

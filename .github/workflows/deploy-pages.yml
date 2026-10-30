@@ -182,6 +182,50 @@ jobs:
           if (plot.n < 100) throw new Error(`sweep produced only ${plot.n} points`);
           // Target sits at boresight, so the main lobe belongs at 0 deg.
           if (Math.abs(plot.peakX) > 3) throw new Error(`beam peaked at ${plot.peakX} deg, expected ~0`);
+
+          // Dragging the HB100 on the Polar tab. main.js turns the pointer
+          // into an angle with Plotly-internal geometry
+          // (_fullLayout.polar._subplot.cx/cy/radius); this is what catches a
+          // Plotly upgrade that moves it, by doing the drag for real and
+          // checking the beam follows.
+          await page.click('.tab-btn[data-target="tab-polar"]');
+          await page.waitForTimeout(1000);
+          const geo = await page.evaluate(() => {
+            const el = document.getElementById('chart-polar');
+            const sp = el?._fullLayout?.polar?._subplot;
+            if (!sp || ![sp.cx, sp.cy, sp.radius].every(Number.isFinite)) return null;
+            const box = el.getBoundingClientRect();
+            // The HB100 marker (trace 4): its radius is where its range puts
+            // it, read back off the trace rather than assumed.
+            const [rMin, rMax] = el.layout.polar.radialaxis.range;
+            const m = el.data[4];
+            const frac = (m.r[0] - rMin) / (rMax - rMin);
+            const a = ((90 - m.theta[0]) * Math.PI) / 180;
+            return { cx: box.left + sp.cx, cy: box.top + sp.cy, r: sp.radius,
+                     mx: box.left + sp.cx + sp.radius * frac * Math.sin(a),
+                     my: box.top + sp.cy - sp.radius * frac * Math.cos(a) };
+          });
+          if (!geo) throw new Error('Plotly polar geometry (_fullLayout.polar._subplot cx/cy/radius) is gone; the Polar source drag in main.js needs updating');
+          await page.mouse.move(geo.mx, geo.my);
+          await page.mouse.down();
+          const a = (30 * Math.PI) / 180;
+          await page.mouse.move(geo.cx + geo.r * 0.7 * Math.sin(a), geo.cy - geo.r * 0.7 * Math.cos(a), { steps: 10 });
+          await page.mouse.up();
+          await page.waitForTimeout(4000);
+          const dragged = await page.evaluate(() => {
+            const t = document.getElementById('chart-rect').data[0];
+            let pk = 0;
+            for (let i = 1; i < t.y.length; i++) if (t.y[i] > t.y[pk]) pk = i;
+            return t.x[pk];
+          });
+          if (Math.abs(dragged - 30) > 3) throw new Error(`after dragging the HB100 to 30 deg the beam peaked at ${dragged} deg`);
+          // The drag also moved it outward, so its label carries a new range.
+          const label = await page.evaluate(() => document.getElementById('chart-polar').data[4].text[0]);
+          if (!/^HB100 30° · [\d.]+ m$/.test(label) || label.endsWith(' 1.0 m')) {
+            throw new Error(`HB100 label after the drag was ${JSON.stringify(label)}; expected 30° at a new range`);
+          }
+          console.log(`OK: Polar drag moved the HB100; beam now peaks at ${dragged} deg`);
+
           if (errors.length) throw new Error(`page errors: ${errors.join('; ')}`);
 
           console.log(`OK: ${plot.n} points, peak ${plot.peakY.toFixed(2)} dBFS at ${plot.peakX} deg`);

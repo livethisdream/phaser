@@ -13,6 +13,9 @@
 
 // --- Scene -----------------------------------------------------------------
 export const TARGET_ANGLE_DEG = 0.0;
+export const TARGET_RANGE_M = 1.0;
+export const TARGET_RANGE_MIN_M = 0.5;
+export const TARGET_RANGE_MAX_M = 20.0;
 export const TARGET_IF_HZ = 1000000.0;
 
 // --- Synthesis -------------------------------------------------------------
