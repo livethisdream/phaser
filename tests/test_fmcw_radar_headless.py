@@ -365,3 +365,54 @@ def test_a_transition_waits_for_the_frame_in_progress(monkeypatch):
     stop_thread.join(5)
     assert h.mode == "idle"
     assert h.frames[-1]["type"] == "fmcw_radar_frame"
+
+
+# --- frame payload (C3) -------------------------------------------------
+
+import json  # noqa: E402
+
+# Per-frame JSON budgets. range_doppler at ~5 fps is the one that matters:
+# 32 KB there is ~160 KB/s to each browser.
+PAYLOAD_BUDGET_KB = {"range_doppler": 32, "range_doppler_far": 128,
+                     "range": 8, "range_sync": 8, "cfar": 8}
+
+
+@pytest.mark.parametrize("preset", sorted(PAYLOAD_BUDGET_KB))
+def test_every_preset_frame_is_json_and_within_budget(preset):
+    h = _headless()
+    _start(h, preset=preset, cfar=True)
+    frame = {"type": "fmcw_radar_frame", "timestamp": 0.0, "data": h.do_fmcw_radar_frame()}
+    text = json.dumps(frame)  # raises on any numpy scalar left in the payload
+    assert len(text) / 1024 <= PAYLOAD_BUDGET_KB[preset], f"{len(text) / 1024:.1f} KB"
+
+
+def test_range_doppler_frame_carries_a_decodable_map_on_its_axes():
+    h = _headless()
+    _start(h, preset="range_doppler")
+    f = h.do_fmcw_radar_frame()
+    m = dsp.decode_db_u8(f["map"])
+    assert m.shape == (len(f["range_axis"]), len(f["velocity_axis"]))
+    r, v = np.unravel_index(int(np.argmax(m)), m.shape)
+    # The brightest decoded cell is the peak the frame reports.
+    assert f["range_axis"][r] == pytest.approx(f["peak_range"], abs=1e-3)
+    assert f["velocity_axis"][v] == pytest.approx(f["peak_velocity"], abs=1e-3)
+    assert f["map"]["db_max"] == pytest.approx(f["peak_magnitude_db"], abs=0.01)
+
+
+def test_range_profile_frame_carries_its_trace_and_cfar():
+    h = _headless()
+    _start(h, preset="range_sync", cfar=True)
+    f = h.do_fmcw_radar_frame()
+    n = len(f["range_axis"])
+    assert len(f["profile_db"]) == n == len(f["cfar_threshold_db"])
+    assert f["detections"] == len(f["detection_indices"])
+    assert all(0 <= i < n for i in f["detection_indices"])
+    above = [f["profile_db"][i] > f["cfar_threshold_db"][i] for i in f["detection_indices"]]
+    assert all(above)
+
+
+def test_cfar_arrays_are_absent_when_cfar_is_off():
+    h = _headless()
+    _start(h, preset="range_sync")
+    f = h.do_fmcw_radar_frame()
+    assert "cfar_threshold_db" not in f and "detection_indices" not in f

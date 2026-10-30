@@ -216,16 +216,22 @@ def main():
         for _ in range(2):  # warm-up
             h.do_fmcw_radar_frame()
 
-        e2e, cap, proc = [], [], []
+        import json
+        e2e, cap, proc, dumps, size = [], [], [], [], 0
         for _ in range(args.frames):
             t = time.perf_counter()
             out = h.do_fmcw_radar_frame()
+            # What broadcast_to_ws then does once per frame.
+            text = json.dumps({"type": "fmcw_radar_frame", "timestamp": time.time(), "data": out})
             e2e.append(time.perf_counter() - t)
             cap.append(out["capture_ms"] / 1e3)
             proc.append(out["process_ms"] / 1e3)
+            dumps.append(time.perf_counter() - t - (out["capture_ms"] + out["process_ms"]) / 1e3)
+            size = len(text)
         print(f"end to end   {ms(e2e)}   -> {1 / statistics.median(e2e):.1f} fps")
         print(f"  capture    {ms(cap)}")
-        print(f"  DSP        {ms(proc)}")
+        print(f"  DSP        {ms(proc)}   (incl. the payload encoding)")
+        print(f"  JSON       {ms(dumps)}   {size / 1024:.1f} KB a frame")
 
         buf = getattr(sdr, "_rxbuf", None)
         if buf is None:
