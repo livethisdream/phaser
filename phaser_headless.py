@@ -262,6 +262,16 @@ class PhaserHeadless:
                 sample_rate=self.SampleRate,
                 buffer_size=config.buffer_size,
             )
+            # The operator's, like the interferer settings: a re-init after
+            # Find HB100 or Calibrate must not snap the target back.
+            self.sim_target_angle_deg = getattr(
+                self, "sim_target_angle_deg", phaser_sim.SimSDR.TARGET_ANGLE_DEG
+            )
+            self.sim_target_range_m = getattr(
+                self, "sim_target_range_m", phaser_sim.SimSDR.TARGET_RANGE_M
+            )
+            self.sdr.target_angle_deg = self.sim_target_angle_deg
+            self.sdr.target_range_m = self.sim_target_range_m
             for device in self.array.devices.values():
                 ADAR_init(device)
                 ADAR_set_mode(device, "rx")
@@ -399,12 +409,19 @@ class PhaserHeadless:
         self.Beam0_Phase = 0.0  # degrees
         self.Beam1_Phase = 0.0  # degrees
 
+        # The MVDR and interferer settings below are the operator's, and
+        # _reload_calibration re-runs this method after every Find HB100 and
+        # Calibrate. Set them only on the first init: resetting them there
+        # put the interferer back to -20 deg / -10 dBFS and MVDR back to its
+        # default loading behind a lab's back.
+        first_init = not hasattr(self, "bf_mode")
+
         # Digital beamforming mode: "manual" (use B0/B1 weights above) or
-        # "mvdr" (adaptive, wired in a later step). Wired here so the
-        # frontend toggle plumbs through today; algorithm added with todo #4.
-        self.bf_mode = "manual"
-        self.mvdr_K = 128         # snapshots for covariance estimate
-        self.mvdr_diag_load = 1e-3  # diagonal loading factor
+        # "mvdr" (adaptive, Capon weights from the received covariance).
+        if first_init:
+            self.bf_mode = "manual"
+            self.mvdr_K = 128         # snapshots for covariance estimate
+            self.mvdr_diag_load = 1e-3  # diagonal loading factor
 
         # Synthetic interferer, injected into the received IQ inside
         # do_sweep() -- on real hardware and in --sim alike. One HB100 is a
@@ -425,11 +442,12 @@ class PhaserHeadless:
         #                 jammer looks almost like the look direction to the
         #                 digital stage, and MVDR can only null it with huge
         #                 weights.
-        self.interferer_enable = False
-        self.interferer_angle_deg = -20.0
-        self.interferer_power_dbfs = -10.0
-        self.interferer_offset_hz = 100e3
-        self.interferer_phase_deg = 0.0
+        if first_init:
+            self.interferer_enable = False
+            self.interferer_angle_deg = -20.0
+            self.interferer_power_dbfs = -10.0
+            self.interferer_offset_hz = 100e3
+            self.interferer_phase_deg = 0.0
         # Baseband frequency of the real target tone, re-measured every sweep
         # from the pre-injection IQ. None until the first sweep has run.
         self.target_tone_hz = None
@@ -698,6 +716,12 @@ class PhaserHeadless:
         # steering ramp per element.
         phaseList = self._apply_phase_cal(self.phaseList)
 
+        # The interferer is placed off the tone measured on the LAST sweep;
+        # target_tone_hz is re-measured below. Report the frequency actually
+        # injected: an HB100 drifts, and when it moved more than a few FFT
+        # bins between updates the readout looked for the interferer where
+        # it was not and read the noise floor, about 1 update in 8 on the kit.
+        injected_tone_hz = self.target_tone_hz
         # Loudest pre-injection buffer of this sweep; feeds target_tone_hz.
         best_raw = None
         best_raw_pow = -1.0
@@ -746,8 +770,12 @@ class PhaserHeadless:
                     X = np.vstack([chan1[:K], chan2[:K]]).astype(np.complex128)
                     w = self._mvdr_weights(X)
                     last_w = w
-                    # Apply weights: y = w^H · x, per-sample
-                    sum_chan = np.conj(w[0]) * chan1 + np.conj(w[1]) * chan2
+                    # Apply weights: y = Nr · w^H · x, per-sample. The Nr
+                    # matches Manual's scale: MVDR's distortionless weights
+                    # sum to 1 in the look direction where Manual's [1, 1]
+                    # sum to 2, so unscaled MVDR read every level 6 dB below
+                    # Manual and looked like it had lost the target.
+                    sum_chan = len(w) * (np.conj(w[0]) * chan1 + np.conj(w[1]) * chan2)
                     # MVDR produces one optimal beam; no natural delta output.
                     delta_chan = np.zeros_like(sum_chan)
                 else:
@@ -867,7 +895,7 @@ class PhaserHeadless:
             # with the interferer on. The FFT plot marks both tones from these.
             "target_tone_hz": self.target_tone_hz,
             "interferer_freq_hz": (
-                (self.target_tone_hz or 0.0) + self.interferer_offset_hz
+                (injected_tone_hz or 0.0) + self.interferer_offset_hz
                 if self.interferer_enable else None
             ),
         }
@@ -1495,6 +1523,14 @@ class PhaserHeadless:
                 "interferer_power_dbfs": self.interferer_power_dbfs,
                 "interferer_offset_hz": self.interferer_offset_hz,
                 "interferer_phase_deg": self.interferer_phase_deg,
+                # Where the simulated HB100 sits. None on hardware: the real
+                # one is wherever it was put, and nothing here measures that.
+                "sim_target_angle_deg": (
+                    self.sim_target_angle_deg if self.sim_mode else None
+                ),
+                "sim_target_range_m": (
+                    self.sim_target_range_m if self.sim_mode else None
+                ),
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
                 # Lets the UI hide the affordance where it would only fail.
@@ -1844,7 +1880,7 @@ class PhaserHeadless:
                 if mode in ("manual", "mvdr") and mode != self.bf_mode:
                     self.bf_mode = mode
                     if mode == "mvdr":
-                        print("[BF] MVDR mode selected — algorithm not yet wired; using manual weights until todo #4 lands.")
+                        print("[BF] MVDR mode selected.")
                     else:
                         print("[BF] Manual mode selected.")
             if "mvdrK" in state:
@@ -1868,6 +1904,22 @@ class PhaserHeadless:
                 self.interferer_offset_hz = max(-lim, min(lim, v))
             if "interferer_phase_deg" in state:
                 self.interferer_phase_deg = float(state["interferer_phase_deg"]) % 360.0
+            # Simulated HB100 position (Polar tab). Ignored on hardware, where
+            # there is no simulated target to move.
+            if "sim_target_angle_deg" in state and self.sim_mode:
+                v = state["sim_target_angle_deg"]
+                if v is not None:
+                    v = max(-90.0, min(90.0, float(v)))
+                    self.sim_target_angle_deg = v
+                    self.sdr.target_angle_deg = v
+            if "sim_target_range_m" in state and self.sim_mode:
+                v = state["sim_target_range_m"]
+                if v is not None:
+                    lo = self.sdr.TARGET_RANGE_MIN_M
+                    hi = self.sdr.TARGET_RANGE_MAX_M
+                    v = max(lo, min(hi, float(v)))
+                    self.sim_target_range_m = v
+                    self.sdr.target_range_m = v
             # Phase LSB and steering resolution are independent knobs, so
             # take both whenever the frontend sends them. ignore_res only
             # decides which one drives the sweep -- it must not make the

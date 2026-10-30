@@ -44,6 +44,10 @@ import {
     STEER_MIN_DEG,
     STEER_PI,
     STEER_RES_DEG,
+    TARGET_ANGLE_DEG,
+    TARGET_RANGE_M,
+    TARGET_RANGE_MAX_M,
+    TARGET_RANGE_MIN_M,
     TX_FREQ_HZ,
     TX_GAIN_DB,
 } from './constants.generated.js';
@@ -127,6 +131,8 @@ export function createEngine(options = {}) {
         interferer_power_dbfs: INTERFERER_POWER_DBFS,
         interferer_offset_hz: INTERFERER_OFFSET_HZ,
         interferer_phase_deg: INTERFERER_PHASE_DEG,
+        sim_target_angle_deg: TARGET_ANGLE_DEG,
+        sim_target_range_m: TARGET_RANGE_M,
         sweeping: false,
     };
 
@@ -390,6 +396,9 @@ export function createEngine(options = {}) {
         const phaseList = applyPhaseCal(state.phaseList);
         const averages = Math.max(1, state.Averages | 0);
 
+        // The interferer sits off the tone measured on the LAST sweep, so
+        // report that one; see do_sweep() for why it matters on a kit.
+        const injectedToneHz = targetToneHz;
         // Loudest pre-injection buffer of this sweep; feeds targetToneHz.
         let bestRaw = null;
         let bestRawPow = -1;
@@ -440,14 +449,17 @@ export function createEngine(options = {}) {
                     lastW = w;
                     sumRe = new Float64Array(n);
                     sumIm = new Float64Array(n);
-                    // y = w^H x
+                    // y = Nr w^H x. The Nr matches Manual's scale: the
+                    // distortionless weights sum to 1 where Manual's [1, 1]
+                    // sum to 2, so unscaled MVDR read 6 dB low.
+                    const nr = w.length;
                     for (let j = 0; j < n; j++) {
-                        sumRe[j] =
+                        sumRe[j] = nr * (
                             w[0].re * c0.re[j] + w[0].im * c0.im[j] +
-                            w[1].re * c1.re[j] + w[1].im * c1.im[j];
-                        sumIm[j] =
+                            w[1].re * c1.re[j] + w[1].im * c1.im[j]);
+                        sumIm[j] = nr * (
                             w[0].re * c0.im[j] - w[0].im * c0.re[j] +
-                            w[1].re * c1.im[j] - w[1].im * c1.re[j];
+                            w[1].re * c1.im[j] - w[1].im * c1.re[j]);
                     }
                     // MVDR produces one optimal beam; no natural delta output.
                     deltaRe = new Float64Array(n);
@@ -577,7 +589,7 @@ export function createEngine(options = {}) {
             hold_angle_deg: state.hold_angle,
             target_tone_hz: targetToneHz,
             interferer_freq_hz: state.interferer_enable
-                ? (targetToneHz ?? 0) + state.interferer_offset_hz
+                ? (injectedToneHz ?? 0) + state.interferer_offset_hz
                 : null,
         };
 
@@ -681,6 +693,16 @@ export function createEngine(options = {}) {
         if (Number.isFinite(patch.interferer_phase_deg)) {
             // Python's % takes the sign of the divisor; JS's of the dividend.
             state.interferer_phase_deg = ((patch.interferer_phase_deg % 360) + 360) % 360;
+        }
+        // Simulated HB100 position (Polar tab).
+        if (Number.isFinite(patch.sim_target_angle_deg)) {
+            state.sim_target_angle_deg = Math.max(-90, Math.min(90, patch.sim_target_angle_deg));
+            sdr.setTargetAngle(state.sim_target_angle_deg);
+        }
+        if (Number.isFinite(patch.sim_target_range_m)) {
+            state.sim_target_range_m = Math.max(
+                TARGET_RANGE_MIN_M, Math.min(TARGET_RANGE_MAX_M, patch.sim_target_range_m));
+            sdr.setTargetRange(state.sim_target_range_m);
         }
 
         // Phase LSB and steering resolution are independent knobs. ignore_res

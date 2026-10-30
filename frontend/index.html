@@ -406,6 +406,7 @@
                     <label class="toggle-container"><span>Show Peak Gain Marker</span><input type="checkbox" id="opt-peak-gain"><span class="checkmark"></span></label>
                     <label class="toggle-container mt-4"><span>Show Peak Angle Marker</span><input type="checkbox" id="opt-peak-angle"><span class="checkmark"></span></label>
                     <label class="toggle-container mt-4"><span>Show Beam Squint Info</span><input type="checkbox" id="opt-show-squint"><span class="checkmark"></span></label>
+                    <label class="toggle-container mt-4" title="Draw the HB100 (simulator only) and the interferer on the Polar plot. Drag a marker to move it."><span>Show Sources on Polar</span><input type="checkbox" id="opt-show-sources" checked><span class="checkmark"></span></label>
                     <label class="toggle-container mt-4"><span>Show Logs Tab</span><input type="checkbox" id="opt-show-logs"><span class="checkmark"></span></label>
 
                     <label class="toggle-container mt-4"><span>Show Monopulse Delta Beam</span><input type="checkbox" id="opt-show-delta"><span class="checkmark"></span></label>
@@ -524,6 +525,15 @@
         
         <div class="plots-stack">
           <div class="interferer-badge" id="interferer-badge" hidden>Interferer</div>
+          <!-- Mini scene (scene.js), top right, while the interferer is on.
+               Hidden on the Polar tab when that already shows the sources. -->
+          <div class="scene-mini" id="scene-mini" hidden>
+            <div class="scene-mini-bar">
+              <button class="scene-mini-open" id="scene-mini-open" title="Show the sources on the Polar tab">Scene</button>
+              <button class="scene-mini-close" id="scene-mini-close" title="Hide until the interferer is turned on again" aria-label="Hide mini scene">&times;</button>
+            </div>
+            <svg id="scene-mini-svg" aria-label="Array scene (mini)"></svg>
+          </div>
           <div class="chart-wrapper tab-content active" id="tab-rect">
              <div id="chart-rect" style="width:100%; height:100%;"></div>
           </div>
@@ -573,12 +583,12 @@
                    is under MVDR than under Manual with the same settings.
                    Shown only while the interferer is on. -->
               <div class="stat-box" id="interferer-ratio-box" hidden
-                   title="Interferer tone level minus target tone level, from the FFT. Measured with the beam held (Static Phase or Signal vs Time).">
+                   title="Interferer tone level minus target tone level, from the FFT. Measured with the beam held: Mode set to Signal vs Time.">
                   <span class="stat-label">Interferer vs Target</span>
                   <span class="stat-value" id="interferer-ratio">-- dB</span>
               </div>
               <div class="stat-box" id="interferer-suppression-box" hidden
-                   title="How much lower Interferer vs Target reads under MVDR than under Manual, same settings. Switch modes to fill it in.">
+                   title="How much lower Interferer vs Target reads under MVDR than under Manual, same Steer Angle and settings.">
                   <span class="stat-label">MVDR Suppression</span>
                   <span class="stat-value" id="interferer-suppression">-- dB</span>
               </div>
