@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CNrFeuDD.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-Bpsq92rw.css">
+  <script type="module" crossorigin src="./assets/index-CYgEZRDw.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CsItgGmn.css">
 </head>
 <body>
   <div class="app-container">
@@ -50,6 +50,11 @@
               <path d="M5 5.5h14v13H5z"></path>
               <path d="M5 9.5h14"></path>
               <path d="M9 5.5v4"></path>
+            </svg>
+          </button>
+          <button class="sidebar-icon-btn" data-section="4" title="FMCW" aria-label="FMCW">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 18L10 6M10 18l6-12M16 18l4-8"></path>
             </svg>
           </button>
           <div class="sidebar-icons-spacer"></div>
@@ -196,6 +201,65 @@
               </div>
             </div>
 
+            <!-- 5. FMCW -->
+            <div class="accordion-item">
+              <button class="accordion-header" title="FMCW range and range-Doppler: preset, MTI, CFAR and the 0 m calibration"><span class="accordion-icon" data-icon="4"></span> FMCW <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="fmcw-capability" id="fmcw-capability">Checking this kit…</div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">Preset</label>
+                  <span style="flex:1;"></span>
+                  <select id="fmcw-preset" class="modern-select" style="flex:0 0 auto; width:170px;"></select>
+                </div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;" title="Empty: the preset's own">Range Max (m)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="fmcw-range-max" step="1" min="1" placeholder="preset" class="modern-input-small">
+                </div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;" title="Moving target indicator: cancel what is not moving">MTI</label>
+                  <span style="flex:1;"></span>
+                  <select id="fmcw-mti" class="modern-select" style="flex:0 0 auto; width:120px;">
+                    <option value="none" selected>Off</option>
+                    <option value="2pulse">2-pulse</option>
+                    <option value="3pulse">3-pulse</option>
+                  </select>
+                </div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;" title="Colour scale of the range waterfall and range-Doppler map: from each frame's peak down this many dB">Dynamic Range (dB)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="fmcw-span" min="10" max="100" step="5" value="60" class="modern-input-small">
+                </div>
+                <hr class="divider"/>
+                <label class="toggle-container" title="Draw the CFAR threshold on the range plot and mark detections (single-chirp presets)">
+                  <span>CFAR</span>
+                  <input type="checkbox" id="fmcw-cfar">
+                  <span class="checkmark"></span>
+                </label>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">Guard / Ref Cells</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="fmcw-cfar-guard" min="0" max="64" step="1" value="4" class="modern-input-small" style="width:56px;">
+                  <input type="number" id="fmcw-cfar-ref" min="1" max="128" step="1" value="16" class="modern-input-small" style="width:56px;">
+                </div>
+                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;">CFAR Bias (dB)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="fmcw-cfar-bias" min="0" max="40" step="0.5" value="6" class="modern-input-small">
+                </div>
+                <hr class="divider"/>
+                <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
+                  <label style="margin:0; white-space:nowrap;" title="The beat frequency of a target held at 0 m (lab step 21). Empty: the IF tone.">0 m Beat (kHz)</label>
+                  <span style="flex:1;"></span>
+                  <input type="number" id="fmcw-zero-khz" step="0.1" placeholder="IF tone" class="modern-input-small">
+                </div>
+                <div class="taper-buttons mt-2">
+                  <button class="btn btn-outline" id="fmcw-zero-set" title="Hold the reflector at the array and press: the current peak becomes 0 m">Set 0 m Here</button>
+                  <button class="btn btn-outline" id="fmcw-zero-reset" title="Back to the IF tone">Reset</button>
+                </div>
+              </div>
+            </div>
+
           </div>
 
           <!-- Theme Toggle (bottom of sidebar) -->
@@ -216,13 +280,20 @@
           <div class="header-left">
             <span class="app-wordmark">ADI <strong>Phaser Radar</strong></span>
             <div class="tab-list">
-              <button class="tab-btn active" data-target="tab-waterfall">Waterfall</button>
-              <button class="tab-btn" data-target="tab-spectrum">Spectrum</button>
-              <button class="tab-btn" data-target="tab-time">Time-Domain</button>
+              <button class="tab-btn active" data-target="tab-waterfall" data-mode="cw">Waterfall</button>
+              <button class="tab-btn" data-target="tab-spectrum" data-mode="cw">Spectrum</button>
+              <button class="tab-btn" data-target="tab-time" data-mode="cw">Time-Domain</button>
+              <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw" hidden>Range</button>
+              <button class="tab-btn" data-target="tab-fmcw-wf" data-mode="fmcw" hidden>Range Waterfall</button>
+              <button class="tab-btn" data-target="tab-fmcw-rd" data-mode="fmcw" hidden>Range-Doppler</button>
               <button class="tab-btn" data-target="tab-logs">Logs</button>
             </div>
           </div>
           <div class="header-actions">
+            <div class="mode-switch" role="group" aria-label="Radar mode">
+              <button class="btn btn-outline btn-small active" id="mode-cw" title="CW Doppler: velocity">CW</button>
+              <button class="btn btn-outline btn-small" id="mode-fmcw" title="FMCW: range, and range-Doppler">FMCW</button>
+            </div>
             <button class="btn btn-primary btn-header-sweep" id="btn-radar">Start CW</button>
           </div>
         </div>
@@ -237,6 +308,15 @@
           <div class="chart-wrapper tab-content" id="tab-time">
             <div id="chart-time" style="width:100%; height:100%;"></div>
           </div>
+          <div class="chart-wrapper tab-content" id="tab-fmcw-range">
+            <div id="chart-fmcw-range" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-fmcw-wf">
+            <div id="chart-fmcw-wf" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-fmcw-rd">
+            <div id="chart-fmcw-rd" style="width:100%; height:100%;"></div>
+          </div>
           <div class="chart-wrapper tab-content" id="tab-logs">
             <div class="logs-pane">
               <div class="logs-toolbar">
@@ -249,6 +329,10 @@
         </div>
 
         <div class="chart-stats">
+          <div class="stat-box" id="box-peak-range" hidden>
+            <span class="stat-label">Peak Range</span>
+            <span class="stat-value" id="stat-peak-range">-- m</span>
+          </div>
           <div class="stat-box">
             <span class="stat-label">Peak Velocity</span>
             <span class="stat-value" id="stat-peak-vel">-- m/s</span>
@@ -256,6 +340,10 @@
           <div class="stat-box">
             <span class="stat-label">Peak Magnitude</span>
             <span class="stat-value" id="stat-peak-mag">-- dB</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-label">Frame Rate</span>
+            <span class="stat-value" id="stat-rate">-- fps</span>
           </div>
           <div class="stats-spacer"></div>
           <div class="status-indicator">
