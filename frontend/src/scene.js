@@ -8,11 +8,20 @@
  * scale, the beam's peak (or held) direction, the simulated HB100 and the
  * synthetic interferer.
  *
- * Both sources are far-field plane waves in the model, so only their angle
- * means anything; they ride a ring near the edge. Dragging one calls back with
- * the new angle and the caller sends it to the backend -- this module owns no
- * state beyond what it last drew.
+ * Both sources are far-field plane waves in the model. The interferer has
+ * only an angle and rides a ring near the edge. The HB100 also has a range,
+ * which sets its level (1/r) and here its distance from the array: radius is
+ * log(range), shared with the Polar tab through rangeToFrac/fracToRange.
+ * Dragging a source calls back with its new angle (and the HB100's range);
+ * the caller sends them to the backend -- this module owns no state beyond
+ * what it last drew.
  */
+
+import {
+    TARGET_RANGE_M,
+    TARGET_RANGE_MAX_M,
+    TARGET_RANGE_MIN_M,
+} from './sim/constants.generated.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const W = 440;
@@ -24,8 +33,33 @@ const DB_MIN = -50;
 const RINGS_DB = [-40, -30, -20, -10];
 const SPOKES_DEG = [-90, -60, -30, 0, 30, 60, 90];
 const ANGLE_LIMIT = 90;
-// Sources ride a ring just inside the grid's edge.
-const R_SOURCE = R * 0.9;
+
+// Source radii as a fraction of the plot's radius. The interferer rides the
+// outer ring. The HB100's range maps log-linearly onto [RANGE_FRAC_NEAR,
+// SOURCE_RING_FRAC]: nearest allowed range innermost, farthest on the ring.
+export const SOURCE_RING_FRAC = 0.92;
+const RANGE_FRAC_NEAR = 0.3;
+const LOG_RANGE_SPAN = Math.log(TARGET_RANGE_MAX_M / TARGET_RANGE_MIN_M);
+
+export function clampRange(m) {
+    return Math.max(TARGET_RANGE_MIN_M, Math.min(TARGET_RANGE_MAX_M, m));
+}
+
+export function rangeToFrac(m) {
+    const t = Math.log(clampRange(m) / TARGET_RANGE_MIN_M) / LOG_RANGE_SPAN;
+    return RANGE_FRAC_NEAR + t * (SOURCE_RING_FRAC - RANGE_FRAC_NEAR);
+}
+
+/** Inverse of rangeToFrac, to two significant figures: 0.53, 2.4, 13. */
+export function fracToRange(frac) {
+    const t = (frac - RANGE_FRAC_NEAR) / (SOURCE_RING_FRAC - RANGE_FRAC_NEAR);
+    const m = TARGET_RANGE_MIN_M * Math.exp(Math.max(0, Math.min(1, t)) * LOG_RANGE_SPAN);
+    return clampRange(Number(m.toPrecision(2)));
+}
+
+export function formatRange(m) {
+    return `${m < 10 ? m.toFixed(1) : m.toFixed(0)} m`;
+}
 
 function el(name, attrs = {}, parent = null) {
     const node = document.createElementNS(SVG_NS, name);
@@ -111,17 +145,21 @@ export function createScene(svg, { onDrag } = {}) {
             el('path', { d: 'M 0 -8 L 8 0 L 0 8 L -8 0 Z', class: 'scene-icon' }, g);
         }
         const value = el('text', { y: 30, 'text-anchor': 'middle', class: 'scene-handle-value' }, g);
-        return { g, value, kind, angle: 0, draggable: false };
+        return { g, value, kind, angle: 0, frac: SOURCE_RING_FRAC, range: null, draggable: false };
     }
 
     const target = makeHandle('target', 'HB100');
     const intf = makeHandle('interferer', 'Interferer');
 
-    function placeHandle(h, angle) {
+    function placeHandle(h, angle, range = null) {
         h.angle = angle;
-        const [x, y] = pt(angle, R_SOURCE);
+        h.range = range;
+        h.frac = Number.isFinite(range) ? rangeToFrac(range) : SOURCE_RING_FRAC;
+        const [x, y] = pt(angle, R * h.frac);
         h.g.setAttribute('transform', `translate(${x} ${y})`);
-        h.value.textContent = `${Math.round(angle)}°`;
+        h.value.textContent = Number.isFinite(range)
+            ? `${Math.round(angle)}° · ${formatRange(range)}`
+            : `${Math.round(angle)}°`;
         h.g.setAttribute('aria-valuenow', String(Math.round(angle)));
         const ray = h.kind === 'target' ? targetRay : intfRay;
         ray.setAttribute('x2', x);
@@ -134,7 +172,8 @@ export function createScene(svg, { onDrag } = {}) {
 
     // --- dragging --------------------------------------------------------
 
-    function pointerAngle(evt) {
+    /** Pointer -> { angle, frac }, frac being the radius over R. */
+    function pointerPolar(evt) {
         const ctm = svg.getScreenCTM();
         if (!ctm) return null;
         const p = new DOMPoint(evt.clientX, evt.clientY).matrixTransform(ctm.inverse());
@@ -142,13 +181,23 @@ export function createScene(svg, { onDrag } = {}) {
         const dy = Math.max(CY - p.y, 0);
         const dx = p.x - CX;
         if (dx === 0 && dy === 0) return null;
-        return clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI));
+        return {
+            angle: clampAngle(Math.round((Math.atan2(dx, dy) * 180) / Math.PI)),
+            frac: Math.hypot(dx, dy) / R,
+        };
     }
 
-    function commit(h, angle) {
-        if (angle === null || angle === h.angle) return;
-        placeHandle(h, angle);
-        onDrag?.(h.kind, angle);
+    // Only the HB100 has a range; the interferer keeps null.
+    function commit(h, angle, range) {
+        if (angle === h.angle && range === h.range) return;
+        placeHandle(h, angle, range);
+        onDrag?.(h.kind, angle, range);
+    }
+
+    function dragTo(h, evt) {
+        const p = pointerPolar(evt);
+        if (!p) return;
+        commit(h, p.angle, Number.isFinite(h.range) ? fracToRange(p.frac) : null);
     }
 
     for (const h of [target, intf]) {
@@ -160,7 +209,7 @@ export function createScene(svg, { onDrag } = {}) {
         });
         h.g.addEventListener('pointermove', (evt) => {
             if (!h.g.hasPointerCapture(evt.pointerId)) return;
-            commit(h, pointerAngle(evt));
+            dragTo(h, evt);
         });
         const end = (evt) => {
             if (h.g.hasPointerCapture(evt.pointerId)) h.g.releasePointerCapture(evt.pointerId);
@@ -170,14 +219,20 @@ export function createScene(svg, { onDrag } = {}) {
         h.g.addEventListener('pointercancel', end);
         h.g.addEventListener('keydown', (evt) => {
             if (!h.draggable) return;
+            // Left/Right turn it. Up/Down move the HB100 away/closer, and turn
+            // the interferer, which has no range.
             const step = evt.shiftKey ? 5 : 1;
-            let next = null;
-            if (evt.key === 'ArrowLeft' || evt.key === 'ArrowDown') next = h.angle - step;
-            else if (evt.key === 'ArrowRight' || evt.key === 'ArrowUp') next = h.angle + step;
-            else if (evt.key === 'Home') next = 0;
-            if (next === null) return;
+            const hasRange = Number.isFinite(h.range);
+            let angle = h.angle;
+            let range = h.range;
+            if (evt.key === 'ArrowLeft' || (!hasRange && evt.key === 'ArrowDown')) angle -= step;
+            else if (evt.key === 'ArrowRight' || (!hasRange && evt.key === 'ArrowUp')) angle += step;
+            else if (hasRange && evt.key === 'ArrowUp') range = clampRange(Number((range * 1.1).toPrecision(2)));
+            else if (hasRange && evt.key === 'ArrowDown') range = clampRange(Number((range / 1.1).toPrecision(2)));
+            else if (evt.key === 'Home') angle = 0;
+            else return;
             evt.preventDefault();
-            commit(h, clampAngle(next));
+            commit(h, clampAngle(angle), range);
         });
     }
 
@@ -189,6 +244,7 @@ export function createScene(svg, { onDrag } = {}) {
      * @param {number[]|null} s.gain     sum pattern, dBFS
      * @param {number|null} s.beamAngle  peak of the sweep, or the held angle
      * @param {number|null} s.targetAngle  simulated HB100; null when unknown (hardware)
+     * @param {number|null} s.targetRange  its range, m
      * @param {boolean} s.interfererOn
      * @param {number} s.interfererAngle
      */
@@ -216,7 +272,12 @@ export function createScene(svg, { onDrag } = {}) {
         target.draggable = hasTarget;
         setVisible(target.g, hasTarget);
         setVisible(targetRay, hasTarget);
-        if (hasTarget && !target.g.classList.contains('dragging')) placeHandle(target, s.targetAngle);
+        if (hasTarget && !target.g.classList.contains('dragging')) {
+            // A backend from before ranges existed sends none; it sits at the
+            // reference range, as it always did.
+            placeHandle(target, s.targetAngle,
+                Number.isFinite(s.targetRange) ? s.targetRange : TARGET_RANGE_M);
+        }
 
         intf.draggable = !!s.interfererOn;
         setVisible(intf.g, !!s.interfererOn);

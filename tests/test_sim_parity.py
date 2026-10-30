@@ -146,10 +146,15 @@ CASES = [
     # Scene tab: the simulated HB100 dragged off boresight, alone and with
     # the interferer on the other side, through a tapered steered sweep.
     ("target_off_boresight", {"sim_target_angle_deg": 25.0}, {}),
+    # 1/r level: farther (weaker) and nearest-allowed (stronger) than the
+    # 1 m reference.
+    ("target_far", {"sim_target_angle_deg": -10.0, "sim_target_range_m": 4.0}, {}),
+    ("target_near", {"sim_target_range_m": 0.5}, {}),
     (
         "target_moved_with_interferer",
         {
             "sim_target_angle_deg": -15.0,
+            "sim_target_range_m": 2.5,
             "interferer_enable": True,
             "interferer_angle_deg": 40.0,
             "gainList": [6, 27, 66, 100, 100, 66, 27, 6],

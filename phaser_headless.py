@@ -252,7 +252,11 @@ class PhaserHeadless:
             self.sim_target_angle_deg = getattr(
                 self, "sim_target_angle_deg", phaser_sim.SimSDR.TARGET_ANGLE_DEG
             )
+            self.sim_target_range_m = getattr(
+                self, "sim_target_range_m", phaser_sim.SimSDR.TARGET_RANGE_M
+            )
             self.sdr.target_angle_deg = self.sim_target_angle_deg
+            self.sdr.target_range_m = self.sim_target_range_m
             for device in self.array.devices.values():
                 ADAR_init(device)
                 ADAR_set_mode(device, "rx")
@@ -1059,6 +1063,9 @@ class PhaserHeadless:
                 "sim_target_angle_deg": (
                     self.sim_target_angle_deg if self.sim_mode else None
                 ),
+                "sim_target_range_m": (
+                    self.sim_target_range_m if self.sim_mode else None
+                ),
                 "sweeping": self.sweeping,
                 "hardware_connected": True,  # If we got here, hardware is connected
                 # Lets the UI hide the affordance where it would only fail.
@@ -1432,7 +1439,7 @@ class PhaserHeadless:
                 self.interferer_offset_hz = max(-lim, min(lim, v))
             if "interferer_phase_deg" in state:
                 self.interferer_phase_deg = float(state["interferer_phase_deg"]) % 360.0
-            # Simulated HB100 position (Scene tab). Ignored on hardware, where
+            # Simulated HB100 position (Polar tab). Ignored on hardware, where
             # there is no simulated target to move.
             if "sim_target_angle_deg" in state and self.sim_mode:
                 v = state["sim_target_angle_deg"]
@@ -1440,6 +1447,14 @@ class PhaserHeadless:
                     v = max(-90.0, min(90.0, float(v)))
                     self.sim_target_angle_deg = v
                     self.sdr.target_angle_deg = v
+            if "sim_target_range_m" in state and self.sim_mode:
+                v = state["sim_target_range_m"]
+                if v is not None:
+                    lo = self.sdr.TARGET_RANGE_MIN_M
+                    hi = self.sdr.TARGET_RANGE_MAX_M
+                    v = max(lo, min(hi, float(v)))
+                    self.sim_target_range_m = v
+                    self.sdr.target_range_m = v
             # Phase LSB and steering resolution are independent knobs, so
             # take both whenever the frontend sends them. ignore_res only
             # decides which one drives the sweep -- it must not make the
