@@ -1,7 +1,7 @@
 ---
 name: "#phasergui"
 dateCreated: 2026-08-06
-dateModified: 2026-10-15
+dateModified: 2026-10-31
 container: cdocker
 ---
 # Overview
@@ -172,3 +172,12 @@ moved to `project/phaser_ARCHIVE.md` on 2026-10-15.
 - [ ] Handle iiod / SDR connection failures gracefully (retry, restart, UI fallback)
 - [ ] Clarify plot-range configurability request
 - [ ] Provision one stock Kuiper card end to end with `provision.sh`, and boot one `build_kit_image.py --autoprovision` image, before relying on either at a workshop
+
+## Radar (`radar-dev`)
+Detail and history in [`docs/fmcw-phase-c-plan.md`](../docs/fmcw-phase-c-plan.md).
+- [ ] **C5 bench test of PR #76 on the kit**: 0 m calibration through the pop-up; range at 1, 2 and 3 m; MTI; CFAR in both modes; a clean exit to beamforming; the Hardware pane showing each preset's frequency and gains in FMCW mode
+- [ ] Merge #75 (brings `main`'s #70 into `radar-dev`) and #76 once C5 passes
+- [ ] **Phase D: browser radar simulator** -- port the radar sim and DSP to JS, a sim transport for `frontend-radar/`, radar parity cases, the radar UI on Pages. Write the phased plan and review it before code (plan doc, *Follow-on*)
+- [ ] Pi clock: no RTC and no NTP client, so a late network leaves it wrong (tar warns about future timestamps on install)
+- [ ] Merge `radar-dev` into `main` once the radar work is ready
+- [ ] Optional, offered 2026-10-30: write the settings-pane rules (explanations in hover tooltips, same-size aligned controls, grey out what does nothing) into CLAUDE.md
