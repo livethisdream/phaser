@@ -733,11 +733,11 @@ function updateFmcwControlGating() {
         row.title = off ? why : row.dataset.tip;
         row.querySelectorAll('input, select').forEach(el => { el.disabled = off; });
     };
-    gate(fmcwEl('fmcw-mti')?.closest('.control-group'), !multi,
+    gate(fmcwEl('fmcw-mti')?.closest('.fmcw-row'), !multi,
          'MTI cancels between chirps: it needs a multi-chirp preset (Range + Velocity).');
     const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
-    ['fmcw-cfar', 'fmcw-cfar-apply'].forEach(id => gate(fmcwEl(id)?.closest('label'), multi, noCfar));
-    ['fmcw-cfar-guard', 'fmcw-cfar-bias'].forEach(id => gate(fmcwEl(id)?.closest('.control-group'), multi, noCfar));
+    ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias', 'fmcw-cfar-apply']
+        .forEach(id => gate(fmcwEl(id)?.closest('.fmcw-row'), multi, noCfar));
     // What the preset is for, on hover rather than under the box.
     const sel = fmcwEl('fmcw-preset');
     if (sel) sel.title = state.fmcw.preset_info?.[preset]?.hint || '';
