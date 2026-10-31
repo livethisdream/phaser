@@ -506,3 +506,24 @@ def test_db_u8_survives_a_flat_map():
 def test_rounded_is_plain_floats():
     out = rounded(np.array([1.23456789, 2.0], dtype=np.float32), 4)
     assert out == [1.2346, 2.0] and all(type(v) is float for v in out)
+
+
+def test_range_doppler_peak_exclude_skips_the_zero_doppler_clutter():
+    """A stationary return far stronger than a moving one (the room's
+    leakage and clutter): the readout follows the mover with the exclusion,
+    the clutter without it."""
+    num_chirps = 64
+    iq = beat_signal([(3.0, 0.0, 10.0), (6.0, 2.0, 1.0)], SPC * num_chirps, num_chirps)
+    kw = dict(zero_range_freq=SIGNAL_FREQ, range_max=20.0)
+    matrix = chirp_matrix(iq, num_chirps)
+    plain = range_doppler_map(matrix, FS, CHIRP_BW, RAMP_TIME, PRI, OUTPUT_FREQ, **kw)
+    moving = range_doppler_map(matrix, FS, CHIRP_BW, RAMP_TIME, PRI, OUTPUT_FREQ,
+                               peak_exclude=0.3, **kw)
+    dv = moving["velocity_resolution"]
+    assert abs(plain["peak_velocity"]) < dv and abs(plain["peak_range"] - 3.0) < 1.0
+    assert abs(moving["peak_velocity"] - 2.0) < 2 * dv
+    assert abs(moving["peak_range"] - 6.0) < 1.0
+    assert moving["map_db"] == plain["map_db"], "the map itself is untouched"
+    # The 0 m calibration reads the still reflector, exclusion or not.
+    assert abs(moving["cal_peak_range"] - 3.0) < 1.0
+    assert moving["cal_peak_range"] == plain["cal_peak_range"]

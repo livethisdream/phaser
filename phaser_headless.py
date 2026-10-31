@@ -1006,7 +1006,7 @@ class PhaserHeadless:
 
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
-        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq",
+        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
     # Params written straight to the hardware while running, as CW does.
@@ -1020,7 +1020,7 @@ class PhaserHeadless:
         passband (docs/calibration-bugs.md). One the client sent wins.
         """
         params = dict(getattr(self, "fmcw_params", None) or {})
-        preset = params.pop("preset", None) or phaser_radar_dsp.FMCW_DEFAULT_PRESET
+        preset = params.pop("preset", None) or self._default_fmcw_preset()
         # None means "this kit's IF" too: the radar UI sends it for an empty
         # Center Freq field, as it does for CW, so a value typed earlier and
         # then cleared does not linger in fmcw_params.
@@ -1031,6 +1031,14 @@ class PhaserHeadless:
         if "range_max" in params and params["range_max"] is None:
             del params["range_max"]
         return phaser_radar_dsp.fmcw_config(params, preset=preset), preset
+
+    def _default_fmcw_preset(self):
+        """range_doppler, or the single-chirp range lab on a kit whose probe
+        found no chirp sync (range_doppler needs it and would refuse)."""
+        cap = getattr(self, "fmcw_capability", None) or {}
+        if cap.get("available") and cap.get("ramp") != phaser_radar_dsp.RAMP_SYNCED:
+            return phaser_radar_dsp.FMCW_FALLBACK_PRESET
+        return phaser_radar_dsp.FMCW_DEFAULT_PRESET
 
     def _enter_fmcw(self):
         cap = getattr(self, "fmcw_capability", None) or {}
@@ -1168,6 +1176,19 @@ class PhaserHeadless:
                 return {"status": "error", "message": str(e)}
         return {"status": "ok", "params": self.fmcw_params, "reentered": False}
 
+    @staticmethod
+    def _fmcw_preset_info(name):
+        cfg = phaser_radar_dsp.fmcw_config(preset=name)
+        label, hint = phaser_radar_dsp.FMCW_PRESET_UI.get(name, (name, ""))
+        return {
+            "num_chirps": int(cfg["num_chirps"]),
+            "label": label,
+            "hint": hint,
+            "output_freq": float(cfg["output_freq"]),
+            "rx_gain": float(cfg["rx_gain"]),
+            "tx_gain": float(cfg["tx_gain"]),
+        }
+
     def get_fmcw_radar_state(self):
         """FMCW config, plan and capability, running or not."""
         running = self.mode == "fmcw_radar"
@@ -1181,7 +1202,18 @@ class PhaserHeadless:
             "mode": self.mode,
             "running": running,
             "preset": preset,
-            "presets": sorted(phaser_radar_dsp.FMCW_PRESETS),
+            # In the UI's order (FMCW_PRESET_UI), then any preset it lacks.
+            "presets": [p for p in phaser_radar_dsp.FMCW_PRESET_UI
+                        if p in phaser_radar_dsp.FMCW_PRESETS]
+                       + sorted(set(phaser_radar_dsp.FMCW_PRESETS)
+                                - set(phaser_radar_dsp.FMCW_PRESET_UI)),
+            # Per preset, what the UI needs to know before Start: chirp count
+            # decides whether MTI (multi-chirp) or CFAR (single-chirp) applies,
+            # and the Hardware pane shows the lab's own frequency and gains.
+            "preset_info": {
+                name: self._fmcw_preset_info(name)
+                for name in phaser_radar_dsp.FMCW_PRESETS
+            },
             "params": dict(getattr(self, "fmcw_params", None) or {}),
             "cfg": cfg,
             "plan": getattr(self, "fmcw_plan", None) if running else None,
@@ -1222,10 +1254,12 @@ class PhaserHeadless:
             rd = phaser_radar_dsp.range_doppler_map(
                 matrix, fs, cfg["chirp_bw"], ramp, plan["pri_ms"] / 1e3,
                 cfg["output_freq"], zero_range_freq=zero, fft_window=window,
-                range_max=cfg.get("range_max"), vel_max=cfg.get("vel_max"))
+                range_max=cfg.get("range_max"), vel_max=cfg.get("vel_max"),
+                peak_exclude=cfg.get("peak_exclude", 0.0))
             out.update({
                 "kind": "range_doppler",
                 "peak_range": rd["peak_range"],
+                "cal_peak_range": rd["cal_peak_range"],
                 "peak_velocity": rd["peak_velocity"],
                 "peak_magnitude_db": rd["peak_magnitude_db"],
                 "range_resolution": rd["range_resolution"],
@@ -1245,6 +1279,7 @@ class PhaserHeadless:
             out.update({
                 "kind": "range_profile",
                 "peak_range": prof["peak_range"],
+                "cal_peak_range": prof["peak_range"],
                 "peak_magnitude_db": prof["peak_magnitude_db"],
                 "range_resolution": prof["range_resolution"],
                 "max_range": prof["max_range"],

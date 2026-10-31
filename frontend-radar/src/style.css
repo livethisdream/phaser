@@ -1359,3 +1359,88 @@ input[type=number]::-webkit-outer-spin-button {
 .stat-box[hidden] {
     display: none;
 }
+
+/* Greyed out, but still hoverable: its tooltip says why. The inputs are
+   disabled in main.js, so nothing here needs pointer-events: none. */
+.set-disabled {
+    opacity: 0.45;
+    cursor: help;
+}
+
+/* Settings rows, in every pane: the same two columns, every control the
+   same size, right edges aligned. */
+.set-row {
+    display: grid;
+    /* minmax(0, 1fr): a long label must not push its control out of line. */
+    grid-template-columns: minmax(0, 1fr) var(--set-ctrl-width, 150px);
+    align-items: center;
+    column-gap: 0.5rem;
+    min-height: 32px;
+    margin-top: 0.4rem;
+}
+.set-row > label:first-child {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.set-ctrl {
+    box-sizing: border-box;
+    width: 100%;
+    height: 30px;
+    padding: 0 0.5rem;
+    background: var(--ctrl-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--text-main);
+    border-radius: 6px;
+    outline: none;
+    font-family: inherit;
+    font-size: 0.85rem;
+}
+input.set-ctrl {
+    font-family: monospace;
+    text-align: right;
+}
+.set-ctrl:focus {
+    border-color: var(--primary);
+}
+.set-switch {
+    justify-self: end;
+}
+/* A slider row, as in the beamforming UI: the label on its own line, then
+   the slider and a compact box side by side, the box on the common right
+   edge. */
+.set-slider-row {
+    grid-template-columns: minmax(0, 1fr) 70px;
+    grid-template-areas: "label label" "slider box";
+    column-gap: 10px;
+    row-gap: 0.15rem;
+}
+.set-slider-row > label:first-child { grid-area: label; }
+.set-slider-row > .set-slider { grid-area: slider; width: 100%; margin: 0; }
+.set-slider-row > .set-ctrl { grid-area: box; }
+.taper-buttons.taper-3 { grid-template-columns: repeat(3, 1fr); }
+
+/* FMCW 0 m calibration pop-up */
+.btn-block { display: block; width: 100%; }
+.cal-steps {
+  margin: 0 0 1rem 1.25rem;
+  padding: 0;
+  color: var(--text-main);
+  line-height: 1.6;
+}
+.cal-readout {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.cal-readout > div { display: flex; justify-content: space-between; }
+.cal-readout > div > span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cal-hint { min-height: 1.2em; margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--text-muted, #94a3b8); }
+.cal-footer > .btn { flex: 1 1 0; white-space: nowrap; }
