@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-BG2KQIOF.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-B_aaA9Zs.css">
+  <script type="module" crossorigin src="./assets/index-BYkbojlB.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-KUqRC52L.css">
 </head>
 <body>
   <div class="app-container">
@@ -90,12 +90,12 @@
                   <label for="center-freq">Center Freq (GHz)</label>
                   <input type="number" id="center-freq" step="0.001" placeholder="kit IF" class="set-ctrl">
                 </div>
-                <div class="set-row">
+                <div class="set-row set-slider-row">
                   <label for="val-rx-gain">Rx Gain (dB)</label>
                   <input type="number" id="val-rx-gain" min="-3" max="70" step="1" value="30" class="set-ctrl">
                   <input type="range" id="rx-gain" min="-3" max="70" step="1" value="30" class="modern-slider set-slider" aria-label="Rx Gain (dB)">
                 </div>
-                <div class="set-row">
+                <div class="set-row set-slider-row">
                   <label for="val-tx-gain">Tx Gain (dB)</label>
                   <input type="number" id="val-tx-gain" min="-88" max="0" step="1" value="0" class="set-ctrl">
                   <input type="range" id="tx-gain" min="-88" max="0" step="1" value="0" class="modern-slider set-slider" aria-label="Tx Gain (dB)">
@@ -150,17 +150,17 @@
                     <option value="rect">None</option>
                   </select>
                 </div>
-                <div class="set-row">
+                <div class="set-row set-slider-row">
                   <label for="val-db-floor">dB Floor</label>
                   <input type="number" id="val-db-floor" min="-140" max="-20" step="1" value="-100" class="set-ctrl">
                   <input type="range" id="db-floor" min="-140" max="-20" step="1" value="-100" class="modern-slider set-slider" aria-label="dB Floor">
                 </div>
-                <div class="set-row">
+                <div class="set-row set-slider-row">
                   <label for="val-db-ceil">dB Ceiling</label>
                   <input type="number" id="val-db-ceil" min="-100" max="20" step="1" value="0" class="set-ctrl">
                   <input type="range" id="db-ceil" min="-100" max="20" step="1" value="0" class="modern-slider set-slider" aria-label="dB Ceiling">
                 </div>
-                <div class="set-row">
+                <div class="set-row set-slider-row">
                   <label for="val-vel-max">Velocity Max (m/s)</label>
                   <input type="number" id="val-vel-max" min="1" max="200" step="1" value="20" class="set-ctrl">
                   <input type="range" id="vel-max" min="1" max="200" step="1" value="20" class="modern-slider set-slider" aria-label="Velocity Max (m/s)">
@@ -172,7 +172,7 @@
             <div class="accordion-item">
               <button class="accordion-header" title="Waterfall depth and dB auto-scale"><span class="accordion-icon" data-icon="3"></span> Display <span>▼</span></button>
               <div class="accordion-body">
-                <div class="set-row">
+                <div class="set-row set-slider-row">
                   <label for="val-waterfall-depth">Waterfall Depth</label>
                   <input type="number" id="val-waterfall-depth" min="20" max="200" step="10" value="50" class="set-ctrl">
                   <input type="range" id="waterfall-depth" min="20" max="200" step="10" value="50" class="modern-slider set-slider" aria-label="Waterfall Depth">
