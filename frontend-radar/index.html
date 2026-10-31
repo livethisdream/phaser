@@ -213,6 +213,22 @@
                   <label for="fmcw-range-max">Range Max (m)</label>
                   <input type="number" id="fmcw-range-max" class="fmcw-ctrl" step="1" min="1" placeholder="preset">
                 </div>
+                <div class="fmcw-row" title="Colour scale of the range waterfall and range-Doppler map: from each frame's peak down this many dB">
+                  <label for="fmcw-span">Color Span (dB)</label>
+                  <input type="number" id="fmcw-span" class="fmcw-ctrl" min="10" max="100" step="5" value="60">
+                </div>
+                <!-- Calibration -->
+                <hr class="divider"/>
+                <div class="fmcw-row" title="Calibration: the beat frequency of a target held at 0 m (lab step 21). Empty: the IF tone.">
+                  <label for="fmcw-zero-khz">0 m Beat (kHz)</label>
+                  <input type="number" id="fmcw-zero-khz" class="fmcw-ctrl" step="0.1" placeholder="IF tone">
+                </div>
+                <div class="taper-buttons mt-2">
+                  <button class="btn btn-outline" id="fmcw-zero-set" title="Hold the reflector at the array and press: the current peak becomes 0 m">Set 0 m Here</button>
+                  <button class="btn btn-outline" id="fmcw-zero-reset" title="Back to the IF tone">Reset</button>
+                </div>
+                <!-- MTI -->
+                <hr class="divider"/>
                 <div class="fmcw-row" title="Moving target indicator: cancel what is not moving">
                   <label for="fmcw-mti-on">MTI</label>
                   <label class="toggle-container fmcw-switch"><input type="checkbox" id="fmcw-mti-on"><span class="checkmark"></span></label>
@@ -224,10 +240,7 @@
                     <option value="3pulse">3-pulse</option>
                   </select>
                 </div>
-                <div class="fmcw-row" title="Colour scale of the range waterfall and range-Doppler map: from each frame's peak down this many dB">
-                  <label for="fmcw-span">Color Span (dB)</label>
-                  <input type="number" id="fmcw-span" class="fmcw-ctrl" min="10" max="100" step="5" value="60">
-                </div>
+                <!-- CFAR -->
                 <hr class="divider"/>
                 <div class="fmcw-row" title="Constant false-alarm rate detection on the range profile">
                   <label for="fmcw-cfar">CFAR</label>
@@ -251,15 +264,6 @@
                 <div class="fmcw-row" title="How far above the noise estimate a cell must sit to count as a detection">
                   <label for="fmcw-cfar-bias">CFAR Bias (dB)</label>
                   <input type="number" id="fmcw-cfar-bias" class="fmcw-ctrl" min="0" max="40" step="0.5" value="6">
-                </div>
-                <hr class="divider"/>
-                <div class="fmcw-row" title="The beat frequency of a target held at 0 m (lab step 21). Empty: the IF tone.">
-                  <label for="fmcw-zero-khz">0 m Beat (kHz)</label>
-                  <input type="number" id="fmcw-zero-khz" class="fmcw-ctrl" step="0.1" placeholder="IF tone">
-                </div>
-                <div class="taper-buttons mt-2">
-                  <button class="btn btn-outline" id="fmcw-zero-set" title="Hold the reflector at the array and press: the current peak becomes 0 m">Set 0 m Here</button>
-                  <button class="btn btn-outline" id="fmcw-zero-reset" title="Back to the IF tone">Reset</button>
                 </div>
               </div>
             </div>
