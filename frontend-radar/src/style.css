@@ -1410,13 +1410,18 @@ input.set-ctrl {
 .set-switch {
     justify-self: end;
 }
-/* A slider row: label and box on the first line, the slider full width
-   under them, so the box lines up with every other row's. */
-.set-row > .set-slider {
-    grid-column: 1 / -1;
-    width: 100%;
-    margin: 0.35rem 0 0.15rem;
+/* A slider row, as in the beamforming UI: the label on its own line, then
+   the slider and a compact box side by side, the box on the common right
+   edge. */
+.set-slider-row {
+    grid-template-columns: minmax(0, 1fr) 70px;
+    grid-template-areas: "label label" "slider box";
+    column-gap: 10px;
+    row-gap: 0.15rem;
 }
+.set-slider-row > label:first-child { grid-area: label; }
+.set-slider-row > .set-slider { grid-area: slider; width: 100%; margin: 0; }
+.set-slider-row > .set-ctrl { grid-area: box; }
 .taper-buttons.taper-3 { grid-template-columns: repeat(3, 1fr); }
 
 /* FMCW 0 m calibration pop-up */
