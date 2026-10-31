@@ -214,10 +214,13 @@
                   <input type="number" id="fmcw-range-max" class="fmcw-ctrl" step="1" min="1" placeholder="preset">
                 </div>
                 <div class="fmcw-row" title="Moving target indicator: cancel what is not moving">
-                  <label for="fmcw-mti">MTI</label>
-                  <select id="fmcw-mti" class="fmcw-ctrl">
-                    <option value="none" selected>Off</option>
-                    <option value="2pulse">2-pulse</option>
+                  <label for="fmcw-mti-on">MTI</label>
+                  <label class="toggle-container fmcw-switch"><input type="checkbox" id="fmcw-mti-on"><span class="checkmark"></span></label>
+                </div>
+                <div class="fmcw-row" title="2-pulse subtracts each chirp from the last; 3-pulse does it twice, for a deeper, wider notch at 0 m/s">
+                  <label for="fmcw-mti-mode">MTI Mode</label>
+                  <select id="fmcw-mti-mode" class="fmcw-ctrl">
+                    <option value="2pulse" selected>2-pulse</option>
                     <option value="3pulse">3-pulse</option>
                   </select>
                 </div>
@@ -226,9 +229,16 @@
                   <input type="number" id="fmcw-span" class="fmcw-ctrl" min="10" max="100" step="5" value="60">
                 </div>
                 <hr class="divider"/>
-                <div class="fmcw-row" title="Draw the CFAR threshold on the range plot and mark detections">
+                <div class="fmcw-row" title="Constant false-alarm rate detection on the range profile">
                   <label for="fmcw-cfar">CFAR</label>
                   <label class="toggle-container fmcw-switch"><input type="checkbox" id="fmcw-cfar"><span class="checkmark"></span></label>
+                </div>
+                <div class="fmcw-row" title="Show Threshold: the dashed threshold and detection markers over the full trace, for tuning. Detections Only: everything below the threshold blanked (the lab's &quot;Apply CFAR Threshold&quot;).">
+                  <label for="fmcw-cfar-mode">CFAR Mode</label>
+                  <select id="fmcw-cfar-mode" class="fmcw-ctrl">
+                    <option value="threshold" selected>Show Threshold</option>
+                    <option value="detections">Detections Only</option>
+                  </select>
                 </div>
                 <div class="fmcw-row" title="Cells either side of the cell under test left out of the noise estimate, so a target's own skirts do not raise its threshold">
                   <label for="fmcw-cfar-guard">Guard Cells</label>
@@ -241,10 +251,6 @@
                 <div class="fmcw-row" title="How far above the noise estimate a cell must sit to count as a detection">
                   <label for="fmcw-cfar-bias">CFAR Bias (dB)</label>
                   <input type="number" id="fmcw-cfar-bias" class="fmcw-ctrl" min="0" max="40" step="0.5" value="6">
-                </div>
-                <div class="fmcw-row" title="The lab's &quot;Apply CFAR Threshold&quot;: blank the profile and waterfall below the threshold, so only detections remain">
-                  <label for="fmcw-cfar-apply">Apply CFAR</label>
-                  <label class="toggle-container fmcw-switch"><input type="checkbox" id="fmcw-cfar-apply"><span class="checkmark"></span></label>
                 </div>
                 <hr class="divider"/>
                 <div class="fmcw-row" title="The beat frequency of a target held at 0 m (lab step 21). Empty: the IF tone.">

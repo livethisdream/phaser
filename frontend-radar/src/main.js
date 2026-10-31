@@ -593,7 +593,7 @@ function renderFmcwFrame(frame) {
         const idx = frame.detection_indices || [];
         // "Apply CFAR Threshold" (lab step 4): everything at or below the
         // threshold goes to the trace's floor, in the plot and the waterfall.
-        if (thr.length === trace.length && fmcwEl('fmcw-cfar-apply')?.checked) {
+        if (thr.length === trace.length && fmcwEl('fmcw-cfar-mode')?.value === 'detections') {
             const floor = Math.min(...trace);
             trace = trace.map((v, i) => (v > thr[i] ? v : floor));
         }
@@ -620,7 +620,8 @@ const fmcwEl = (id) => document.getElementById(id);
 function readFmcwParams() {
     const params = {
         preset: fmcwEl('fmcw-preset').value || undefined,
-        mti: fmcwEl('fmcw-mti').value,
+        // A switch plus a mode in the UI; one value on the backend.
+        mti: fmcwEl('fmcw-mti-on').checked ? fmcwEl('fmcw-mti-mode').value : 'none',
         cfar: fmcwEl('fmcw-cfar').checked,
         cfar_guard: parseInt(fmcwEl('fmcw-cfar-guard').value, 10),
         cfar_ref: parseInt(fmcwEl('fmcw-cfar-ref').value, 10),
@@ -733,11 +734,19 @@ function updateFmcwControlGating() {
         row.title = off ? why : row.dataset.tip;
         row.querySelectorAll('input, select').forEach(el => { el.disabled = off; });
     };
-    gate(fmcwEl('fmcw-mti')?.closest('.fmcw-row'), !multi,
-         'MTI cancels between chirps: it needs a multi-chirp preset (Range + Velocity).');
+    // Each section is a switch and a mode: the preset decides whether the
+    // section applies at all, and the switch whether its mode can be chosen.
+    const noMti = 'MTI cancels between chirps: it needs a multi-chirp preset (Range + Velocity).';
+    const mtiOn = fmcwEl('fmcw-mti-on')?.checked;
+    gate(fmcwEl('fmcw-mti-on')?.closest('.fmcw-row'), !multi, noMti);
+    gate(fmcwEl('fmcw-mti-mode')?.closest('.fmcw-row'), !multi || !mtiOn,
+         !multi ? noMti : 'Turn MTI on to choose its mode.');
     const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
-    ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias', 'fmcw-cfar-apply']
+    const cfarOn = fmcwEl('fmcw-cfar')?.checked;
+    ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias']
         .forEach(id => gate(fmcwEl(id)?.closest('.fmcw-row'), multi, noCfar));
+    gate(fmcwEl('fmcw-cfar-mode')?.closest('.fmcw-row'), multi || !cfarOn,
+         multi ? noCfar : 'Turn CFAR on to choose its mode.');
     // What the preset is for, on hover rather than under the box.
     const sel = fmcwEl('fmcw-preset');
     if (sel) sel.title = state.fmcw.preset_info?.[preset]?.hint || '';
@@ -747,13 +756,19 @@ fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
     updateFmcwControlGating();
     pushFmcwParams({ preset: e.target.value });
 });
-fmcwEl('fmcw-mti')?.addEventListener('change', (e) => pushFmcwParams({ mti: e.target.value }));
+['fmcw-mti-on', 'fmcw-mti-mode'].forEach(id => fmcwEl(id)?.addEventListener('change', () => {
+    updateFmcwControlGating();
+    pushFmcwParams({ mti: readFmcwParams().mti });
+}));
+// Show Threshold / Detections Only is drawn in the browser: nothing to send.
+fmcwEl('fmcw-cfar-mode')?.addEventListener('change', () => { state.fmcw.waterfall = null; });
 fmcwEl('fmcw-range-max')?.addEventListener('change', () => {
     state.fmcw.waterfall = null;
     pushFmcwParams({ range_max: readFmcwParams().range_max });
 });
 ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias'].forEach(id => {
     fmcwEl(id)?.addEventListener('change', () => {
+        if (id === 'fmcw-cfar') updateFmcwControlGating();
         const p = readFmcwParams();
         pushFmcwParams({ cfar: p.cfar, cfar_guard: p.cfar_guard, cfar_ref: p.cfar_ref,
                          cfar_bias_db: p.cfar_bias_db });
