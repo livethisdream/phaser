@@ -793,7 +793,7 @@ fmcwEl('fmcw-zero-khz')?.addEventListener('change', () => {
 const fmcwCalModal = document.getElementById('fmcw-cal-modal');
 
 // The pop-up's main button always does the next step: Start FMCW, then Turn
-// MTI Off, then Set 0 m -- so it can be opened at any point and never has to
+// MTI Off, then Calibrate -- so it can be opened at any point and never has to
 // be closed to fix something first. MTI only matters on a multi-chirp
 // preset: it cancels a still reflector there.
 let fmcwCalBusy = false;
@@ -827,7 +827,7 @@ function fmcwCalProposal() {
     return { action: 'set', current, range: r, zero: current + 2 * slope * r / C_LIGHT };
 }
 
-const FMCW_CAL_ACTION = { start: 'Start FMCW', mti: 'Turn MTI Off', set: 'Set 0 m' };
+const FMCW_CAL_ACTION = { start: 'Start FMCW', mti: 'Turn MTI Off', set: 'Calibrate' };
 
 function updateFmcwCalModal() {
     const fmcwCalModal = document.getElementById('fmcw-cal-modal');
