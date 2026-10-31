@@ -792,20 +792,42 @@ fmcwEl('fmcw-zero-khz')?.addEventListener('change', () => {
 // over the ramp time the plan actually uses.
 const fmcwCalModal = document.getElementById('fmcw-cal-modal');
 
-function fmcwCalProposal() {
-    const f = state.fmcw.last, cfg = state.fmcw.cfg, plan = state.fmcw.plan;
-    if (state.runningMode !== 'fmcw' || !f || !cfg || !plan) {
-        return { why: 'Start FMCW to calibrate.' };
-    }
-    const current = cfg.zero_range_freq ?? cfg.signal_freq;
-    if (fmcwEl('fmcw-mti-on')?.checked && f.kind === 'range_doppler') {
-        return { current, why: 'Turn MTI off: it removes the still reflector.' };
-    }
-    const r = typeof f.cal_peak_range === 'number' ? f.cal_peak_range : f.peak_range;
-    if (typeof r !== 'number') return { current, why: 'Waiting for a frame...' };
-    const slope = cfg.chirp_bw / plan.effective_ramp_time;
-    return { current, range: r, zero: current + 2 * slope * r / C_LIGHT };
+// The pop-up's main button always does the next step: Start FMCW, then Turn
+// MTI Off, then Set 0 m -- so it can be opened at any point and never has to
+// be closed to fix something first. MTI only matters on a multi-chirp
+// preset: it cancels a still reflector there.
+let fmcwCalBusy = false;
+
+function fmcwMtiInTheWay() {
+    if (!fmcwEl('fmcw-mti-on')?.checked) return false;
+    const f = state.fmcw.last;
+    if (state.runningMode === 'fmcw' && f) return f.kind === 'range_doppler';
+    const info = state.fmcw.preset_info?.[fmcwEl('fmcw-preset')?.value];
+    return (info?.num_chirps ?? 1) > 1;
 }
+
+function fmcwCalProposal() {
+    if (state.runningMode !== 'fmcw') {
+        if (state.fmcw.available === false) {
+            return { action: 'start', disabled: true, why: 'FMCW is not available on this kit.' };
+        }
+        return { action: 'start',
+                 why: fmcwMtiInTheWay() ? 'Starts FMCW with MTI off.' : 'FMCW is stopped.' };
+    }
+    const f = state.fmcw.last, cfg = state.fmcw.cfg, plan = state.fmcw.plan;
+    const current = cfg ? (cfg.zero_range_freq ?? cfg.signal_freq) : undefined;
+    if (fmcwMtiInTheWay()) {
+        return { action: 'mti', current, why: 'MTI cancels a still reflector.' };
+    }
+    const r = f && (typeof f.cal_peak_range === 'number' ? f.cal_peak_range : f.peak_range);
+    if (!cfg || !plan || typeof r !== 'number') {
+        return { action: 'set', disabled: true, current, why: 'Waiting for a frame...' };
+    }
+    const slope = cfg.chirp_bw / plan.effective_ramp_time;
+    return { action: 'set', current, range: r, zero: current + 2 * slope * r / C_LIGHT };
+}
+
+const FMCW_CAL_ACTION = { start: 'Start FMCW', mti: 'Turn MTI Off', set: 'Set 0 m' };
 
 function updateFmcwCalModal() {
     const fmcwCalModal = document.getElementById('fmcw-cal-modal');
@@ -818,9 +840,10 @@ function updateFmcwCalModal() {
         khz(p.current) + (state.fmcw.cfg && state.fmcw.cfg.zero_range_freq == null && p.current != null ? ' (IF tone)' : '');
     document.getElementById('fmcw-cal-new').textContent = khz(p.zero);
     document.getElementById('fmcw-cal-hint').textContent = p.why || '';
-    const set = document.getElementById('fmcw-cal-set');
-    set.disabled = p.zero === undefined;
-    set.title = p.why || 'Make the strongest return 0 m';
+    const btn = document.getElementById('fmcw-cal-set');
+    btn.textContent = FMCW_CAL_ACTION[p.action];
+    btn.disabled = fmcwCalBusy || !!p.disabled;
+    btn.title = p.action === 'set' && !p.disabled ? 'Make the strongest return 0 m' : (p.why || '');
 }
 
 function openFmcwCal() {
@@ -836,9 +859,23 @@ fmcwCalModal?.addEventListener('click', (e) => { if (e.target === fmcwCalModal) 
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && fmcwCalModal && !fmcwCalModal.hidden) closeFmcwCal();
 });
-document.getElementById('fmcw-cal-set')?.addEventListener('click', () => {
+document.getElementById('fmcw-cal-set')?.addEventListener('click', async () => {
     const p = fmcwCalProposal();
-    if (p.zero === undefined) return;
+    if (p.disabled || fmcwCalBusy) return;
+    if (p.action === 'start' || p.action === 'mti') {
+        if (fmcwMtiInTheWay()) {
+            fmcwEl('fmcw-mti-on').checked = false;
+            fmcwEl('fmcw-mti-on').dispatchEvent(new Event('change'));
+            log('info', 'FMCW', 'MTI turned off for the 0 m calibration');
+        }
+        if (p.action === 'start') {
+            fmcwCalBusy = true;
+            updateFmcwCalModal();
+            try { await startRadar(); } finally { fmcwCalBusy = false; }
+        }
+        updateFmcwCalModal();
+        return;
+    }
     fmcwEl('fmcw-zero-khz').value = (p.zero / 1e3).toFixed(2);
     pushFmcwParams({ zero_range_freq: p.zero });
     log('info', 'FMCW', `0 m set to ${(p.zero / 1e3).toFixed(2)} kHz (return was at ${p.range.toFixed(2)} m)`);
@@ -922,37 +959,42 @@ const transport = createWebTransport({
     onFmcwFrame: handleFmcwFrame,
 });
 
+async function startRadar() {
+    const mode = state.uiMode;
+    try {
+        const resp = mode === 'fmcw'
+            ? await transport.startFmcwRadar(readFmcwParams())
+            : await transport.startCwRadar(readParams());
+        if (resp.status === 'ok') {
+            state.last_frame_t = null;
+            state.fmcw.waterfall = null;
+            state.fmcw.last = null;
+            setRunningUi(true, mode);
+            log('info', 'Radar', `Started ${mode.toUpperCase()}`);
+            if (mode === 'fmcw') await refreshFmcwState();
+        } else {
+            log('error', 'Radar', `Start failed: ${resp.message || JSON.stringify(resp)}`);
+        }
+    } catch (e) {
+        log('error', 'Radar', `Start failed: ${e.message || e}`);
+    }
+}
+
 document.getElementById('btn-radar').addEventListener('click', async () => {
-    if (state.running) {
-        try {
-            if (state.runningMode === 'fmcw') {
-                await transport.stopFmcwRadar();
-            } else {
-                await transport.stopCwRadar();
-            }
-            setRunningUi(false);
-            log('info', 'Radar', 'Stopped');
-        } catch (e) {
-            log('error', 'Radar', `Stop failed: ${e.message || e}`);
+    if (!state.running) {
+        await startRadar();
+        return;
+    }
+    try {
+        if (state.runningMode === 'fmcw') {
+            await transport.stopFmcwRadar();
+        } else {
+            await transport.stopCwRadar();
         }
-    } else {
-        const mode = state.uiMode;
-        try {
-            const resp = mode === 'fmcw'
-                ? await transport.startFmcwRadar(readFmcwParams())
-                : await transport.startCwRadar(readParams());
-            if (resp.status === 'ok') {
-                state.last_frame_t = null;
-                state.fmcw.waterfall = null;
-                setRunningUi(true, mode);
-                log('info', 'Radar', `Started ${mode.toUpperCase()}`);
-                if (mode === 'fmcw') await refreshFmcwState();
-            } else {
-                log('error', 'Radar', `Start failed: ${resp.message || JSON.stringify(resp)}`);
-            }
-        } catch (e) {
-            log('error', 'Radar', `Start failed: ${e.message || e}`);
-        }
+        setRunningUi(false);
+        log('info', 'Radar', 'Stopped');
+    } catch (e) {
+        log('error', 'Radar', `Stop failed: ${e.message || e}`);
     }
 });
 
