@@ -491,3 +491,19 @@ def test_state_lists_each_presets_chirp_count():
     assert set(info) == set(dsp.FMCW_PRESETS)
     assert info["range_doppler"]["num_chirps"] > 1
     assert info["range_sync"]["num_chirps"] == 1
+
+
+def test_presets_have_short_labels_in_ui_order():
+    h = _headless()
+    d = h.get_fmcw_radar_state()["data"]
+    assert d["presets"][0] == dsp.FMCW_DEFAULT_PRESET == "range_doppler"
+    assert set(d["presets"]) == set(dsp.FMCW_PRESETS)
+    for name, info in d["preset_info"].items():
+        assert info["label"] and len(info["label"]) <= 18, name  # fits the dropdown
+        assert info["hint"], name
+
+
+def test_default_falls_back_to_the_range_lab_without_chirp_sync():
+    h = _headless()
+    h.fmcw_capability = {**h.fmcw_capability, "ramp": dsp.RAMP_FREE_RUNNING}
+    assert h._default_fmcw_preset() == dsp.FMCW_FALLBACK_PRESET == "range"

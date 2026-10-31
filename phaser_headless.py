@@ -1020,7 +1020,7 @@ class PhaserHeadless:
         passband (docs/calibration-bugs.md). One the client sent wins.
         """
         params = dict(getattr(self, "fmcw_params", None) or {})
-        preset = params.pop("preset", None) or phaser_radar_dsp.FMCW_DEFAULT_PRESET
+        preset = params.pop("preset", None) or self._default_fmcw_preset()
         # None means "this kit's IF" too: the radar UI sends it for an empty
         # Center Freq field, as it does for CW, so a value typed earlier and
         # then cleared does not linger in fmcw_params.
@@ -1031,6 +1031,14 @@ class PhaserHeadless:
         if "range_max" in params and params["range_max"] is None:
             del params["range_max"]
         return phaser_radar_dsp.fmcw_config(params, preset=preset), preset
+
+    def _default_fmcw_preset(self):
+        """range_doppler, or the single-chirp range lab on a kit whose probe
+        found no chirp sync (range_doppler needs it and would refuse)."""
+        cap = getattr(self, "fmcw_capability", None) or {}
+        if cap.get("available") and cap.get("ramp") != phaser_radar_dsp.RAMP_SYNCED:
+            return phaser_radar_dsp.FMCW_FALLBACK_PRESET
+        return phaser_radar_dsp.FMCW_DEFAULT_PRESET
 
     def _enter_fmcw(self):
         cap = getattr(self, "fmcw_capability", None) or {}
@@ -1181,11 +1189,19 @@ class PhaserHeadless:
             "mode": self.mode,
             "running": running,
             "preset": preset,
-            "presets": sorted(phaser_radar_dsp.FMCW_PRESETS),
+            # In the UI's order (FMCW_PRESET_UI), then any preset it lacks.
+            "presets": [p for p in phaser_radar_dsp.FMCW_PRESET_UI
+                        if p in phaser_radar_dsp.FMCW_PRESETS]
+                       + sorted(set(phaser_radar_dsp.FMCW_PRESETS)
+                                - set(phaser_radar_dsp.FMCW_PRESET_UI)),
             # Per preset, what the UI needs to know before Start: chirp count
             # decides whether MTI (multi-chirp) or CFAR (single-chirp) applies.
             "preset_info": {
-                name: {"num_chirps": int(phaser_radar_dsp.fmcw_config(preset=name)["num_chirps"])}
+                name: {
+                    "num_chirps": int(phaser_radar_dsp.fmcw_config(preset=name)["num_chirps"]),
+                    "label": phaser_radar_dsp.FMCW_PRESET_UI.get(name, (name, ""))[0],
+                    "hint": phaser_radar_dsp.FMCW_PRESET_UI.get(name, (name, ""))[1],
+                }
                 for name in phaser_radar_dsp.FMCW_PRESETS
             },
             "params": dict(getattr(self, "fmcw_params", None) or {}),

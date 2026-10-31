@@ -660,7 +660,8 @@ async function refreshFmcwState() {
         if (sel && Array.isArray(d.presets) && sel.options.length !== d.presets.length) {
             const keep = sel.value || d.preset;
             sel.innerHTML = '';
-            d.presets.forEach(p => sel.add(new Option(p, p)));
+            // Short label in the box; the internal name stays the value.
+            d.presets.forEach(p => sel.add(new Option(d.preset_info?.[p]?.label || p, p)));
             sel.value = d.presets.includes(keep) ? keep : d.presets[0];
         }
         updateFmcwControlGating();
@@ -727,9 +728,10 @@ function updateFmcwControlGating() {
     ['fmcw-cfar-guard', 'fmcw-cfar-bias'].forEach(id => fmcwEl(id)?.closest('.control-group')?.classList.toggle('fmcw-disabled', multi));
     const hint = fmcwEl('fmcw-mode-hint');
     if (hint) {
-        hint.textContent = multi
-            ? `${preset}: ${n} chirps. MTI applies; CFAR is for the single-chirp presets (range, range_sync, cfar).`
-            : `${preset}: 1 chirp. CFAR applies; MTI needs a multi-chirp preset (range_doppler).`;
+        const about = state.fmcw.preset_info?.[preset]?.hint || '';
+        hint.textContent = `${about} ` + (multi
+            ? `${n} chirps: MTI applies; CFAR is for the Range presets.`
+            : '1 chirp: CFAR applies; MTI needs Range + Velocity.');
     }
 }
 

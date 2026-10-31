@@ -845,8 +845,22 @@ FMCW_PROC_DEFAULTS = {
     "peak_exclude": 0.3,    # m/s; range-Doppler peak readout skips |v| below this
 }
 
-# The first FMCW lab, and what start_fmcw_radar runs when no preset is named.
-FMCW_DEFAULT_PRESET = "range"
+# What start_fmcw_radar runs when no preset is named: range and velocity
+# together, the richest view and the one the bench work uses. A kit without
+# chirp sync cannot run it, and falls back to FMCW_FALLBACK_PRESET.
+FMCW_DEFAULT_PRESET = "range_doppler"
+FMCW_FALLBACK_PRESET = "range"
+
+# How the radar UI names and orders the presets: a short dropdown label and a
+# one-line hint. The keys stay the internal names (bench_fmcw_capture.py's
+# --preset, saved params, tests, the plan doc).
+FMCW_PRESET_UI = {
+    "range_doppler": ("Range + Velocity", "Indoor, ~5 fps. Hand wave, fidget spinner, MTI."),
+    "range_doppler_far": ("Range + Vel (Far)", "Outdoor, out to ~180 m, ~2.4 fps."),
+    "range": ("Range (Basic)", "FMCW lab: the 0 m calibration and kHz per metre."),
+    "range_sync": ("Range (Fast)", "A steeper chirp, out to ~375 m."),
+    "cfar": ("Range (CFAR)", "CFAR lab: tune the threshold, then Apply."),
+}
 
 
 def fmcw_config(params=None, preset=None):
