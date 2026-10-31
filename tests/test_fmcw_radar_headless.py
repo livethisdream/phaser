@@ -105,6 +105,16 @@ def test_range_doppler_preset_finds_range_and_velocity():
     assert abs(frame["peak_velocity"]) == pytest.approx(1.8, abs=0.3)
 
 
+def test_range_doppler_calibration_reads_the_still_reflector():
+    """The peak readout skips 0 m/s, so with MTI off it follows the mover; the
+    0 m calibration needs the still corner reflector at 1 m instead."""
+    h = _headless()
+    _start(h, preset="range_doppler", mti="none")
+    frame = h.do_fmcw_radar_frame()
+    assert frame["cal_peak_range"] == pytest.approx(1.0, abs=0.45)
+    assert frame["peak_range"] == pytest.approx(3.5, abs=0.5)
+
+
 def test_frames_report_their_timing_and_serialize():
     import json
     h = _headless()

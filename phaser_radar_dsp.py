@@ -575,11 +575,16 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
         search[:] = True
     masked = np.where(search[None, :], map_out, -np.inf)
     peak_r, peak_v = np.unravel_index(int(np.argmax(masked)), map_out.shape)
+    # The 0 m calibration wants the opposite: a reflector held still at the
+    # array, which is all zero-Doppler. So it reads the strongest cell over
+    # every velocity, exclusion or not.
+    cal_r = np.unravel_index(int(np.argmax(map_out)), map_out.shape)[0]
     return {
         "map_db": map_out.astype(np.float32).tolist(),
         "range_axis": ranges_out.astype(np.float32).tolist(),
         "velocity_axis": velocity_out.astype(np.float32).tolist(),
         "peak_range": float(ranges_out[peak_r]),
+        "cal_peak_range": float(ranges_out[cal_r]),
         "peak_velocity": float(velocity_out[peak_v]),
         "peak_magnitude_db": float(map_out[peak_r, peak_v]),
         "range_resolution": float(range_resolution(chirp_bw)),

@@ -23,7 +23,7 @@ const state = {
         cfg: null,           // the running config, for the 0 m calibration
         plan: null,
         waterfall: null,     // rows = frames, cols = range bins
-        last: null,          // the last frame, for "Set 0 m Here"
+        last: null,          // the last frame, for the 0 m calibration
         span_db: 60,         // colour scale: the frame's peak down this far
         preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
         // Range-Doppler: the waterfall and "moving" trace skip |v| below
@@ -417,6 +417,7 @@ function setConnectionStatus(connected) {
 function setRunningUi(running, mode = state.uiMode) {
     state.running = running;
     state.runningMode = running ? mode : null;
+    updateFmcwCalModal();
     const btn = document.getElementById('btn-radar');
     if (btn) {
         btn.textContent = running ? 'Stop' : (state.uiMode === 'fmcw' ? 'Start FMCW' : 'Start CW');
@@ -550,6 +551,7 @@ function handleFmcwFrame(frame) {
     if (!frame || !frame.range_axis) return;
     state.fmcw.last = frame;
     noteFrameRate();
+    updateFmcwCalModal();
     const scheduled = fmcwPending !== null;
     fmcwPending = frame;
     if (!scheduled) {
@@ -782,26 +784,71 @@ fmcwEl('fmcw-zero-khz')?.addEventListener('change', () => {
     pushFmcwParams({ zero_range_freq: readFmcwParams().zero_range_freq });
 });
 
-// Lab step 21: hold the reflector at the array, and its peak becomes 0 m.
-// The frame's peak range was computed against the current 0 m beat, so the
-// new one is that plus the beat the peak range stands for: f = 2 S R / c,
-// with S the slope over the ramp time the plan actually uses.
-fmcwEl('fmcw-zero-set')?.addEventListener('click', () => {
+// Lab step 21: hold the reflector at the array, and its return becomes 0 m.
+// The frame's cal_peak_range -- the strongest cell over every velocity, so a
+// still reflector counts on range-Doppler presets, where the peak readout
+// skips 0 m/s -- was computed against the current 0 m beat, so the new one is
+// that plus the beat the range stands for: f = 2 S R / c, with S the slope
+// over the ramp time the plan actually uses.
+const fmcwCalModal = document.getElementById('fmcw-cal-modal');
+
+function fmcwCalProposal() {
     const f = state.fmcw.last, cfg = state.fmcw.cfg, plan = state.fmcw.plan;
     if (state.runningMode !== 'fmcw' || !f || !cfg || !plan) {
-        log('error', 'FMCW', 'Start FMCW with a reflector at 0 m first');
-        return;
+        return { why: 'Start FMCW to calibrate.' };
     }
     const current = cfg.zero_range_freq ?? cfg.signal_freq;
+    if (fmcwEl('fmcw-mti-on')?.checked && f.kind === 'range_doppler') {
+        return { current, why: 'Turn MTI off: it removes the still reflector.' };
+    }
+    const r = typeof f.cal_peak_range === 'number' ? f.cal_peak_range : f.peak_range;
+    if (typeof r !== 'number') return { current, why: 'Waiting for a frame...' };
     const slope = cfg.chirp_bw / plan.effective_ramp_time;
-    const zero = current + 2 * slope * f.peak_range / C_LIGHT;
-    fmcwEl('fmcw-zero-khz').value = (zero / 1e3).toFixed(2);
-    pushFmcwParams({ zero_range_freq: zero });
-    log('info', 'FMCW', `0 m set to ${(zero / 1e3).toFixed(2)} kHz (peak was at ${f.peak_range.toFixed(2)} m)`);
+    return { current, range: r, zero: current + 2 * slope * r / C_LIGHT };
+}
+
+function updateFmcwCalModal() {
+    const fmcwCalModal = document.getElementById('fmcw-cal-modal');
+    if (!fmcwCalModal || fmcwCalModal.hidden) return;
+    const p = fmcwCalProposal();
+    const khz = (hz) => (typeof hz === 'number' ? `${(hz / 1e3).toFixed(2)} kHz` : '--');
+    document.getElementById('fmcw-cal-peak').textContent =
+        typeof p.range === 'number' ? `${p.range.toFixed(2)} m` : '--';
+    document.getElementById('fmcw-cal-current').textContent =
+        khz(p.current) + (state.fmcw.cfg && state.fmcw.cfg.zero_range_freq == null && p.current != null ? ' (IF tone)' : '');
+    document.getElementById('fmcw-cal-new').textContent = khz(p.zero);
+    document.getElementById('fmcw-cal-hint').textContent = p.why || '';
+    const set = document.getElementById('fmcw-cal-set');
+    set.disabled = p.zero === undefined;
+    set.title = p.why || 'Make the strongest return 0 m';
+}
+
+function openFmcwCal() {
+    fmcwCalModal.hidden = false;
+    updateFmcwCalModal();
+    document.getElementById('fmcw-cal-cancel').focus();
+}
+function closeFmcwCal() { fmcwCalModal.hidden = true; }
+
+fmcwEl('fmcw-cal-open')?.addEventListener('click', openFmcwCal);
+document.getElementById('fmcw-cal-cancel')?.addEventListener('click', closeFmcwCal);
+fmcwCalModal?.addEventListener('click', (e) => { if (e.target === fmcwCalModal) closeFmcwCal(); });
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && fmcwCalModal && !fmcwCalModal.hidden) closeFmcwCal();
 });
-fmcwEl('fmcw-zero-reset')?.addEventListener('click', () => {
+document.getElementById('fmcw-cal-set')?.addEventListener('click', () => {
+    const p = fmcwCalProposal();
+    if (p.zero === undefined) return;
+    fmcwEl('fmcw-zero-khz').value = (p.zero / 1e3).toFixed(2);
+    pushFmcwParams({ zero_range_freq: p.zero });
+    log('info', 'FMCW', `0 m set to ${(p.zero / 1e3).toFixed(2)} kHz (return was at ${p.range.toFixed(2)} m)`);
+    closeFmcwCal();
+});
+document.getElementById('fmcw-cal-reset')?.addEventListener('click', () => {
     fmcwEl('fmcw-zero-khz').value = '';
     pushFmcwParams({ zero_range_freq: null });
+    log('info', 'FMCW', '0 m reset to the IF tone');
+    closeFmcwCal();
 });
 
 /* --- Param plumbing --- */

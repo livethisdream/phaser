@@ -1249,6 +1249,7 @@ class PhaserHeadless:
             out.update({
                 "kind": "range_doppler",
                 "peak_range": rd["peak_range"],
+                "cal_peak_range": rd["cal_peak_range"],
                 "peak_velocity": rd["peak_velocity"],
                 "peak_magnitude_db": rd["peak_magnitude_db"],
                 "range_resolution": rd["range_resolution"],
@@ -1268,6 +1269,7 @@ class PhaserHeadless:
             out.update({
                 "kind": "range_profile",
                 "peak_range": prof["peak_range"],
+                "cal_peak_range": prof["peak_range"],
                 "peak_magnitude_db": prof["peak_magnitude_db"],
                 "range_resolution": prof["range_resolution"],
                 "max_range": prof["max_range"],

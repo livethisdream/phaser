@@ -1410,3 +1410,24 @@ input.fmcw-ctrl {
 .fmcw-switch {
     justify-self: end;
 }
+
+/* FMCW 0 m calibration pop-up */
+.btn-block { display: block; width: 100%; }
+.cal-steps {
+  margin: 0 0 1rem 1.25rem;
+  padding: 0;
+  color: var(--text-main);
+  line-height: 1.6;
+}
+.cal-readout {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.cal-readout > div { display: flex; justify-content: space-between; }
+.cal-readout > div > span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cal-hint { min-height: 1.2em; margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--text-muted, #94a3b8); }
+.cal-footer > .btn { flex: 1 1 0; white-space: nowrap; }

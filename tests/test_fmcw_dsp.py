@@ -524,3 +524,6 @@ def test_range_doppler_peak_exclude_skips_the_zero_doppler_clutter():
     assert abs(moving["peak_velocity"] - 2.0) < 2 * dv
     assert abs(moving["peak_range"] - 6.0) < 1.0
     assert moving["map_db"] == plain["map_db"], "the map itself is untouched"
+    # The 0 m calibration reads the still reflector, exclusion or not.
+    assert abs(moving["cal_peak_range"] - 3.0) < 1.0
+    assert moving["cal_peak_range"] == plain["cal_peak_range"]

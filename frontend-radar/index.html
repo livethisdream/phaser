@@ -223,10 +223,7 @@
                   <label for="fmcw-zero-khz">0 m Beat (kHz)</label>
                   <input type="number" id="fmcw-zero-khz" class="fmcw-ctrl" step="0.1" placeholder="IF tone">
                 </div>
-                <div class="taper-buttons mt-2">
-                  <button class="btn btn-outline" id="fmcw-zero-set" title="Hold the reflector at the array and press: the current peak becomes 0 m">Set 0 m Here</button>
-                  <button class="btn btn-outline" id="fmcw-zero-reset" title="Back to the IF tone">Reset</button>
-                </div>
+                <button class="btn btn-outline btn-block mt-2" id="fmcw-cal-open" title="Calibrate 0 m with a reflector at the array">Calibrate…</button>
                 <!-- MTI -->
                 <hr class="divider"/>
                 <div class="fmcw-row" title="Moving target indicator: cancel what is not moving">
@@ -361,6 +358,34 @@
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- FMCW 0 m calibration (lab step 21) -->
+  <div class="modal-overlay" id="fmcw-cal-modal" hidden>
+    <div class="modal glass-panel" role="dialog" aria-modal="true" aria-labelledby="fmcw-cal-title">
+      <div class="modal-header">
+        <h3 class="modal-title" id="fmcw-cal-title">0 m Calibration</h3>
+      </div>
+      <div class="modal-body">
+        <ol class="cal-steps">
+          <li>Start FMCW with MTI off.</li>
+          <li>Hold a reflector (metal plate or corner reflector) right at the array.</li>
+          <li>Check the readout below settles on it.</li>
+          <li>Press <strong>Set 0 m</strong>.</li>
+        </ol>
+        <div class="cal-readout">
+          <div><span>Strongest return</span><span id="fmcw-cal-peak">--</span></div>
+          <div><span>Current 0 m beat</span><span id="fmcw-cal-current">--</span></div>
+          <div><span>New 0 m beat</span><span id="fmcw-cal-new">--</span></div>
+        </div>
+        <p class="cal-hint" id="fmcw-cal-hint"></p>
+      </div>
+      <div class="modal-footer cal-footer">
+        <button class="btn btn-outline" id="fmcw-cal-reset" title="Clear the calibration: 0 m goes back to the IF tone">Reset</button>
+        <button class="btn btn-outline" id="fmcw-cal-cancel">Cancel</button>
+        <button class="btn btn-primary" id="fmcw-cal-set">Set 0 m</button>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="./src/main.js"></script>
