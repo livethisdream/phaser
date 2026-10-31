@@ -650,10 +650,12 @@ async function refreshFmcwState() {
         if (capEl) {
             capEl.classList.toggle('ok', state.fmcw.available && !cap.reason);
             capEl.classList.toggle('unavailable', !state.fmcw.available);
-            capEl.textContent = !state.fmcw.available
-                ? `FMCW unavailable: ${cap.reason || 'unknown reason'}`
-                : cap.reason ? `FMCW limited: ${cap.reason}`
-                : `FMCW ready (${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''})`;
+            // One short line; the detail is in the tooltip.
+            capEl.textContent = !state.fmcw.available ? 'FMCW unavailable'
+                : cap.reason ? 'FMCW limited' : 'FMCW ready';
+            capEl.title = !state.fmcw.available ? (cap.reason || 'unknown reason')
+                : cap.reason ? cap.reason
+                : `${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''}`;
         }
         state.fmcw.preset_info = d.preset_info || {};
         const sel = fmcwEl('fmcw-preset');
@@ -722,17 +724,23 @@ function updateFmcwControlGating() {
     const n = state.fmcw.preset_info?.[preset]?.num_chirps;
     if (!n) return;  // not known yet
     const multi = n > 1;
-    const mtiRow = fmcwEl('fmcw-mti')?.closest('.control-group');
-    mtiRow?.classList.toggle('fmcw-disabled', !multi);
-    ['fmcw-cfar', 'fmcw-cfar-apply'].forEach(id => fmcwEl(id)?.closest('label')?.classList.toggle('fmcw-disabled', multi));
-    ['fmcw-cfar-guard', 'fmcw-cfar-bias'].forEach(id => fmcwEl(id)?.closest('.control-group')?.classList.toggle('fmcw-disabled', multi));
-    const hint = fmcwEl('fmcw-mode-hint');
-    if (hint) {
-        const about = state.fmcw.preset_info?.[preset]?.hint || '';
-        hint.textContent = `${about} ` + (multi
-            ? `${n} chirps: MTI applies; CFAR is for the Range presets.`
-            : '1 chirp: CFAR applies; MTI needs Range + Velocity.');
-    }
+    // Grey a row out with its reason as the tooltip; restore its own tooltip
+    // (kept in data-tip) when it applies again.
+    const gate = (row, off, why) => {
+        if (!row) return;
+        if (row.dataset.tip === undefined) row.dataset.tip = row.title || '';
+        row.classList.toggle('fmcw-disabled', off);
+        row.title = off ? why : row.dataset.tip;
+        row.querySelectorAll('input, select').forEach(el => { el.disabled = off; });
+    };
+    gate(fmcwEl('fmcw-mti')?.closest('.control-group'), !multi,
+         'MTI cancels between chirps: it needs a multi-chirp preset (Range + Velocity).');
+    const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
+    ['fmcw-cfar', 'fmcw-cfar-apply'].forEach(id => gate(fmcwEl(id)?.closest('label'), multi, noCfar));
+    ['fmcw-cfar-guard', 'fmcw-cfar-bias'].forEach(id => gate(fmcwEl(id)?.closest('.control-group'), multi, noCfar));
+    // What the preset is for, on hover rather than under the box.
+    const sel = fmcwEl('fmcw-preset');
+    if (sel) sel.title = state.fmcw.preset_info?.[preset]?.hint || '';
 }
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {

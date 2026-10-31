@@ -1360,13 +1360,9 @@ input[type=number]::-webkit-outer-spin-button {
     display: none;
 }
 
-.fmcw-hint {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-top: 0.35rem;
-    line-height: 1.35;
-}
+/* Greyed out, but still hoverable: its tooltip says why. The inputs are
+   disabled in main.js, so nothing here needs pointer-events: none. */
 .fmcw-disabled {
     opacity: 0.45;
-    pointer-events: none;
+    cursor: help;
 }
