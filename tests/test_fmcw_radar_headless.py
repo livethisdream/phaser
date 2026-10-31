@@ -503,6 +503,17 @@ def test_state_lists_each_presets_chirp_count():
     assert info["range_sync"]["num_chirps"] == 1
 
 
+def test_state_gives_each_presets_hardware_for_the_pane():
+    """The Hardware pane follows the preset in FMCW mode: it shows the lab's
+    own output frequency and gains, not CW's."""
+    h = _headless()
+    info = h.get_fmcw_radar_state()["data"]["preset_info"]
+    for name, i in info.items():
+        cfg = dsp.fmcw_config(preset=name)
+        assert (i["output_freq"], i["rx_gain"], i["tx_gain"]) == \
+            (cfg["output_freq"], cfg["rx_gain"], cfg["tx_gain"]), name
+
+
 def test_presets_have_short_labels_in_ui_order():
     h = _headless()
     d = h.get_fmcw_radar_state()["data"]

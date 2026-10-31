@@ -79,63 +79,31 @@
 
             <!-- 1. Hardware -->
             <div class="accordion-item active">
-              <button class="accordion-header" title="Configure RF front-end gains and frequencies"><span class="accordion-icon" data-icon="0"></span> Hardware <span>▼</span></button>
+              <button class="accordion-header" title="RF front end: frequencies, gains and the element taper"><span class="accordion-icon" data-icon="0"></span> Hardware <span>▼</span></button>
               <div class="accordion-body">
-                <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
-                  <label style="margin:0; white-space:nowrap;">Output Freq (GHz)</label>
-                  <span style="flex:1;"></span>
-                  <input type="number" id="output-freq" step="0.001" value="12.2" class="modern-input-small">
+                <div class="set-row">
+                  <label for="output-freq">Output Freq (GHz)</label>
+                  <input type="number" id="output-freq" step="0.001" value="12.2" class="set-ctrl">
                 </div>
-                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
-                  <label style="margin:0; white-space:nowrap;">Center Freq (GHz)</label>
-                  <span style="flex:1;"></span>
-                  <input type="number" id="center-freq" step="0.001" placeholder="kit IF" title="Defaults to this kit's measured IF" class="modern-input-small">
+                <div class="set-row" title="Defaults to this kit's measured IF">
+                  <label for="center-freq">Center Freq (GHz)</label>
+                  <input type="number" id="center-freq" step="0.001" placeholder="kit IF" class="set-ctrl">
                 </div>
-                <div class="control-group combo-group mt-2">
-                  <label>Rx Gain (dB)</label>
-                  <div class="combo-inputs">
-                    <input type="range" id="rx-gain" min="-3" max="70" step="1" value="30" class="modern-slider">
-                    <input type="number" id="val-rx-gain" min="-3" max="70" step="1" value="30" class="modern-input-small">
-                  </div>
+                <div class="set-row">
+                  <label for="val-rx-gain">Rx Gain (dB)</label>
+                  <input type="number" id="val-rx-gain" min="-3" max="70" step="1" value="30" class="set-ctrl">
+                  <input type="range" id="rx-gain" min="-3" max="70" step="1" value="30" class="modern-slider set-slider" aria-label="Rx Gain (dB)">
                 </div>
-                <div class="control-group combo-group mt-2">
-                  <label>Tx Gain (dB)</label>
-                  <div class="combo-inputs">
-                    <input type="range" id="tx-gain" min="-88" max="0" step="1" value="0" class="modern-slider">
-                    <input type="number" id="val-tx-gain" min="-88" max="0" step="1" value="0" class="modern-input-small">
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- 2. CW Capture -->
-            <div class="accordion-item">
-              <button class="accordion-header" title="Sample-rate, FFT size, and IF tone configuration"><span class="accordion-icon" data-icon="1"></span> CW Capture <span>▼</span></button>
-              <div class="accordion-body">
-                <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
-                  <label style="margin:0; white-space:nowrap;">Sample Rate (kHz)</label>
-                  <span style="flex:1;"></span>
-                  <input type="number" id="sample-rate" step="50" value="600" class="modern-input-small">
-                </div>
-                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
-                  <label style="margin:0; white-space:nowrap;">FFT Size</label>
-                  <span style="flex:1;"></span>
-                  <select id="fft-size" class="modern-select" style="flex:0 0 auto; width:90px;">
-                    <option value="8192">8192</option>
-                    <option value="16384">16384</option>
-                    <option value="32768">32768</option>
-                    <option value="65536" selected>65536</option>
-                    <option value="131072">131072</option>
-                  </select>
-                </div>
-                <div class="control-group mt-2" style="display:flex; align-items:center; gap:0.5rem;">
-                  <label style="margin:0; white-space:nowrap;">IF Tone (kHz)</label>
-                  <span style="flex:1;"></span>
-                  <input type="number" id="signal-freq" step="1" value="100" class="modern-input-small">
+                <div class="set-row">
+                  <label for="val-tx-gain">Tx Gain (dB)</label>
+                  <input type="number" id="val-tx-gain" min="-88" max="0" step="1" value="0" class="set-ctrl">
+                  <input type="range" id="tx-gain" min="-88" max="0" step="1" value="0" class="modern-slider set-slider" aria-label="Tx Gain (dB)">
                 </div>
                 <hr class="divider"/>
-                <label style="font-size: 0.85rem; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 0.25rem;">Element Taper</label>
-                <div class="taper-buttons">
+                <div class="set-row" title="Amplitude taper across the eight elements: lower sidelobes for a wider main lobe">
+                  <label>Element Taper</label>
+                </div>
+                <div class="taper-buttons taper-3">
                   <button class="btn btn-outline" id="taper-rect">Rect</button>
                   <button class="btn btn-outline" id="taper-hann">Hann</button>
                   <button class="btn btn-outline active" id="taper-black">Black</button>
@@ -143,60 +111,75 @@
               </div>
             </div>
 
+            <!-- 2. CW Capture -->
+            <div class="accordion-item">
+              <button class="accordion-header" title="Sample rate, FFT size and IF tone for CW"><span class="accordion-icon" data-icon="1"></span> CW Capture <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="set-row">
+                  <label for="sample-rate">Sample Rate (kHz)</label>
+                  <input type="number" id="sample-rate" step="50" value="600" class="set-ctrl">
+                </div>
+                <div class="set-row">
+                  <label for="fft-size">FFT Size</label>
+                  <select id="fft-size" class="set-ctrl">
+                    <option value="8192">8192</option>
+                    <option value="16384">16384</option>
+                    <option value="32768">32768</option>
+                    <option value="65536" selected>65536</option>
+                    <option value="131072">131072</option>
+                  </select>
+                </div>
+                <div class="set-row">
+                  <label for="signal-freq">IF Tone (kHz)</label>
+                  <input type="number" id="signal-freq" step="1" value="100" class="set-ctrl">
+                </div>
+              </div>
+            </div>
+
             <!-- 3. Processing -->
             <div class="accordion-item">
-              <button class="accordion-header" title="FFT window, dB floor, and velocity range"><span class="accordion-icon" data-icon="2"></span> Processing <span>▼</span></button>
+              <button class="accordion-header" title="FFT window, dB scale and velocity range"><span class="accordion-icon" data-icon="2"></span> Processing <span>▼</span></button>
               <div class="accordion-body">
-                <div class="control-group" style="display:flex; align-items:center; gap:0.5rem;">
-                  <label style="margin:0; white-space:nowrap;">FFT Window</label>
-                  <span style="flex:1;"></span>
-                  <select id="fft-window" class="modern-select" style="flex:0 0 auto; width:120px;">
+                <div class="set-row">
+                  <label for="fft-window">FFT Window</label>
+                  <select id="fft-window" class="set-ctrl">
                     <option value="hann">Hann</option>
                     <option value="hamming">Hamming</option>
                     <option value="blackman" selected>Blackman</option>
                     <option value="rect">None</option>
                   </select>
                 </div>
-                <div class="control-group combo-group mt-2">
-                  <label>dB Floor</label>
-                  <div class="combo-inputs">
-                    <input type="range" id="db-floor" min="-140" max="-20" step="1" value="-100" class="modern-slider">
-                    <input type="number" id="val-db-floor" min="-140" max="-20" step="1" value="-100" class="modern-input-small">
-                  </div>
+                <div class="set-row">
+                  <label for="val-db-floor">dB Floor</label>
+                  <input type="number" id="val-db-floor" min="-140" max="-20" step="1" value="-100" class="set-ctrl">
+                  <input type="range" id="db-floor" min="-140" max="-20" step="1" value="-100" class="modern-slider set-slider" aria-label="dB Floor">
                 </div>
-                <div class="control-group combo-group mt-2">
-                  <label>dB Ceiling</label>
-                  <div class="combo-inputs">
-                    <input type="range" id="db-ceil" min="-100" max="20" step="1" value="0" class="modern-slider">
-                    <input type="number" id="val-db-ceil" min="-100" max="20" step="1" value="0" class="modern-input-small">
-                  </div>
+                <div class="set-row">
+                  <label for="val-db-ceil">dB Ceiling</label>
+                  <input type="number" id="val-db-ceil" min="-100" max="20" step="1" value="0" class="set-ctrl">
+                  <input type="range" id="db-ceil" min="-100" max="20" step="1" value="0" class="modern-slider set-slider" aria-label="dB Ceiling">
                 </div>
-                <div class="control-group combo-group mt-2">
-                  <label>Velocity Max (m/s)</label>
-                  <div class="combo-inputs">
-                    <input type="range" id="vel-max" min="1" max="200" step="1" value="20" class="modern-slider">
-                    <input type="number" id="val-vel-max" min="1" max="200" step="1" value="20" class="modern-input-small">
-                  </div>
+                <div class="set-row">
+                  <label for="val-vel-max">Velocity Max (m/s)</label>
+                  <input type="number" id="val-vel-max" min="1" max="200" step="1" value="20" class="set-ctrl">
+                  <input type="range" id="vel-max" min="1" max="200" step="1" value="20" class="modern-slider set-slider" aria-label="Velocity Max (m/s)">
                 </div>
               </div>
             </div>
 
             <!-- 4. Display -->
             <div class="accordion-item">
-              <button class="accordion-header" title="Waterfall depth and theme"><span class="accordion-icon" data-icon="3"></span> Display <span>▼</span></button>
+              <button class="accordion-header" title="Waterfall depth and dB auto-scale"><span class="accordion-icon" data-icon="3"></span> Display <span>▼</span></button>
               <div class="accordion-body">
-                <div class="control-group combo-group">
-                  <label>Waterfall Depth</label>
-                  <div class="combo-inputs">
-                    <input type="range" id="waterfall-depth" min="20" max="200" step="10" value="50" class="modern-slider">
-                    <input type="number" id="val-waterfall-depth" min="20" max="200" step="10" value="50" class="modern-input-small">
-                  </div>
+                <div class="set-row">
+                  <label for="val-waterfall-depth">Waterfall Depth</label>
+                  <input type="number" id="val-waterfall-depth" min="20" max="200" step="10" value="50" class="set-ctrl">
+                  <input type="range" id="waterfall-depth" min="20" max="200" step="10" value="50" class="modern-slider set-slider" aria-label="Waterfall Depth">
                 </div>
-                <label class="toggle-container mt-2">
-                  <span>Auto-Scale dB</span>
-                  <input type="checkbox" id="opt-autoscale">
-                  <span class="checkmark"></span>
-                </label>
+                <div class="set-row" title="Fit the CW waterfall's colour scale to each frame">
+                  <label for="opt-autoscale">Auto-Scale dB</label>
+                  <label class="toggle-container set-switch"><input type="checkbox" id="opt-autoscale"><span class="checkmark"></span></label>
+                </div>
               </div>
             </div>
 
@@ -205,62 +188,62 @@
               <button class="accordion-header" title="FMCW range and range-Doppler: preset, MTI, CFAR and the 0 m calibration"><span class="accordion-icon" data-icon="4"></span> FMCW <span>▼</span></button>
               <div class="accordion-body">
                 <div class="fmcw-capability" id="fmcw-capability">Checking this kit…</div>
-                <div class="fmcw-row mt-2">
+                <div class="set-row mt-2">
                   <label for="fmcw-preset">Preset</label>
-                  <select id="fmcw-preset" class="fmcw-ctrl"></select>
+                  <select id="fmcw-preset" class="set-ctrl"></select>
                 </div>
-                <div class="fmcw-row" title="Empty: the preset's own">
+                <div class="set-row" title="Empty: the preset's own">
                   <label for="fmcw-range-max">Range Max (m)</label>
-                  <input type="number" id="fmcw-range-max" class="fmcw-ctrl" step="1" min="1" placeholder="preset">
+                  <input type="number" id="fmcw-range-max" class="set-ctrl" step="1" min="1" placeholder="preset">
                 </div>
-                <div class="fmcw-row" title="Colour scale of the range waterfall and range-Doppler map: from each frame's peak down this many dB">
+                <div class="set-row" title="Colour scale of the range waterfall and range-Doppler map: from each frame's peak down this many dB">
                   <label for="fmcw-span">Color Span (dB)</label>
-                  <input type="number" id="fmcw-span" class="fmcw-ctrl" min="10" max="100" step="5" value="60">
+                  <input type="number" id="fmcw-span" class="set-ctrl" min="10" max="100" step="5" value="60">
                 </div>
                 <!-- Calibration -->
                 <hr class="divider"/>
-                <div class="fmcw-row" title="Calibration: the beat frequency of a target held at 0 m (lab step 21). Empty: the IF tone.">
+                <div class="set-row" title="Calibration: the beat frequency of a target held at 0 m (lab step 21). Empty: the IF tone.">
                   <label for="fmcw-zero-khz">0 m Beat (kHz)</label>
-                  <input type="number" id="fmcw-zero-khz" class="fmcw-ctrl" step="0.1" placeholder="IF tone">
+                  <input type="number" id="fmcw-zero-khz" class="set-ctrl" step="0.1" placeholder="IF tone">
                 </div>
                 <button class="btn btn-outline btn-block mt-2" id="fmcw-cal-open" title="Calibrate 0 m with a reflector at the array">Calibrate…</button>
                 <!-- MTI -->
                 <hr class="divider"/>
-                <div class="fmcw-row" title="Moving target indicator: cancel what is not moving">
+                <div class="set-row" title="Moving target indicator: cancel what is not moving">
                   <label for="fmcw-mti-on">MTI</label>
-                  <label class="toggle-container fmcw-switch"><input type="checkbox" id="fmcw-mti-on"><span class="checkmark"></span></label>
+                  <label class="toggle-container set-switch"><input type="checkbox" id="fmcw-mti-on"><span class="checkmark"></span></label>
                 </div>
-                <div class="fmcw-row" title="2-pulse subtracts each chirp from the last; 3-pulse does it twice, for a deeper, wider notch at 0 m/s">
+                <div class="set-row" title="2-pulse subtracts each chirp from the last; 3-pulse does it twice, for a deeper, wider notch at 0 m/s">
                   <label for="fmcw-mti-mode">MTI Mode</label>
-                  <select id="fmcw-mti-mode" class="fmcw-ctrl">
+                  <select id="fmcw-mti-mode" class="set-ctrl">
                     <option value="2pulse" selected>2-pulse</option>
                     <option value="3pulse">3-pulse</option>
                   </select>
                 </div>
                 <!-- CFAR -->
                 <hr class="divider"/>
-                <div class="fmcw-row" title="Constant false-alarm rate detection on the range profile">
+                <div class="set-row" title="Constant false-alarm rate detection on the range profile">
                   <label for="fmcw-cfar">CFAR</label>
-                  <label class="toggle-container fmcw-switch"><input type="checkbox" id="fmcw-cfar"><span class="checkmark"></span></label>
+                  <label class="toggle-container set-switch"><input type="checkbox" id="fmcw-cfar"><span class="checkmark"></span></label>
                 </div>
-                <div class="fmcw-row" title="Show Threshold: the dashed threshold and detection markers over the full trace, for tuning. Detections Only: everything below the threshold blanked (the lab's &quot;Apply CFAR Threshold&quot;).">
+                <div class="set-row" title="Show Threshold: the dashed threshold and detection markers over the full trace, for tuning. Detections Only: everything below the threshold blanked (the lab's &quot;Apply CFAR Threshold&quot;).">
                   <label for="fmcw-cfar-mode">CFAR Mode</label>
-                  <select id="fmcw-cfar-mode" class="fmcw-ctrl">
+                  <select id="fmcw-cfar-mode" class="set-ctrl">
                     <option value="threshold" selected>Show Threshold</option>
                     <option value="detections">Detections Only</option>
                   </select>
                 </div>
-                <div class="fmcw-row" title="Cells either side of the cell under test left out of the noise estimate, so a target's own skirts do not raise its threshold">
+                <div class="set-row" title="Cells either side of the cell under test left out of the noise estimate, so a target's own skirts do not raise its threshold">
                   <label for="fmcw-cfar-guard">Guard Cells</label>
-                  <input type="number" id="fmcw-cfar-guard" class="fmcw-ctrl" min="0" max="64" step="1" value="4">
+                  <input type="number" id="fmcw-cfar-guard" class="set-ctrl" min="0" max="64" step="1" value="4">
                 </div>
-                <div class="fmcw-row" title="Cells either side, past the guard cells, averaged for the noise estimate">
+                <div class="set-row" title="Cells either side, past the guard cells, averaged for the noise estimate">
                   <label for="fmcw-cfar-ref">Ref Cells</label>
-                  <input type="number" id="fmcw-cfar-ref" class="fmcw-ctrl" min="1" max="128" step="1" value="16">
+                  <input type="number" id="fmcw-cfar-ref" class="set-ctrl" min="1" max="128" step="1" value="16">
                 </div>
-                <div class="fmcw-row" title="How far above the noise estimate a cell must sit to count as a detection">
+                <div class="set-row" title="How far above the noise estimate a cell must sit to count as a detection">
                   <label for="fmcw-cfar-bias">CFAR Bias (dB)</label>
-                  <input type="number" id="fmcw-cfar-bias" class="fmcw-ctrl" min="0" max="40" step="0.5" value="6">
+                  <input type="number" id="fmcw-cfar-bias" class="set-ctrl" min="0" max="40" step="0.5" value="6">
                 </div>
               </div>
             </div>

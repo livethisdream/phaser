@@ -1176,6 +1176,19 @@ class PhaserHeadless:
                 return {"status": "error", "message": str(e)}
         return {"status": "ok", "params": self.fmcw_params, "reentered": False}
 
+    @staticmethod
+    def _fmcw_preset_info(name):
+        cfg = phaser_radar_dsp.fmcw_config(preset=name)
+        label, hint = phaser_radar_dsp.FMCW_PRESET_UI.get(name, (name, ""))
+        return {
+            "num_chirps": int(cfg["num_chirps"]),
+            "label": label,
+            "hint": hint,
+            "output_freq": float(cfg["output_freq"]),
+            "rx_gain": float(cfg["rx_gain"]),
+            "tx_gain": float(cfg["tx_gain"]),
+        }
+
     def get_fmcw_radar_state(self):
         """FMCW config, plan and capability, running or not."""
         running = self.mode == "fmcw_radar"
@@ -1195,13 +1208,10 @@ class PhaserHeadless:
                        + sorted(set(phaser_radar_dsp.FMCW_PRESETS)
                                 - set(phaser_radar_dsp.FMCW_PRESET_UI)),
             # Per preset, what the UI needs to know before Start: chirp count
-            # decides whether MTI (multi-chirp) or CFAR (single-chirp) applies.
+            # decides whether MTI (multi-chirp) or CFAR (single-chirp) applies,
+            # and the Hardware pane shows the lab's own frequency and gains.
             "preset_info": {
-                name: {
-                    "num_chirps": int(phaser_radar_dsp.fmcw_config(preset=name)["num_chirps"]),
-                    "label": phaser_radar_dsp.FMCW_PRESET_UI.get(name, (name, ""))[0],
-                    "hint": phaser_radar_dsp.FMCW_PRESET_UI.get(name, (name, ""))[1],
-                }
+                name: self._fmcw_preset_info(name)
                 for name in phaser_radar_dsp.FMCW_PRESETS
             },
             "params": dict(getattr(self, "fmcw_params", None) or {}),

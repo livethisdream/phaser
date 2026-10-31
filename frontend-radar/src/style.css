@@ -1362,23 +1362,23 @@ input[type=number]::-webkit-outer-spin-button {
 
 /* Greyed out, but still hoverable: its tooltip says why. The inputs are
    disabled in main.js, so nothing here needs pointer-events: none. */
-.fmcw-disabled {
+.set-disabled {
     opacity: 0.45;
     cursor: help;
 }
 
-/* FMCW settings: every row the same two columns, every control the same
-   size, right edges aligned. */
-.fmcw-row {
+/* Settings rows, in every pane: the same two columns, every control the
+   same size, right edges aligned. */
+.set-row {
     display: grid;
     /* minmax(0, 1fr): a long label must not push its control out of line. */
-    grid-template-columns: minmax(0, 1fr) var(--fmcw-ctrl-width, 150px);
+    grid-template-columns: minmax(0, 1fr) var(--set-ctrl-width, 150px);
     align-items: center;
     column-gap: 0.5rem;
     min-height: 32px;
     margin-top: 0.4rem;
 }
-.fmcw-row > label:first-child {
+.set-row > label:first-child {
     margin: 0;
     font-size: 0.85rem;
     color: var(--text-muted);
@@ -1387,7 +1387,7 @@ input[type=number]::-webkit-outer-spin-button {
     text-overflow: ellipsis;
     cursor: pointer;
 }
-.fmcw-ctrl {
+.set-ctrl {
     box-sizing: border-box;
     width: 100%;
     height: 30px;
@@ -1400,16 +1400,24 @@ input[type=number]::-webkit-outer-spin-button {
     font-family: inherit;
     font-size: 0.85rem;
 }
-input.fmcw-ctrl {
+input.set-ctrl {
     font-family: monospace;
     text-align: right;
 }
-.fmcw-ctrl:focus {
+.set-ctrl:focus {
     border-color: var(--primary);
 }
-.fmcw-switch {
+.set-switch {
     justify-self: end;
 }
+/* A slider row: label and box on the first line, the slider full width
+   under them, so the box lines up with every other row's. */
+.set-row > .set-slider {
+    grid-column: 1 / -1;
+    width: 100%;
+    margin: 0.35rem 0 0.15rem;
+}
+.taper-buttons.taper-3 { grid-template-columns: repeat(3, 1fr); }
 
 /* FMCW 0 m calibration pop-up */
 .btn-block { display: block; width: 100%; }

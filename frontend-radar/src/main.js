@@ -264,8 +264,16 @@ document.getElementById('opt-autoscale')?.addEventListener('change', (e) => {
 
 ['output-freq', 'center-freq', 'sample-rate', 'fft-size', 'signal-freq', 'fft-window'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => {
-        // These take effect on next start; surface a hint to user.
-        log('info', 'UI', `${id} changed — applies on next Start CW`);
+        // FMCW applies these while running (the window on the next frame,
+        // the frequencies by re-entering); CW takes them on the next Start.
+        if (state.runningMode === 'fmcw') {
+            const p = readFmcwParams();
+            const key = { 'output-freq': 'output_freq', 'center-freq': 'center_freq',
+                          'fft-window': 'fft_window' }[id];
+            if (key) pushFmcwParams({ [key]: p[key] });
+            return;
+        }
+        log('info', 'UI', `${id} changed — applies on next Start`);
     });
 });
 
@@ -431,8 +439,72 @@ function setRunningUi(running, mode = state.uiMode) {
 }
 
 /* --- CW / FMCW mode switch --- */
+/* The Hardware pane follows the mode. Each FMCW preset is a lab with its own
+   output frequency and gains, so in FMCW mode the pane shows the preset's
+   and an edit overrides it; CW keeps its own values. Each mode's values are
+   stashed on the way out and restored on the way back. */
+const hwStash = { cw: null, fmcw: null };
+
+function readHw() {
+    return {
+        output: document.getElementById('output-freq').value,
+        rx: document.getElementById('val-rx-gain').value,
+        tx: document.getElementById('val-tx-gain').value,
+    };
+}
+
+function writeHw(v) {
+    if (!v) return;
+    document.getElementById('output-freq').value = v.output;
+    for (const [k, id] of [['rx', 'rx-gain'], ['tx', 'tx-gain']]) {
+        document.getElementById(id).value = v[k];
+        document.getElementById('val-' + id).value = v[k];
+    }
+}
+
+function hwParams() {
+    const v = readHw();
+    const p = {};
+    const out = parseFloat(v.output), rx = parseFloat(v.rx), tx = parseFloat(v.tx);
+    if (Number.isFinite(out)) p.output_freq = out * 1e9;
+    if (Number.isFinite(rx)) p.rx_gain = rx;
+    if (Number.isFinite(tx)) p.tx_gain = tx;
+    return p;
+}
+
+// What the selected preset runs at -- or, while FMCW runs and `live` is set,
+// what it is actually running, edits included.
+function presetHw(live = true) {
+    const cfg = live && state.runningMode === 'fmcw' ? state.fmcw.cfg : null;
+    const src = cfg || state.fmcw.preset_info?.[fmcwEl('fmcw-preset')?.value];
+    if (!src || src.output_freq == null) return null;
+    return { output: String(Number((src.output_freq / 1e9).toFixed(6))),
+             rx: String(src.rx_gain), tx: String(src.tx_gain) };
+}
+
+// Controls only CW reads: greyed in FMCW mode, with the reason on hover.
+const CW_ONLY_ROWS = [
+    ['sample-rate', 'CW only: the FMCW preset sets the sample rate.'],
+    ['fft-size', 'CW only: the FMCW preset sets the capture size.'],
+    ['signal-freq', 'CW only: the FMCW preset sets the IF tone.'],
+    ['val-db-floor', 'CW only: FMCW uses Color Span.'],
+    ['val-db-ceil', 'CW only: FMCW uses Color Span.'],
+    ['opt-autoscale', 'CW only: FMCW uses Color Span.'],
+];
+function updateModeGating() {
+    const fmcw = state.uiMode === 'fmcw';
+    CW_ONLY_ROWS.forEach(([id, why]) =>
+        gateRow(document.getElementById(id)?.closest('.set-row'), fmcw, why));
+}
+
 function setUiMode(mode) {
+    const prev = state.uiMode;
     state.uiMode = mode === 'fmcw' ? 'fmcw' : 'cw';
+    if (prev !== state.uiMode) {
+        hwStash[prev] = readHw();
+        writeHw(state.uiMode === 'fmcw' ? (hwStash.fmcw || presetHw()) : hwStash.cw);
+    }
+    updateModeGating();
     document.getElementById('mode-cw')?.classList.toggle('active', state.uiMode === 'cw');
     document.getElementById('mode-fmcw')?.classList.toggle('active', state.uiMode === 'fmcw');
     // Show the mode's tabs (and Logs), and land on its first one.
@@ -638,6 +710,10 @@ function readFmcwParams() {
     params.zero_range_freq = Number.isFinite(zero) ? zero * 1e3 : null;
     const center = parseFloat(document.getElementById('center-freq').value);
     params.center_freq = Number.isFinite(center) ? center * 1e9 : null;
+    // The Hardware pane follows the preset in FMCW mode, so this is the lab's
+    // own frequency and gains unless they were edited; FFT Window is shared.
+    Object.assign(params, hwParams());
+    params.fft_window = document.getElementById('fft-window').value;
     return params;
 }
 
@@ -683,8 +759,9 @@ async function refreshFmcwState() {
 async function syncRunningFromBackend() {
     const fmcw = await refreshFmcwState();
     if (fmcw?.running) {
-        setUiMode('fmcw');
+        // Running first, so the Hardware pane picks up the running config.
         setRunningUi(true, 'fmcw');
+        setUiMode('fmcw');
         return;
     }
     try {
@@ -722,32 +799,34 @@ async function pushFmcwParams(partial) {
 // MTI cancels between chirps, so it needs a multi-chirp preset; CFAR runs on
 // the single-chirp range profile, as the lab's CFAR script does. Each used to
 // sit there doing nothing silently on the other kind of preset.
+// Grey a settings row out with its reason as the tooltip; restore its own
+// tooltip (kept in data-tip) when it applies again.
+function gateRow(row, off, why) {
+    if (!row) return;
+    if (row.dataset.tip === undefined) row.dataset.tip = row.title || '';
+    row.classList.toggle('set-disabled', off);
+    row.title = off ? why : row.dataset.tip;
+    row.querySelectorAll('input, select').forEach(el => { el.disabled = off; });
+}
+
 function updateFmcwControlGating() {
     const preset = fmcwEl('fmcw-preset')?.value;
     const n = state.fmcw.preset_info?.[preset]?.num_chirps;
     if (!n) return;  // not known yet
     const multi = n > 1;
-    // Grey a row out with its reason as the tooltip; restore its own tooltip
-    // (kept in data-tip) when it applies again.
-    const gate = (row, off, why) => {
-        if (!row) return;
-        if (row.dataset.tip === undefined) row.dataset.tip = row.title || '';
-        row.classList.toggle('fmcw-disabled', off);
-        row.title = off ? why : row.dataset.tip;
-        row.querySelectorAll('input, select').forEach(el => { el.disabled = off; });
-    };
+    const gate = gateRow;
     // Each section is a switch and a mode: the preset decides whether the
     // section applies at all, and the switch whether its mode can be chosen.
     const noMti = 'MTI cancels between chirps: it needs a multi-chirp preset (Range + Velocity).';
     const mtiOn = fmcwEl('fmcw-mti-on')?.checked;
-    gate(fmcwEl('fmcw-mti-on')?.closest('.fmcw-row'), !multi, noMti);
-    gate(fmcwEl('fmcw-mti-mode')?.closest('.fmcw-row'), !multi || !mtiOn,
+    gate(fmcwEl('fmcw-mti-on')?.closest('.set-row'), !multi, noMti);
+    gate(fmcwEl('fmcw-mti-mode')?.closest('.set-row'), !multi || !mtiOn,
          !multi ? noMti : 'Turn MTI on to choose its mode.');
     const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
     const cfarOn = fmcwEl('fmcw-cfar')?.checked;
     ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias']
-        .forEach(id => gate(fmcwEl(id)?.closest('.fmcw-row'), multi, noCfar));
-    gate(fmcwEl('fmcw-cfar-mode')?.closest('.fmcw-row'), multi || !cfarOn,
+        .forEach(id => gate(fmcwEl(id)?.closest('.set-row'), multi, noCfar));
+    gate(fmcwEl('fmcw-cfar-mode')?.closest('.set-row'), multi || !cfarOn,
          multi ? noCfar : 'Turn CFAR on to choose its mode.');
     // What the preset is for, on hover rather than under the box.
     const sel = fmcwEl('fmcw-preset');
@@ -756,7 +835,12 @@ function updateFmcwControlGating() {
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
     updateFmcwControlGating();
-    pushFmcwParams({ preset: e.target.value });
+    // The lab's own frequency and gains, sent along: an override from an
+    // earlier preset would otherwise outlive the switch in the stored params.
+    const hw = presetHw(false);
+    if (hw && state.uiMode === 'fmcw') writeHw(hw);
+    else hwStash.fmcw = null;
+    pushFmcwParams({ preset: e.target.value, ...(hw ? hwParams() : {}) });
 });
 ['fmcw-mti-on', 'fmcw-mti-mode'].forEach(id => fmcwEl(id)?.addEventListener('change', () => {
     updateFmcwControlGating();
