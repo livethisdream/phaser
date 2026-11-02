@@ -312,6 +312,10 @@ h1, h2, h3 {
   background: var(--error);
   box-shadow: 0 0 10px var(--error);
 }
+.dot.connected.warn {
+  background: var(--warn, #e0a44c);
+  box-shadow: 0 0 10px var(--warn, #e0a44c);
+}
 
 /* Layout */
 .dashboard {

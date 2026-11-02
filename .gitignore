@@ -112,6 +112,7 @@ tools/phase0_spike.py
 # VITE_TRANSPORT=sim. Committing both invites shipping the sim default to
 # hardware.
 frontend/dist-pages/
+frontend-radar/dist-pages/
 
 # Scratch file written by the Pages smoke test in CI.
 frontend/pages-smoke.mjs
