@@ -279,8 +279,12 @@ h1, h2, h3 {
 }
 
 .btn-header-sweep {
-  width: auto;
+  /* One size, whatever it says (Start, or Stop with its border), so the
+     header never shifts. */
+  width: 84px;
   min-width: 84px;
+  height: 30px;
+  box-sizing: border-box;
   padding: 0.35rem 0.8rem;
   font-size: 0.82rem;
   line-height: 1;
@@ -790,7 +794,7 @@ input[type=number]::-webkit-outer-spin-button {
   width: 100%;
 }
 .btn-primary.btn-header-sweep {
-  width: auto;
+  width: 84px;
 }
 .btn-primary:hover {
   transform: translateY(-2px);
@@ -1324,19 +1328,34 @@ input[type=number]::-webkit-outer-spin-button {
 }
 
 /* --- CW / FMCW mode switch and the FMCW section ------------------------ */
+/* CW | FMCW, at the top of the settings: the mode decides which settings
+   apply, so it sits with them. Two equal halves, sized like the settings'
+   own controls. */
+.mode-row {
+    margin-bottom: 0.55rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--glass-border);
+}
 .mode-switch {
-    display: inline-flex;
-    gap: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    flex: 1;
 }
 .mode-switch .btn {
+    height: 30px;
+    padding: 0 0.6rem;
+    font-size: 0.85rem;
     border-radius: 0;
 }
 .mode-switch .btn:first-child {
-    border-radius: 8px 0 0 8px;
+    border-radius: 6px 0 0 6px;
 }
 .mode-switch .btn:last-child {
-    border-radius: 0 8px 8px 0;
+    border-radius: 0 6px 6px 0;
     border-left: none;
+}
+.controls-panel.collapsed .mode-switch {
+    display: none;
 }
 .mode-switch .btn.active,
 .taper-buttons .btn.active {
@@ -1354,6 +1373,9 @@ input[type=number]::-webkit-outer-spin-button {
 }
 .fmcw-capability.unavailable {
     color: var(--error);
+}
+.stat-box.set-disabled .stat-value {
+    color: var(--text-muted);
 }
 .tab-btn[hidden],
 .stat-box[hidden] {

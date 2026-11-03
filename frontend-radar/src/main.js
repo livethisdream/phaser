@@ -335,8 +335,8 @@ Plotly.newPlot('chart-waterfall', [{
     colorbar: { title: 'dB', thickness: 12 },
     hovertemplate: 'v=%{x:.2f} m/s<br>t=-%{y}<br>%{z:.1f} dB<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Velocity (m/s)', range: [-20, 20] },
-    yaxis: { title: 'Time (frames ago)', autorange: 'reversed' },
+    xaxis: { title: 'Velocity (m/s)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-20, 20] },
+    yaxis: { title: 'Time (frames ago)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', autorange: 'reversed' },
 }), { displayModeBar: false, responsive: true });
 
 Plotly.newPlot('chart-spectrum', [{
@@ -383,8 +383,8 @@ Plotly.newPlot('chart-fmcw-wf', [{
     colorbar: { title: 'dB', thickness: 12 },
     hovertemplate: 'R=%{x:.2f} m<br>t=-%{y}<br>%{z:.1f} dB<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Range (m)' },
-    yaxis: { title: 'Time (frames ago)', autorange: 'reversed' },
+    xaxis: { title: 'Range (m)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Time (frames ago)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', autorange: 'reversed' },
 }), { displayModeBar: false, responsive: true });
 
 // Range-Doppler: x = velocity, y = range (lab "Range Doppler Plotting").
@@ -393,8 +393,8 @@ Plotly.newPlot('chart-fmcw-rd', [{
     colorbar: { title: 'dB', thickness: 12 },
     hovertemplate: 'v=%{x:.2f} m/s<br>R=%{y:.2f} m<br>%{z:.1f} dB<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Velocity (m/s)' },
-    yaxis: { title: 'Range (m)' },
+    xaxis: { title: 'Velocity (m/s)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Range (m)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
 }), { displayModeBar: false, responsive: true });
 
 function refreshWaterfallScale() {
@@ -430,7 +430,7 @@ function setRunningUi(running, mode = state.uiMode) {
     updateFmcwCalModal();
     const btn = document.getElementById('btn-radar');
     if (btn) {
-        btn.textContent = running ? 'Stop' : (state.uiMode === 'fmcw' ? 'Start FMCW' : 'Start CW');
+        btn.textContent = running ? 'Stop' : 'Start';
         btn.classList.toggle('btn-primary', !running);
         btn.classList.toggle('btn-danger', running);
         // FMCW on a kit that cannot run it: say why instead of failing.
@@ -517,7 +517,11 @@ function setUiMode(mode) {
         if (!first && m === state.uiMode) first = b;
     });
     first?.click();
-    document.getElementById('box-peak-range').hidden = state.uiMode !== 'fmcw';
+    // Always shown, greyed in CW, so the stats row does not shift.
+    const rangeBox = document.getElementById('box-peak-range');
+    rangeBox.classList.toggle('set-disabled', state.uiMode !== 'fmcw');
+    rangeBox.title = state.uiMode === 'fmcw' ? '' : 'FMCW only: CW measures velocity, not range.';
+    if (state.uiMode !== 'fmcw') document.getElementById('stat-peak-range').textContent = '-- m';
     // The FMCW settings open with FMCW; CW keeps the Hardware section.
     activateSidebarSection(state.uiMode === 'fmcw' ? 4 : 0);
     setRunningUi(state.running, state.runningMode || state.uiMode);
@@ -1138,6 +1142,7 @@ document.getElementById('btn-radar').addEventListener('click', async () => {
 initTheme();
 refreshWaterfallScale();
 refreshAxisRanges();
+setUiMode(state.uiMode);
 transport.connect();
 
 setTimeout(() => {
