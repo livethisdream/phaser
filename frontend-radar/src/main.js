@@ -1,5 +1,5 @@
 import { createTransport, resolveTransportMode } from './transport.js';
-import { fromBase64 } from './npz.js';
+import { fromBase64, readNpz } from './npz.js';
 
 /* --- State --- */
 const state = {
@@ -19,6 +19,7 @@ const state = {
     // mode is running on the backend (null when idle).
     uiMode: 'cw',
     runningMode: null,
+    playback: null,          // a recording playing through the FMCW views, or null
     fmcw: {
         available: null,     // from get_fmcw_radar_state's capability
         cfg: null,           // the running config, for the 0 m calibration
@@ -430,8 +431,14 @@ function setConnectionStatus(connected) {
             : sim ? 'Simulated' : connected ? 'Connected' : 'Disconnected';
     }
     // An armed pill keeps its own tooltip: how to shut down.
+    if (state.playback && text) {
+        text.textContent = 'Playback';
+        dot?.classList.add('warn');
+    }
     const pill = document.getElementById('connection-pill');
-    if (pill && !shutdownArmed) {
+    if (pill && state.playback) {
+        pill.title = `Playing ${state.playback.name}: recorded data, not live.\n${state.playback.note || ''}`.trim();
+    } else if (pill && !shutdownArmed) {
         pill.title = sim ? 'Simulated data from the in-browser simulator. No Phaser hardware is connected.' : '';
     }
 }
@@ -906,6 +913,7 @@ async function refreshFmcwState() {
 // On (re)connect, show what the backend is actually doing: a page reloaded,
 // or opened in a second tab, while a mode runs used to offer "Start".
 async function syncRunningFromBackend() {
+    if (state.playback) return;
     const fmcw = await refreshFmcwState();
     if (fmcw?.running) {
         // Running first, so the Hardware pane picks up the running config.
@@ -928,6 +936,12 @@ async function syncRunningFromBackend() {
 // leave and re-enter the mode itself, after which the plan is refetched.
 async function pushFmcwParams(partial) {
     if (state.runningMode !== 'fmcw') return;
+    if (state.playback) {
+        // A recording's waveform is fixed; its processing follows the pane.
+        state.playback.worker.postMessage({ cmd: 'settings', settings: partial });
+        if (state.fmcw.cfg) Object.assign(state.fmcw.cfg, partial);
+        return;
+    }
     try {
         const resp = await transport.setFmcwRadarParams(partial);
         if (resp.status !== 'ok') {
@@ -960,7 +974,10 @@ function gateRow(row, off, why) {
 
 function updateFmcwControlGating() {
     const preset = fmcwEl('fmcw-preset')?.value;
-    const n = state.fmcw.preset_info?.[preset]?.num_chirps;
+    // A recording plays as range-Doppler frames or single-chirp profiles.
+    const n = state.playback ? state.playback.info.window : state.fmcw.preset_info?.[preset]?.num_chirps;
+    const presetRow = fmcwEl('fmcw-preset')?.closest('.set-row');
+    gateRow(presetRow, Boolean(state.playback), 'Playback: the recording sets the waveform.');
     if (!n) return;  // not known yet
     const multi = n > 1;
     const gate = gateRow;
@@ -1070,7 +1087,8 @@ function updateFmcwCalModal() {
     document.getElementById('fmcw-cal-peak').textContent =
         typeof p.range === 'number' ? `${p.range.toFixed(2)} m` : '--';
     document.getElementById('fmcw-cal-current').textContent =
-        khz(p.current) + (state.fmcw.cfg && state.fmcw.cfg.zero_range_freq == null && p.current != null ? ' (IF tone)' : '');
+        khz(p.current) + (state.fmcw.cfg && state.fmcw.cfg.zero_range_freq == null && p.current != null
+            ? (state.playback ? ' (recording)' : ' (IF tone)') : '');
     document.getElementById('fmcw-cal-new').textContent = khz(p.zero);
     document.getElementById('fmcw-cal-hint').textContent = p.why || '';
     const btn = document.getElementById('fmcw-cal-set');
@@ -1131,9 +1149,10 @@ let fmcwSaving = false;
 function updateFmcwSaveButton() {
     const btn = document.getElementById('fmcw-save');
     if (!btn) return;
-    const ready = state.runningMode === 'fmcw';
+    const ready = state.runningMode === 'fmcw' && !state.playback;
     btn.disabled = !ready || fmcwSaving;
-    btn.title = ready ? 'Save raw chirps as a course .npz (iq, fs, fc, B, T_ramp, PRI, f0), downloaded to this computer'
+    btn.title = state.playback ? 'Saving is for live captures; this is a recording already'
+        : ready ? 'Save raw chirps as a course .npz (iq, fs, fc, B, T_ramp, PRI, f0), downloaded to this computer'
         : 'Start FMCW to save a capture';
 }
 
@@ -1168,9 +1187,101 @@ document.getElementById('fmcw-save')?.addEventListener('click', async () => {
         log('error', 'FMCW', `Save failed: ${e.message || e}`);
     } finally {
         fmcwSaving = false;
-        btn.textContent = 'Save Capture (.npz)';
+        btn.textContent = 'Save Capture';
         updateFmcwSaveButton();
     }
+});
+
+/* --- Load Recording: play a course .npz through the FMCW views ---
+   The recording's own fs, B, T_ramp, PRI, fc and f0 set the waveform; the
+   pane's processing controls apply to it as they do live (playback-worker.js
+   runs the backend's processing, ported). Everything happens in the browser,
+   so it works with no kit and offline. Stop ends it. */
+function playbackSettings() {
+    const p = readFmcwParams();
+    return {
+        mti: p.mti, cfar: p.cfar, cfar_guard: p.cfar_guard, cfar_ref: p.cfar_ref,
+        cfar_bias_db: p.cfar_bias_db, range_max: p.range_max,
+        zero_range_freq: p.zero_range_freq,
+        fft_window: document.getElementById('fft-window').value,
+    };
+}
+
+async function startPlayback(file) {
+    let arrays;
+    try {
+        arrays = await readNpz(await file.arrayBuffer());
+    } catch (e) {
+        log('error', 'PLAYBACK', `${file.name}: ${e.message || e}`);
+        return;
+    }
+    // Leave whatever was live: the views show one source at a time.
+    if (state.playback) stopPlayback({ quiet: true });
+    if (state.running) {
+        try {
+            if (state.runningMode === 'fmcw') await transport.stopFmcwRadar();
+            else await transport.stopCwRadar();
+        } catch (e) { /* the backend may be gone; playback needs none */ }
+        setRunningUi(false);
+    }
+    if (state.uiMode !== 'fmcw') setUiMode('fmcw');
+
+    const worker = new Worker(new URL('./playback-worker.js', import.meta.url), { type: 'module' });
+    const note = typeof arrays.note?.data === 'string' ? arrays.note.data : '';
+    const pb = { worker, name: file.name, note, info: null };
+    worker.onmessage = (event) => {
+        const msg = event.data || {};
+        if (state.playback !== pb) return;
+        if (msg.type === 'fmcw_radar_frame') { handleFmcwFrame(msg.data); return; }
+        if (msg.type === 'loaded') {
+            pb.info = msg.info;
+            const i = msg.info;
+            state.fmcw.cfg = {
+                chirp_bw: i.B, signal_freq: i.f0, output_freq: i.fc,
+                zero_range_freq: playbackSettings().zero_range_freq,
+            };
+            state.fmcw.plan = { effective_ramp_time: i.T_ramp, ramp_time: i.T_ramp, num_chirps: i.window };
+            updateFmcwControlGating();
+            log('info', 'PLAYBACK', `${file.name}: ${i.chirps} chirps x ${i.samples} samples, `
+                + `${i.mode === 'burst' ? 'range-Doppler' : 'range profiles'}, `
+                + `fs ${i.fs / 1e6} MHz, B ${i.B / 1e6} MHz, T_ramp ${+(i.T_ramp * 1e6).toFixed(1)} us, PRI ${+(i.PRI * 1e3).toPrecision(4)} ms, f0 ${i.f0} Hz`);
+            if (note) log('info', 'PLAYBACK', note);
+            return;
+        }
+        if (msg.type === 'error') {
+            log('error', 'PLAYBACK', `${file.name}: ${msg.message}`);
+            if (msg.fatal) stopPlayback({ quiet: true });
+        }
+    };
+    state.playback = pb;
+    state.fmcw.waterfall = null;
+    state.fmcw.last = null;
+    state.fmcw.avg = null;
+    setRunningUi(true, 'fmcw');
+    setConnectionStatus(true);
+    worker.postMessage({ cmd: 'load', arrays, settings: playbackSettings() });
+}
+
+function stopPlayback({ quiet = false } = {}) {
+    const pb = state.playback;
+    if (!pb) return;
+    pb.worker.postMessage({ cmd: 'stop' });
+    pb.worker.terminate();
+    state.playback = null;
+    setRunningUi(false);
+    setConnectionStatus(transport.isConnected);
+    updateFmcwControlGating();
+    refreshFmcwState();
+    if (!quiet) log('info', 'PLAYBACK', `Stopped ${pb.name}`);
+}
+
+document.getElementById('fmcw-load')?.addEventListener('click', () => {
+    document.getElementById('fmcw-load-file')?.click();
+});
+document.getElementById('fmcw-load-file')?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';           // the same file can be loaded again
+    if (file) startPlayback(file);
 });
 
 /* --- Param plumbing --- */
@@ -1231,7 +1342,7 @@ const transport = createTransport({
     },
     onClose: () => {
         setConnectionStatus(false);
-        setRunningUi(false);
+        if (!state.playback) setRunningUi(false);
     },
     onMessage: (msg) => {
         if (msg.type === 'state') {
@@ -1244,7 +1355,8 @@ const transport = createTransport({
         if (msg.type === 'response') return;  // handled by invoke()
     },
     onRadarFrame: handleRadarFrame,
-    onFmcwFrame: handleFmcwFrame,
+    // While a recording plays, its frames are the only ones drawn.
+    onFmcwFrame: (frame) => { if (!state.playback) handleFmcwFrame(frame); },
 });
 
 async function startRadar() {
@@ -1269,6 +1381,10 @@ async function startRadar() {
 }
 
 document.getElementById('btn-radar').addEventListener('click', async () => {
+    if (state.playback) {
+        stopPlayback();
+        return;
+    }
     if (!state.running) {
         await startRadar();
         return;

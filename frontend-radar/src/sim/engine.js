@@ -13,13 +13,12 @@
 
 import {
     CW_DEFAULT_TARGETS, DEFAULTS, FMCW_DEFAULT_PRESET, FMCW_DEFAULT_TARGETS,
-    FMCW_PRESETS, FMCW_PRESET_UI, AXIS_DECIMALS, DB_DECIMALS, NOISE_SIGMA,
+    FMCW_PRESETS, FMCW_PRESET_UI, NOISE_SIGMA,
     RAMP_SYNCED, RX_FREQ_HZ, CAPTURE_SINGLE_CHIRP_FRAMES,
 } from './constants.generated.js';
 import {
-    caCfar, cfarDetections, chirpPlan, encodeDbU8, fmcwConfig, mtiFilter,
-    processCwFrame, rampTimeUs, rangeDopplerMap, rangeProfile, resolveTaper,
-    rounded, sliceChirps,
+    chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
+    resolveTaper, sliceChirps,
 } from './dsp.js';
 import { createGauss, finishCapture, finishChannels, synthesizeCw, synthesizeFmcw } from './scene.js';
 import { toBase64, writeNpz } from '../npz.js';
@@ -220,60 +219,7 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0 } = {}) {
         const data = sliceChirps(finishCapture(chans, { noiseSigma, gauss }), plan);
         const t1 = now();
 
-        const fs = plan.sample_rate;
-        const ramp = plan.effective_ramp_time;
-        const zero = cfg.zero_range_freq ?? cfg.signal_freq;
-        const fftWindow = cfg.fft_window ?? 'blackman';
-        const out = {
-            preset: s.fmcwPreset,
-            ramp_mode: plan.ramp_mode,
-            num_chirps: plan.num_chirps,
-            pri_ms: plan.pri_ms,
-            ramp_time: plan.ramp_time,
-        };
-        if (plan.synced && plan.num_chirps > 1) {
-            const matrix = mtiFilter(data, cfg.mti ?? 'none');
-            const rd = rangeDopplerMap(matrix, fs, cfg.chirp_bw, ramp, plan.pri_ms / 1e3,
-                cfg.output_freq, {
-                    zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max,
-                    velMax: cfg.vel_max, peakExclude: cfg.peak_exclude ?? 0,
-                });
-            Object.assign(out, {
-                kind: 'range_doppler',
-                peak_range: rd.peak_range,
-                cal_peak_range: rd.cal_peak_range,
-                peak_velocity: rd.peak_velocity,
-                peak_magnitude_db: rd.peak_magnitude_db,
-                range_resolution: rd.range_resolution,
-                velocity_resolution: rd.velocity_resolution,
-                max_velocity: rd.max_velocity,
-                map: encodeDbU8(rd.map_db),
-                range_axis: rounded(rd.range_axis, AXIS_DECIMALS),
-                velocity_axis: rounded(rd.velocity_axis, AXIS_DECIMALS),
-            });
-        } else {
-            const prof = rangeProfile(data[0], fs, cfg.chirp_bw, ramp, {
-                zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max,
-            });
-            Object.assign(out, {
-                kind: 'range_profile',
-                peak_range: prof.peak_range,
-                cal_peak_range: prof.peak_range,
-                peak_magnitude_db: prof.peak_magnitude_db,
-                range_resolution: prof.range_resolution,
-                max_range: prof.max_range,
-                range_axis: rounded(prof.range_axis, AXIS_DECIMALS),
-                profile_db: rounded(prof.profile_db, DB_DECIMALS),
-            });
-            if (cfg.cfar) {
-                const spectrum = prof.profile_db;
-                const threshold = caCfar(spectrum, cfg.cfar_guard, cfg.cfar_ref, cfg.cfar_bias_db);
-                const detections = cfarDetections(spectrum, threshold);
-                out.detections = detections.length;
-                out.cfar_threshold_db = rounded(threshold, DB_DECIMALS);
-                out.detection_indices = detections;
-            }
-        }
+        const out = fmcwPayload(data, cfg, plan, s.fmcwPreset);
         out.capture_ms = t1 - t0;
         out.process_ms = now() - t1;
         return out;
