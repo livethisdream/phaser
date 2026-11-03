@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-BOUfXN1l.js"></script>
+  <script type="module" crossorigin src="./assets/index-CGBkSbd8.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-Co_xLKtW.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -258,7 +258,11 @@
                   <label for="fmcw-save-ch">Subarray Channels</label>
                   <label class="toggle-container set-switch"><input type="checkbox" id="fmcw-save-ch"><span class="checkmark"></span></label>
                 </div>
-                <button class="btn btn-outline btn-block mt-2" id="fmcw-save" disabled title="Start FMCW to save a capture">Save Capture (.npz)</button>
+                <div class="taper-buttons mt-2">
+                  <button class="btn btn-outline" id="fmcw-save" disabled title="Start FMCW to save a capture">Save Capture</button>
+                  <button class="btn btn-outline" id="fmcw-load" title="Play a recorded capture (a course .npz) through these views, as if live">Load Recording</button>
+                </div>
+                <input type="file" id="fmcw-load-file" accept=".npz" hidden>
               </div>
             </div>
 
