@@ -70,8 +70,11 @@
 
         <!-- Full Sidebar (shown when expanded) -->
         <div id="sidebar-content">
-          <div class="panel-header-row">
-            <h2 class="panel-title">Radar Settings</h2>
+          <div class="panel-header-row mode-row">
+            <div class="mode-switch" role="group" aria-label="Radar mode">
+              <button class="btn btn-outline active" id="mode-cw" title="CW Doppler: velocity">CW</button>
+              <button class="btn btn-outline" id="mode-fmcw" title="FMCW: range, and range-Doppler">FMCW</button>
+            </div>
             <button class="btn btn-outline btn-small icon-toggle-btn" id="btn-toggle-settings" title="Collapse settings" aria-label="Collapse settings">−</button>
           </div>
 
@@ -278,11 +281,7 @@
             </div>
           </div>
           <div class="header-actions">
-            <div class="mode-switch" role="group" aria-label="Radar mode">
-              <button class="btn btn-outline btn-small active" id="mode-cw" title="CW Doppler: velocity">CW</button>
-              <button class="btn btn-outline btn-small" id="mode-fmcw" title="FMCW: range, and range-Doppler">FMCW</button>
-            </div>
-            <button class="btn btn-primary btn-header-sweep" id="btn-radar">Start CW</button>
+            <button class="btn btn-primary btn-header-sweep" id="btn-radar">Start</button>
           </div>
         </div>
 
@@ -317,7 +316,7 @@
         </div>
 
         <div class="chart-stats">
-          <div class="stat-box" id="box-peak-range" hidden>
+          <div class="stat-box" id="box-peak-range">
             <span class="stat-label">Peak Range</span>
             <span class="stat-value" id="stat-peak-range">-- m</span>
           </div>
