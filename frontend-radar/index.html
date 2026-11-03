@@ -335,7 +335,11 @@
             <span class="stat-value" id="stat-rate">-- fps</span>
           </div>
           <div class="stats-spacer"></div>
-          <div class="status-indicator">
+          <!-- Doubles as the power switch, as in the beamforming UI: a 2 s hold
+               runs `systemctl poweroff` on the Pi. Armed from main.js only
+               when the backend reports shutdown_available. -->
+          <div class="status-indicator" id="connection-pill">
+            <span class="btn-hold-fill"></span>
             <div class="dot disconnected" id="connection-dot"></div>
             <span id="connection-text">Disconnected</span>
           </div>

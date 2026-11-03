@@ -424,9 +424,92 @@ function setConnectionStatus(connected) {
     // Simulated data never reads as a live kit: amber, "Simulated".
     const sim = connected && resolveTransportMode() === 'sim';
     if (dot) dot.classList.toggle('warn', sim);
-    if (text) text.textContent = sim ? 'Simulated' : connected ? 'Connected' : 'Disconnected';
-    const pill = text?.parentElement;
-    if (pill) pill.title = sim ? 'Simulated data from the in-browser simulator. No Phaser hardware is connected.' : '';
+    if (text) {
+        text.textContent = shuttingDown ? 'Shutting down...'
+            : sim ? 'Simulated' : connected ? 'Connected' : 'Disconnected';
+    }
+    // An armed pill keeps its own tooltip: how to shut down.
+    const pill = document.getElementById('connection-pill');
+    if (pill && !shutdownArmed) {
+        pill.title = sim ? 'Simulated data from the in-browser simulator. No Phaser hardware is connected.' : '';
+    }
+}
+
+/* --- Shutdown: hold the connection pill ---
+   As in the beamforming UI (frontend/src/main.js): where the backend reports
+   shutdown_available, a 2 s hold on the pill powers the Pi off. Releasing
+   early aborts, so the gesture is its own confirmation. Where it is not
+   available (a Pi installed before the grant, a dev box, the simulator) the
+   pill stays a plain readout: no cursor, no tooltip, no listeners. Armed once:
+   the grant is a file on the Pi and cannot change without a restart. */
+const SHUTDOWN_HOLD_MS = 2000;  // keep in step with --hold-ms in style.css
+let shutdownArmed = false;
+let shuttingDown = false;
+
+function wireHoldToCommit(el, holdMs, onCommit) {
+    let holdTimer = null;
+    let pointerActive = false;
+    const fire = () => {
+        el.classList.remove('holding');
+        Promise.resolve(onCommit()).then((ok) => {
+            if (ok === false) return;
+            el.classList.add('flash');
+            setTimeout(() => el.classList.remove('flash'), 260);
+        });
+    };
+    const cancel = () => {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+        el.classList.remove('holding');
+    };
+    el.addEventListener('pointerdown', (e) => {
+        if (!el.classList.contains('btn-hold')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        pointerActive = true;
+        if (holdTimer) clearTimeout(holdTimer);
+        el.classList.add('holding');
+        holdTimer = setTimeout(() => { holdTimer = null; fire(); }, holdMs);
+    });
+    el.addEventListener('pointerup', () => { pointerActive = false; cancel(); });
+    el.addEventListener('pointercancel', () => { pointerActive = false; cancel(); });
+    el.addEventListener('pointerleave', () => { if (pointerActive) cancel(); pointerActive = false; });
+    // A held key repeats rather than reporting a duration; reaching for the
+    // keyboard is deliberate enough, so Enter/Space commits directly.
+    el.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('btn-hold')) {
+            e.preventDefault();
+            fire();
+        }
+    });
+}
+
+function armShutdownIfPermitted(available) {
+    if (!available || shutdownArmed) return;
+    const pill = document.getElementById('connection-pill');
+    if (!pill) return;
+    shutdownArmed = true;
+    pill.classList.add('btn-hold');
+    pill.setAttribute('role', 'button');
+    pill.setAttribute('tabindex', '0');
+    pill.title = 'Hold to shut the Phaser down cleanly.';
+    wireHoldToCommit(pill, SHUTDOWN_HOLD_MS, async () => {
+        try {
+            const resp = await transport.invoke('power_off', {});
+            if (resp?.status === 'ok') {
+                log('warn', 'POWER', 'Shutting down — the Pi is going away.');
+                shuttingDown = true;
+                // Nothing will answer after this: no more hold, and the
+                // reconnect loop must not paint Disconnected over the message.
+                pill.classList.remove('btn-hold');
+                pill.title = '';
+                setConnectionStatus(false);
+                return true;
+            }
+            log('error', 'POWER', resp?.message || 'Shutdown refused');
+        } catch (err) {
+            log('error', 'POWER', `Could not shut down: ${err.message || err}`);
+        }
+        return false;
+    });
 }
 
 function setRunningUi(running, mode = state.uiMode) {
@@ -1100,6 +1183,8 @@ const transport = createTransport({
         if (msg.type === 'state') {
             // Initial state push from backend. Only the kit's IF is used here.
             showKitIf(msg.data);
+            // get_state() nests its fields under `data`.
+            armShutdownIfPermitted((msg.data?.data ?? msg.data)?.shutdown_available === true);
             return;
         }
         if (msg.type === 'response') return;  // handled by invoke()

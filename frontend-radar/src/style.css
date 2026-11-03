@@ -1499,3 +1499,51 @@ input.set-ctrl {
 .cal-readout > div > span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
 .cal-hint { min-height: 1.2em; margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--text-muted, #94a3b8); }
 .cal-footer > .btn { flex: 1 1 0; white-space: nowrap; }
+
+/* Hold-to-commit, from the beamforming UI: a fill sweeps across while the
+   control is held, and releasing early aborts, so the gesture is its own
+   confirmation. The connection pill uses it as the power switch: red, and a
+   2 s hold, because the machine it powers off is the one serving the page.
+   Keep --hold-ms in step with SHUTDOWN_HOLD_MS in main.js. */
+.btn-hold-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: var(--hold-fill);
+  pointer-events: none;
+  border-radius: inherit;
+  transition: width 0s linear;
+}
+.btn-hold.holding .btn-hold-fill {
+  width: 100%;
+  transition: width var(--hold-ms) linear;
+}
+.btn-hold.flash {
+  animation: btn-hold-flash 240ms ease-out;
+}
+@keyframes btn-hold-flash {
+  0%   { background: rgba(239, 68, 68, 0.4); }
+  100% { background: transparent; }
+}
+.status-indicator.btn-hold {
+  --hold-ms: 2000ms;
+  --hold-fill: rgba(239, 68, 68, 0.55);
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+}
+.status-indicator.btn-hold > .dot,
+.status-indicator.btn-hold > span:not(.btn-hold-fill) {
+  position: relative;
+  z-index: 1;
+}
+.status-indicator.btn-hold:focus-visible {
+  outline: 2px solid rgba(239, 68, 68, 0.8);
+  outline-offset: 2px;
+}
+.status-indicator:not(.btn-hold) > .btn-hold-fill {
+  display: none;
+}
