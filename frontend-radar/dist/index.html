@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CGBkSbd8.js"></script>
+  <script type="module" crossorigin src="./assets/index-Cy-UXh3v.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-Co_xLKtW.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -198,6 +198,11 @@
                 <div class="set-row mt-2">
                   <label for="fmcw-preset">Preset</label>
                   <select id="fmcw-preset" class="set-ctrl"></select>
+                </div>
+                <!-- Simulation only: shown when the backend (or the browser simulator) offers scenes. -->
+                <div class="set-row" id="fmcw-scene-row" hidden title="Simulated targets. Live scenes move on in real time, after the course's fmcw_sim.py.">
+                  <label for="fmcw-scene">Scene</label>
+                  <select id="fmcw-scene" class="set-ctrl"></select>
                 </div>
                 <div class="set-row" title="Empty: the preset's own">
                   <label for="fmcw-range-max">Range Max (m)</label>
