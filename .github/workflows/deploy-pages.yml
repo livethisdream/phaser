@@ -257,8 +257,9 @@ jobs:
 
           console.log(`OK: ${plot.n} points, peak ${plot.peakY.toFixed(2)} dBFS at ${plot.peakX} deg`);
 
-          // The radar UI at radar/: Simulated, and FMCW finds the simulated
-          // walker (3.5 m, closing at 1.8 m/s) on the default preset.
+          // The radar UI at radar/: Simulated, and FMCW streams the default
+          // live scene -- a person walking 1 m to 4 m and back at 1 m/s -- so
+          // the peak is in that span, and it moves.
           const radar = await browser.newPage();
           const radarErrors = [];
           radar.on('pageerror', (e) => radarErrors.push(String(e)));
@@ -268,14 +269,25 @@ jobs:
           if (rpill !== 'Simulated') throw new Error(`radar: expected Simulated, got ${JSON.stringify(rpill)}`);
           await radar.click('#mode-fmcw');
           await radar.click('#btn-radar');
-          await radar.waitForTimeout(5000);
+          await radar.waitForTimeout(4000);
           const rng = parseFloat(await radar.textContent('#stat-peak-range'));
           const vel = parseFloat(await radar.textContent('#stat-peak-vel'));
-          if (!(Math.abs(rng - 3.5) < 0.5 && Math.abs(vel - 1.8) < 0.3)) {
-            throw new Error(`radar: peak read ${rng} m / ${vel} m/s, expected ~3.5 m / ~1.8 m/s`);
+          if (!(rng > 0.5 && rng < 4.5 && Math.abs(vel) < 3)) {
+            throw new Error(`radar: peak read ${rng} m / ${vel} m/s, expected the walker, 1-4 m`);
+          }
+          // Moves: over any 3 s the walker covers at least 1.5 m (out and back
+          // is 6 s), even across a turn, so the readings must spread.
+          const seen = [rng];
+          for (let i = 0; i < 6; i++) {
+            await radar.waitForTimeout(500);
+            seen.push(parseFloat(await radar.textContent('#stat-peak-range')));
+          }
+          const spread = Math.max(...seen) - Math.min(...seen);
+          if (spread < 0.5) {
+            throw new Error(`radar: the walker did not move over 3 s: ${seen.join(', ')} m`);
           }
           if (radarErrors.length) throw new Error(`radar page errors: ${radarErrors.join('; ')}`);
-          console.log(`OK: radar FMCW peak ${rng} m, ${vel} m/s`);
+          console.log(`OK: radar FMCW walker moved ${spread.toFixed(2)} m in 3 s (${seen.join(', ')} m), ${vel} m/s`);
           await browser.close();
           server.close();
           EOF

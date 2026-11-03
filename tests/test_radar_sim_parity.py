@@ -74,7 +74,7 @@ AXIS_TOL = 1e-3
 DB_FLOOR_BELOW_PEAK = 90.0
 
 
-def _python_frame(mode, params):
+def _python_frame(mode, params, clock=None):
     if "adi" not in sys.modules:
         sys.modules["adi"] = types.ModuleType("adi")
     import phaser_sim
@@ -102,6 +102,8 @@ def _python_frame(mode, params):
         if mode == "cw":
             assert h.start_cw_radar(dict(params))["status"] == "ok"
             return h.do_cw_radar_frame()
+        if clock is not None:
+            h.sdr.scene_clock = lambda: clock
         assert h.start_fmcw_radar(dict(params))["status"] == "ok"
         return h.do_fmcw_radar_frame()
     finally:
@@ -403,3 +405,75 @@ def test_playback_frame_matches_python_on_a_saved_capture(preset, settings, tmp_
     # which is what MTI is for.
     if settings.get("mti", "none") == "none":
         assert f["cal_peak_range"] == pytest.approx(1.0, abs=0.35)
+
+
+
+# --- Live scenes ---------------------------------------------------------------
+#
+# The moving scenes (phaser_sim.FMCW_SCENES, after ece444 fmcw_sim.py) take the
+# absolute time from a clock, so both sides run on the same fixed one. Several
+# instants per scene: a scene that moved on one side and not the other, or the
+# wrong way, fails at the times where it differs.
+
+SCENE_CASES = [
+    (f"{scene}_{preset}_t{t}", scene, preset, t)
+    for scene in ("corners", "walker", "hand")
+    for preset in ("range_doppler", "range")
+    for t in (0.0, 0.8, 2.6)
+]
+
+_JS_SCENE_DRIVER = """
+import { createRadarEngine } from '%(sim)s/engine.js';
+const cases = JSON.parse(process.argv[2]);
+const out = {};
+for (const [name, scene, preset, t] of cases) {
+    const engine = createRadarEngine({ noiseSigma: 0, clock: () => t });
+    const resp = engine.handle('start_fmcw_radar', { preset, scene });
+    if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
+    out[name] = engine.frame().data;
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def js_scene_frames(tmp_path_factory):
+    if NODE is None:
+        pytest.skip("node is not installed")
+    sim_dir = (ROOT / "frontend-radar" / "src" / "sim").as_posix()
+    driver = tmp_path_factory.mktemp("radar_scene_parity") / "driver.mjs"
+    driver.write_text(_JS_SCENE_DRIVER % {"sim": sim_dir})
+    proc = subprocess.run([NODE, str(driver), json.dumps([list(c) for c in SCENE_CASES])],
+                          capture_output=True, text=True, timeout=600)
+    if proc.returncode != 0:
+        raise AssertionError(f"node driver failed:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("name,scene,preset,t", SCENE_CASES, ids=[c[0] for c in SCENE_CASES])
+def test_scene_frame_matches_python(name, scene, preset, t, js_scene_frames):
+    py = _python_frame("fmcw", {"preset": preset, "scene": scene}, clock=t)
+    js = js_scene_frames[name]
+    # Corners hold still: with the noise off, the cells the moving-target peak
+    # searches hold only rounding (~-300 dB), and which of two equal ones it
+    # picks is not physics. Their map and stationary peak are still compared.
+    moving = ("peak_range", "peak_velocity") if not (scene == "corners" and "map" in py) else ()
+    for key in ("cal_peak_range",) + moving:
+        if key in py:
+            assert js[key] == pytest.approx(py[key], abs=AXIS_TOL), f"{name}.{key}"
+    if "map" in py:
+        steps = np.abs(_decode(py["map"]) - _decode(js["map"]))
+        assert steps.max() <= 1, f"{name}: map cells differ by {steps.max()} steps"
+        _close(name, "map.db_max", py["map"]["db_max"], js["map"]["db_max"], DB_TOL)
+    else:
+        a, b = np.asarray(py["profile_db"]), np.asarray(js["profile_db"])
+        keep = a > a.max() - DB_FLOOR_BELOW_PEAK
+        _close(name, "profile_db", a[keep], b[keep], DB_TOL)
+
+
+def test_scenes_move():
+    """The point of a live scene: frames at different times differ, and the
+    walker's torso goes out and comes back."""
+    r = [_python_frame("fmcw", {"preset": "range_doppler", "scene": "walker"}, clock=t)["peak_range"]
+         for t in (0.0, 1.5, 3.0, 4.5)]
+    assert r[0] < r[1] < r[2] and r[3] < r[2], r

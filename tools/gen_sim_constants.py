@@ -252,6 +252,18 @@ export const RX_FREQ_HZ = {h.Rx_freq!r};
 // ADAR1000 rx_gain register code -> voltage amplitude (ADAR_pyadi_functions).
 export const RX_GAIN_AMPLITUDE = {list(ADAR_pyadi_functions.RX_GAIN_AMPLITUDE)!r};
 
+// --- Live FMCW scenes (phaser_sim, after ece444 fmcw_sim.py) ----------------
+export const FMCW_SCENES = {_js(phaser_sim.FMCW_SCENES)};
+export const FMCW_DEFAULT_SCENE = {_js(phaser_sim.FMCW_DEFAULT_SCENE)};
+export const SCENE_PT_DBM = {phaser_sim.SCENE_PT_DBM!r};
+export const SCENE_GTGR_DB = {phaser_sim.SCENE_GTGR_DB!r};
+export const SCENE_NF_DB = {phaser_sim.SCENE_NF_DB!r};
+export const SCENE_NOISE_DBFS = {phaser_sim.SCENE_NOISE_DBFS!r};
+export const SCENE_LEAKAGE_DBFS = {phaser_sim.SCENE_LEAKAGE_DBFS!r};
+export const SCENE_R_MIN = {phaser_sim.SCENE_R_MIN!r};
+export const SCENE_FULL_SCALE = {phaser_sim.SCENE_FULL_SCALE!r};
+export const SCENE_WALKER_PHASES = {_js(phaser_sim.SCENE_WALKER_PHASES)};
+
 // --- phaser_radar_dsp --------------------------------------------------------
 export const C = {dsp.C!r};
 export const DEFAULTS = {_js(dsp.DEFAULTS)};
