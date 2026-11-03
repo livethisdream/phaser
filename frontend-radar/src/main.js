@@ -25,6 +25,8 @@ const state = {
         waterfall: null,     // rows = frames, cols = range bins
         last: null,          // the last frame, for the 0 m calibration
         span_db: 60,         // colour scale: the frame's peak down this far
+        avg: null,           // averaged single-chirp profile power, for the readout
+        readout_t: 0,        // when the peak readouts last changed
         preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
         // Range-Doppler: the waterfall and "moving" trace skip |v| below
         // this, as the CW peak readout does. The strongest cell per range bin
@@ -524,16 +526,20 @@ document.getElementById('mode-cw')?.addEventListener('click', () => setUiMode('c
 document.getElementById('mode-fmcw')?.addEventListener('click', () => setUiMode('fmcw'));
 
 /* --- Frame rate, shared by both modes --- */
+// Frames counted over the last second. An average of 1/dt between messages
+// read high: WebSocket frames arrive in bunches, and each bunch's near-zero
+// gaps counted as hundreds of fps (a 20 fps stream showed 30, phaser-01).
+const frameTimes = [];
 function noteFrameRate() {
     const now = performance.now();
-    if (state.last_frame_t) {
-        const dt = (now - state.last_frame_t) / 1000;
-        const inst = dt > 0 ? 1 / dt : 0;
-        state.fps = state.fps_alpha * inst + (1 - state.fps_alpha) * state.fps;
-        const el = document.getElementById('stat-rate');
-        if (el) el.textContent = `${state.fps.toFixed(1)} fps`;
-    }
+    frameTimes.push(now);
+    while (frameTimes.length && now - frameTimes[0] > 1000) frameTimes.shift();
     state.last_frame_t = now;
+    if (frameTimes.length < 2) return;
+    const span = (frameTimes[frameTimes.length - 1] - frameTimes[0]) / 1000;
+    state.fps = span > 0 ? (frameTimes.length - 1) / span : 0;
+    const el = document.getElementById('stat-rate');
+    if (el) el.textContent = `${state.fps.toFixed(1)} fps`;
 }
 
 /* --- Frame handling --- */
@@ -622,6 +628,8 @@ let fmcwPending = null;
 function handleFmcwFrame(frame) {
     if (!frame || !frame.range_axis) return;
     state.fmcw.last = frame;
+    if (frame.kind === 'range_profile') averageFmcwProfile(frame);
+    else state.fmcw.avg = null;
     noteFrameRate();
     updateFmcwCalModal();
     const scheduled = fmcwPending !== null;
@@ -678,14 +686,59 @@ function renderFmcwFrame(frame) {
     }
     pushRangeWaterfall(range, trace);
 
-    if (typeof frame.peak_range === 'number') {
-        document.getElementById('stat-peak-range').textContent = `${frame.peak_range.toFixed(2)} m`;
+    // At most 4 readout updates a second: a single-chirp preset runs at 20
+    // fps, and a number that changes 20 times a second cannot be read.
+    const now = performance.now();
+    if (now - state.fmcw.readout_t < FMCW_READOUT_MS) return;
+    state.fmcw.readout_t = now;
+    const peak = fmcwPeak(frame);
+    if (typeof peak.range === 'number') {
+        document.getElementById('stat-peak-range').textContent = `${peak.range.toFixed(2)} m`;
     }
     document.getElementById('stat-peak-vel').textContent =
         typeof frame.peak_velocity === 'number' ? `${frame.peak_velocity.toFixed(2)} m/s` : '-- m/s';
-    if (typeof frame.peak_magnitude_db === 'number') {
-        document.getElementById('stat-peak-mag').textContent = `${frame.peak_magnitude_db.toFixed(1)} dB`;
+    if (typeof peak.db === 'number') {
+        document.getElementById('stat-peak-mag').textContent = `${peak.db.toFixed(1)} dB`;
     }
+}
+
+const FMCW_READOUT_MS = 250;
+// Frames the single-chirp profile is averaged over for the readout, roughly:
+// one chirp is noisy enough that its strongest bin wanders between the
+// reflector, the leakage and the clutter from frame to frame (phaser-01,
+// 2026-11-02: "peak range moving all over the place"). A range-Doppler frame
+// already integrates 256 chirps and is read as it comes.
+const FMCW_PROFILE_AVG_FRAMES = 10;
+
+/* Average a range_profile frame's power into state.fmcw.avg. Restarts when
+   the axis changes -- a new preset, range crop or 0 m calibration. */
+function averageFmcwProfile(frame) {
+    const axis = frame.range_axis || [], prof = frame.profile_db || [];
+    const key = `${axis.length}:${axis[0]}:${axis[axis.length - 1]}`;
+    const avg = state.fmcw.avg;
+    const power = prof.map(db => 10 ** (db / 10));
+    if (!avg || avg.key !== key) {
+        state.fmcw.avg = { key, power, n: 1 };
+        return;
+    }
+    avg.n = Math.min(avg.n + 1, FMCW_PROFILE_AVG_FRAMES);
+    const a = 1 / avg.n;
+    for (let i = 0; i < power.length; i++) avg.power[i] += a * (power[i] - avg.power[i]);
+}
+
+/* The peak the readouts show: the averaged profile's on single-chirp
+   presets, the frame's own on range-Doppler. `cal` asks for the calibration
+   pop-up's strongest return, which on range-Doppler includes 0 m/s. */
+function fmcwPeak(frame, { cal = false } = {}) {
+    if (!frame) return {};
+    const avg = state.fmcw.avg;
+    if (frame.kind === 'range_profile' && avg && avg.power.length === frame.range_axis.length) {
+        let best = 0;
+        for (let i = 1; i < avg.power.length; i++) if (avg.power[i] > avg.power[best]) best = i;
+        return { range: frame.range_axis[best], db: 10 * Math.log10(avg.power[best]) };
+    }
+    const range = cal && typeof frame.cal_peak_range === 'number' ? frame.cal_peak_range : frame.peak_range;
+    return { range, db: frame.peak_magnitude_db };
 }
 
 /* --- FMCW controls --- */
@@ -903,7 +956,7 @@ function fmcwCalProposal() {
     if (fmcwMtiInTheWay()) {
         return { action: 'mti', current, why: 'MTI cancels a still reflector.' };
     }
-    const r = f && (typeof f.cal_peak_range === 'number' ? f.cal_peak_range : f.peak_range);
+    const r = f && fmcwPeak(f, { cal: true }).range;
     if (!cfg || !plan || typeof r !== 'number') {
         return { action: 'set', disabled: true, current, why: 'Waiting for a frame...' };
     }
