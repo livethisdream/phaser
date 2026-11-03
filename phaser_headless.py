@@ -22,6 +22,7 @@ import time
 import signal
 import json
 import asyncio
+import base64
 import numpy as np
 from pathlib import Path
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -1251,6 +1252,75 @@ class PhaserHeadless:
             data["error"] = error
         return {"status": "ok", "data": data}
 
+    def save_fmcw_capture(self, params=None):
+        """Capture raw chirps into the course .npz and return it, base64.
+
+        Range-Doppler presets save one burst (num_chirps chirps, PRI apart);
+        single-chirp presets save CAPTURE_SINGLE_CHIRP_FRAMES consecutive
+        frames as rows, with PRI the measured frame interval, as the course's
+        L28 recordings do. `iq_ch` adds the two subarray channels (the L31
+        monopulse task), doubling the size. The browser names and downloads
+        the file.
+
+        Holds mode_lock throughout, so frames pause while it captures.
+        """
+        params = params or {}
+        want_ch = bool(params.get("iq_ch"))
+        if self.mode != "fmcw_radar":
+            return {"status": "error", "message": "Start FMCW to save a capture"}
+        with self._get_mode_lock():
+            cfg, plan = self.fmcw_cfg, self.fmcw_plan
+            if self.mode != "fmcw_radar" or cfg is None or plan is None:
+                return {"status": "error", "message": "Start FMCW to save a capture"}
+            frames = 1 if plan["num_chirps"] > 1 else phaser_radar_dsp.CAPTURE_SINGLE_CHIRP_FRAMES
+            rows, rows_ch, stamps = [], [[], []], []
+            for _ in range(frames):
+                stamps.append(time.perf_counter())
+                got = phaser_fmcw_radar.capture_fmcw_frame(
+                    self.sdr, self.fmcw_hw, plan, channels=want_ch)
+                mats = got if want_ch else (got,)
+                mats = [np.asarray(m) for m in mats]
+                if mats[0].ndim == 1:      # free-running: one long "chirp"
+                    mats = [m[:, None] for m in mats]
+                if want_ch:
+                    rows_ch[0].append(mats[0].T)
+                    rows_ch[1].append(mats[1].T)
+                    rows.append(mats[0].T + mats[1].T)
+                else:
+                    rows.append(mats[0].T)
+
+        iq = np.concatenate(rows, axis=0)
+        iq_ch = (np.stack([np.concatenate(rows_ch[0]), np.concatenate(rows_ch[1])])
+                 if want_ch else None)
+        if frames > 1:
+            pri = (stamps[-1] - stamps[0]) / (frames - 1)
+        else:
+            pri = plan["pri_ms"] / 1e3 if plan.get("pri_ms") else plan["ramp_time"]
+        zero = cfg.get("zero_range_freq")
+        calibrated = zero is not None
+        f0 = float(zero if calibrated else cfg["signal_freq"])
+        fs, t_ramp = float(plan["sample_rate"]), float(plan["effective_ramp_time"])
+        preset = getattr(self, "fmcw_preset", None)
+        note = (f"Phaser radar GUI capture: preset {preset}, {iq.shape[0]} chirps of "
+                f"{t_ramp * 1e6:g} us every {pri * 1e3:.4g} ms, {fs / 1e6:g} MSPS, "
+                f"B {float(cfg['chirp_bw']) / 1e6:g} MHz, fc {float(cfg['output_freq']) / 1e9:g} GHz, "
+                f"f0 {f0:.0f} Hz ({'0 m calibration' if calibrated else 'IF tone, not calibrated'}); "
+                f"{'simulated' if self.sim_mode else socket.gethostname()}, "
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
+        blob = phaser_radar_dsp.capture_npz(
+            iq, fs=fs, fc=cfg["output_freq"], chirp_bw=cfg["chirp_bw"], t_ramp=t_ramp,
+            pri=pri, f0=f0, note=note, iq_ch=iq_ch)
+        return {
+            "status": "ok",
+            "preset": preset,
+            "n_chirps": int(iq.shape[0]),
+            "n_samples": int(iq.shape[1]),
+            "iq_ch": want_ch,
+            "size": len(blob),
+            "note": note,
+            "data": base64.b64encode(blob).decode("ascii"),
+        }
+
     def do_fmcw_radar_frame(self):
         """Capture and process one FMCW frame. Returns the broadcast payload.
 
@@ -2034,6 +2104,9 @@ class PhaserHeadless:
 
         elif cmd == "get_fmcw_radar_state":
             return self.get_fmcw_radar_state()
+
+        elif cmd == "save_fmcw_capture":
+            return self.save_fmcw_capture(data)
 
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}

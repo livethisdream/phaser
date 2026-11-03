@@ -649,6 +649,43 @@ def rounded(values, decimals):
     return np.round(np.asarray(values, dtype=float), decimals).tolist()
 
 
+# --- Course capture (.npz) ----------------------------------------------------
+#
+# The ECE 444 radar labs' one capture format (ece444 radar_lab.load_capture,
+# project/ROADMAP.md "Shared code contract"): an np.savez with
+#     iq      complex64, n_chirps x n_samples -- the summed array, a chirp a row
+#     iq_ch   (optional) complex64, 2 x n_chirps x n_samples -- the two halves
+#     fs, fc, B, T_ramp, PRI, f0 -- float64 scalars, SI units; f0 is the 0 m
+#             frequency, from the L28 calibration
+#     note    a one-line description, as the course's recorded files carry
+# Range is then R = c T_ramp (f - f0) / (2 B), the relation range_profile uses.
+
+# Single-chirp captures per saved file: the course's L28 recordings are 32.
+CAPTURE_SINGLE_CHIRP_FRAMES = 32
+
+
+def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None):
+    """The course .npz, as bytes. `iq` is n_chirps x n_samples."""
+    import io
+    arrays = {
+        "iq": np.asarray(iq, dtype=np.complex64),
+        "fs": np.float64(fs), "fc": np.float64(fc), "B": np.float64(chirp_bw),
+        "T_ramp": np.float64(t_ramp), "PRI": np.float64(pri), "f0": np.float64(f0),
+        "note": np.str_(note),
+    }
+    if arrays["iq"].ndim != 2:
+        raise ValueError("iq must be n_chirps x n_samples")
+    if iq_ch is not None:
+        iq_ch = np.asarray(iq_ch, dtype=np.complex64)
+        if iq_ch.shape != (2,) + arrays["iq"].shape:
+            raise ValueError(f"iq_ch must be 2 x {arrays['iq'].shape}, not {iq_ch.shape}")
+        arrays["iq_ch"] = iq_ch
+    buf = io.BytesIO()
+    # Uncompressed, like the course's own files: complex IQ barely deflates.
+    np.savez(buf, **arrays)
+    return buf.getvalue()
+
+
 def ca_cfar(spectrum_db, num_guard=4, num_ref=16, bias_db=6.0):
     """Cell-averaging CFAR threshold, in dB, the same length as the input.
 

@@ -1,4 +1,5 @@
 import { createTransport, resolveTransportMode } from './transport.js';
+import { fromBase64 } from './npz.js';
 
 /* --- State --- */
 const state = {
@@ -516,6 +517,7 @@ function setRunningUi(running, mode = state.uiMode) {
     state.running = running;
     state.runningMode = running ? mode : null;
     updateFmcwCalModal();
+    updateFmcwSaveButton();
     const btn = document.getElementById('btn-radar');
     if (btn) {
         btn.textContent = running ? 'Stop' : 'Start';
@@ -1117,6 +1119,58 @@ document.getElementById('fmcw-cal-reset')?.addEventListener('click', () => {
     pushFmcwParams({ zero_range_freq: null });
     log('info', 'FMCW', '0 m reset to the IF tone');
     closeFmcwCal();
+});
+
+/* --- Save Capture: the course .npz, downloaded to this laptop ---
+   The backend (or the in-browser simulator) captures raw chirps and packs
+   them in the ECE 444 capture format -- iq, optionally iq_ch, fs, fc, B,
+   T_ramp, PRI, f0 -- that the labs' radar_lab.load_capture reads. One burst on
+   a range-Doppler preset, 32 single chirps on the others. */
+let fmcwSaving = false;
+
+function updateFmcwSaveButton() {
+    const btn = document.getElementById('fmcw-save');
+    if (!btn) return;
+    const ready = state.runningMode === 'fmcw';
+    btn.disabled = !ready || fmcwSaving;
+    btn.title = ready ? 'Save raw chirps as a course .npz (iq, fs, fc, B, T_ramp, PRI, f0), downloaded to this computer'
+        : 'Start FMCW to save a capture';
+}
+
+function captureFilename(preset) {
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, '0');
+    const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+    return `phaser_${preset || 'fmcw'}_${stamp}.npz`;
+}
+
+document.getElementById('fmcw-save')?.addEventListener('click', async () => {
+    const btn = document.getElementById('fmcw-save');
+    fmcwSaving = true;
+    updateFmcwSaveButton();
+    btn.textContent = 'Saving...';
+    try {
+        const resp = await transport.invoke('save_fmcw_capture', {
+            iq_ch: Boolean(document.getElementById('fmcw-save-ch')?.checked),
+        });
+        if (resp.status !== 'ok') throw new Error(resp.message || 'capture failed');
+        const name = captureFilename(resp.preset);
+        const url = URL.createObjectURL(new Blob([fromBase64(resp.data)], { type: 'application/octet-stream' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        log('info', 'FMCW', `Saved ${name}: ${resp.n_chirps} x ${resp.n_samples}${resp.iq_ch ? ' with iq_ch' : ''}, ${(resp.size / 1e6).toFixed(2)} MB`);
+    } catch (e) {
+        log('error', 'FMCW', `Save failed: ${e.message || e}`);
+    } finally {
+        fmcwSaving = false;
+        btn.textContent = 'Save Capture (.npz)';
+        updateFmcwSaveButton();
+    }
 });
 
 /* --- Param plumbing --- */

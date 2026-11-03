@@ -14,14 +14,15 @@
 import {
     CW_DEFAULT_TARGETS, DEFAULTS, FMCW_DEFAULT_PRESET, FMCW_DEFAULT_TARGETS,
     FMCW_PRESETS, FMCW_PRESET_UI, AXIS_DECIMALS, DB_DECIMALS, NOISE_SIGMA,
-    RAMP_SYNCED, RX_FREQ_HZ,
+    RAMP_SYNCED, RX_FREQ_HZ, CAPTURE_SINGLE_CHIRP_FRAMES,
 } from './constants.generated.js';
 import {
     caCfar, cfarDetections, chirpPlan, encodeDbU8, fmcwConfig, mtiFilter,
     processCwFrame, rampTimeUs, rangeDopplerMap, rangeProfile, resolveTaper,
     rounded, sliceChirps,
 } from './dsp.js';
-import { createGauss, finishCapture, synthesizeCw, synthesizeFmcw } from './scene.js';
+import { createGauss, finishCapture, finishChannels, synthesizeCw, synthesizeFmcw } from './scene.js';
+import { toBase64, writeNpz } from '../npz.js';
 
 // Params that only change processing (next frame), and those written straight
 // to the hardware; anything else re-enters FMCW. phaser_headless's sets.
@@ -122,6 +123,83 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0 } = {}) {
     function exitFmcw() {
         s.fmcwCfg = null;
         s.fmcwPlan = null;
+    }
+
+    function synthesizeFmcwChannels() {
+        const cfg = s.fmcwCfg, plan = s.fmcwPlan;
+        return synthesizeFmcw({
+            n: s.bufferSize, fs: s.sampleRate,
+            fmcw: {
+                chirp_bw: Number(cfg.chirp_bw),
+                ramp_time: plan.effective_ramp_time,
+                num_chirps: plan.num_chirps,
+                pri: plan.pri_ms / 1e3,
+                signal_freq: Number(cfg.signal_freq),
+                output_freq: Number(cfg.output_freq),
+            },
+            plan, targets: FMCW_DEFAULT_TARGETS, elements, phaseError,
+        });
+    }
+
+    /** save_fmcw_capture: the course .npz, as phaser_headless writes it. */
+    function saveFmcwCapture(params = {}) {
+        if (s.mode !== 'fmcw_radar' || !s.fmcwCfg) {
+            return { status: 'error', message: 'Start FMCW to save a capture' };
+        }
+        const cfg = s.fmcwCfg, plan = s.fmcwPlan;
+        const wantCh = Boolean(params.iq_ch);
+        const frames = plan.num_chirps > 1 ? 1 : CAPTURE_SINGLE_CHIRP_FRAMES;
+        const rows = [[], [], []];   // summed, chan0, chan1: one {re, im} per chirp
+        const stamps = [];
+        for (let f = 0; f < frames; f++) {
+            stamps.push(now());
+            const [c0, c1] = finishChannels(synthesizeFmcwChannels(), { noiseSigma, gauss });
+            const s0 = sliceChirps(c0, plan), s1 = sliceChirps(c1, plan);
+            s0.forEach((col, k) => {
+                const re = col.re.map((v, i) => v + s1[k].re[i]);
+                const im = col.im.map((v, i) => v + s1[k].im[i]);
+                rows[0].push({ re, im });
+                rows[1].push(col);
+                rows[2].push(s1[k]);
+            });
+        }
+        const nChirps = rows[0].length, nSamples = rows[0][0].re.length;
+        const flat = (list) => {
+            const re = new Float32Array(list.length * nSamples), im = new Float32Array(list.length * nSamples);
+            list.forEach((r, k) => { re.set(r.re, k * nSamples); im.set(r.im, k * nSamples); });
+            return { re, im };
+        };
+        const pri = frames > 1 ? (stamps[frames - 1] - stamps[0]) / 1e3 / (frames - 1)
+            : (plan.pri_ms ? plan.pri_ms / 1e3 : plan.ramp_time);
+        const calibrated = cfg.zero_range_freq != null;
+        const f0 = Number(calibrated ? cfg.zero_range_freq : cfg.signal_freq);
+        const fs = plan.sample_rate, tRamp = plan.effective_ramp_time;
+        const note = `Phaser radar GUI capture: preset ${s.fmcwPreset}, ${nChirps} chirps of `
+            + `${+(tRamp * 1e6).toPrecision(6)} us every ${+(pri * 1e3).toPrecision(4)} ms, `
+            + `${fs / 1e6} MSPS, B ${Number(cfg.chirp_bw) / 1e6} MHz, fc ${Number(cfg.output_freq) / 1e9} GHz, `
+            + `f0 ${f0.toFixed(0)} Hz (${calibrated ? '0 m calibration' : 'IF tone, not calibrated'}); `
+            + `in-browser simulator, ${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
+        const arrays = {
+            iq: { dtype: '<c8', shape: [nChirps, nSamples], data: flat(rows[0]) },
+            fs: { dtype: '<f8', data: fs },
+            fc: { dtype: '<f8', data: Number(cfg.output_freq) },
+            B: { dtype: '<f8', data: Number(cfg.chirp_bw) },
+            T_ramp: { dtype: '<f8', data: tRamp },
+            PRI: { dtype: '<f8', data: pri },
+            f0: { dtype: '<f8', data: f0 },
+            note: { dtype: '<U', data: note },
+        };
+        if (wantCh) {
+            const a = flat(rows[1]), b = flat(rows[2]);
+            const re = new Float32Array(2 * a.re.length), im = new Float32Array(2 * a.im.length);
+            re.set(a.re); re.set(b.re, a.re.length); im.set(a.im); im.set(b.im, a.im.length);
+            arrays.iq_ch = { dtype: '<c8', shape: [2, nChirps, nSamples], data: { re, im } };
+        }
+        const blob = writeNpz(arrays);
+        return {
+            status: 'ok', preset: s.fmcwPreset, n_chirps: nChirps, n_samples: nSamples,
+            iq_ch: wantCh, size: blob.length, note, data: toBase64(blob),
+        };
     }
 
     function fmcwFrame() {
@@ -319,6 +397,8 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0 } = {}) {
                 return s.mode === 'fmcw_radar' ? setMode('idle') : { status: 'ok', mode: s.mode };
             case 'set_fmcw_radar_params':
                 return setFmcwRadarParams(data);
+            case 'save_fmcw_capture':
+                return saveFmcwCapture(data);
 
             default:
                 return { status: 'error', message: `Unknown command: ${cmd}` };

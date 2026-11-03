@@ -150,3 +150,17 @@ export function finishCapture(chans, { noiseSigma = NOISE_SIGMA, gauss = null } 
     }
     return { re, im };
 }
+
+/** The two channels scaled, each with its own noise, kept apart (iq_ch). */
+export function finishChannels(chans, { noiseSigma = NOISE_SIGMA, gauss = null } = {}) {
+    const sigma = noiseSigma > 0 && gauss ? noiseSigma : 0;
+    return chans.map(({ re: cr, im: ci }) => {
+        const n = cr.length;
+        const re = new Float64Array(n), im = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            re[i] = cr[i] * AMP_SCALE + (sigma ? sigma * gauss() : 0);
+            im[i] = ci[i] * AMP_SCALE + (sigma ? sigma * gauss() : 0);
+        }
+        return { re, im };
+    });
+}
