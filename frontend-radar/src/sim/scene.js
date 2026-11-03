@@ -13,6 +13,8 @@
 
 import {
     AMP_SCALE, C, ELEMENT_SPACING_M, NOISE_SIGMA, RX_GAIN_AMPLITUDE,
+    SCENE_PT_DBM, SCENE_GTGR_DB, SCENE_NF_DB, SCENE_NOISE_DBFS, SCENE_LEAKAGE_DBFS,
+    SCENE_R_MIN, SCENE_FULL_SCALE, SCENE_WALKER_PHASES,
 } from './constants.generated.js';
 import { roundHalfEven } from './dsp.js';
 
@@ -164,3 +166,96 @@ export function finishChannels(chans, { noiseSigma = NOISE_SIGMA, gauss = null }
         return { re, im };
     });
 }
+
+// --- Live FMCW scenes (phaser_sim.scene_scatterers, after ece444 fmcw_sim.py) ---
+
+/** phaser_sim.scene_echo_dbfs: the radar-equation echo level, dBFS. */
+export function sceneEchoDbfs(r, rcs, fs, fc) {
+    const rr = Math.max(r, SCENE_R_MIN);
+    const lam = C / fc;
+    const prDbm = SCENE_PT_DBM + SCENE_GTGR_DB + 10 * Math.log10(lam * lam * rcs)
+        - 30 * Math.log10(4 * Math.PI) - 40 * Math.log10(rr);
+    const noiseDbm = -174 + 10 * Math.log10(fs) + SCENE_NF_DB;
+    return SCENE_NOISE_DBFS + prDbm - noiseDbm;
+}
+
+/**
+ * A scene's scatterers as [{range(t), level(r), phase0, az}]: range in m at
+ * absolute time t, s; level in dBFS for that range. The same list, in the same
+ * order, as phaser_sim.scene_scatterers.
+ */
+export function sceneScatterers(name, fs, fc) {
+    const echo = (rcs) => (r) => sceneEchoDbfs(r, rcs, fs, fc);
+    const out = [{ range: () => 0, level: () => SCENE_LEAKAGE_DBFS, phase0: 0.7, az: 0 }];
+    if (name === 'corners') {
+        for (const [r0, ph] of [[1.0, 0.0], [2.0, 1.1], [3.0, 2.3]]) {
+            out.push({ range: () => r0, level: echo(0.47), phase0: ph, az: 0 });
+        }
+    } else if (name === 'hand') {
+        out.push({ range: (t) => 0.6 + 0.15 * Math.sin(2 * Math.PI * 1.0 * t), level: echo(0.02), phase0: 1.3, az: 0 });
+    } else if (name === 'walker') {
+        const rStart = 1.0, rTurn = 4.0, speed = 1.0, strideHz = 0.9, rcsBody = 0.5;
+        const leg = (2 * (rTurn - rStart)) / speed;
+        const torso = (t) => {
+            const s = (((t % leg) + leg) % leg) / leg;
+            return rStart + (rTurn - rStart) * (1 - Math.abs(2 * s - 1));
+        };
+        const ph = SCENE_WALKER_PHASES;
+        out.push({ range: torso, level: echo(rcsBody), phase0: ph[0], az: 0 });
+        const limbs = [[0.25, 0, 0.08], [0.25, Math.PI, 0.08], [0.15, Math.PI, 0.04], [0.15, 0, 0.04]];
+        limbs.forEach(([swing, p, share], i) => {
+            out.push({
+                range: (t) => torso(t) + swing * Math.sin(2 * Math.PI * strideHz * t + p),
+                level: echo(share * rcsBody), phase0: ph[i + 1], az: 0,
+            });
+        });
+    } else if (name !== 'static') {
+        throw new Error(`unknown FMCW scene '${name}'`);
+    }
+    return out;
+}
+
+/**
+ * A live scene, chirp by chirp at absolute time t0 + m PRI + t_fast:
+ * phaser_sim._synthesize_fmcw_scene. Pre-AMP_SCALE units, like the others.
+ */
+export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, t0, elements, phaseError }) {
+    const chans = emptyChannels(n);
+    const numChirps = Math.max(1, Math.trunc(fmcw.num_chirps));
+    let slot, rampN;
+    if (plan && plan.synced) {
+        slot = Math.max(1, Math.trunc(plan.frame_samples));
+        rampN = Math.max(1, Math.min(slot, roundHalfEven(plan.ramp_time * fs)));
+    } else {
+        slot = Math.max(1, Math.floor(n / numChirps));
+        rampN = slot;
+    }
+    const slope = fmcw.chirp_bw / fmcw.ramp_time;
+    const fc = fmcw.output_freq;
+    const wavelength = C / Math.max(fc, 1);
+    const pri = fmcw.pri, fIf = fmcw.signal_freq;
+    const wr = new Float64Array(rampN), wi = new Float64Array(rampN);
+    for (const sc of sceneScatterers(scene, fs, fc)) {
+        const coef = subarrayCoefficients(elements, phaseError, sc.az, 1.0, wavelength);
+        for (let m = 0; m < numChirps; m++) {
+            const offset = m * slot;
+            if (offset >= n) break;
+            const len = Math.min(rampN, n - offset);
+            for (let i = 0; i < len; i++) {
+                const tf = i / fs;
+                const r = sc.range(t0 + m * pri + tf);
+                const amp = (SCENE_FULL_SCALE * 10 ** (sc.level(r) / 20)) / AMP_SCALE / 8;
+                const ph = 2 * Math.PI * (fIf + (2 * slope * r) / C) * tf - (4 * Math.PI * r * fc) / C + sc.phase0;
+                wr[i] = amp * Math.cos(ph); wi[i] = amp * Math.sin(ph);
+            }
+            const wrS = len < rampN ? wr.subarray(0, len) : wr;
+            const wiS = len < rampN ? wi.subarray(0, len) : wi;
+            addScaled(chans[0], coef[0], wrS, wiS, offset);
+            addScaled(chans[1], coef[1], wrS, wiS, offset);
+        }
+    }
+    return chans;
+}
+
+/** The course's noise floor for a live scene, as phaser_sim applies it: sigma per channel, per part. */
+export const SCENE_NOISE_SIGMA = (SCENE_FULL_SCALE * 10 ** (SCENE_NOISE_DBFS / 20)) / 2;

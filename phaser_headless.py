@@ -1036,6 +1036,7 @@ class PhaserHeadless:
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
         "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
+        "scene",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
     # Params written straight to the hardware while running, as CW does.
@@ -1133,6 +1134,7 @@ class PhaserHeadless:
                 self.sdr.set_fmcw_mode(
                     True,
                     plan=self.fmcw_plan,
+                    scene=cfg.get("scene"),
                     chirp_bw=cfg["chirp_bw"],
                     signal_freq=cfg["signal_freq"],
                     output_freq=cfg["output_freq"],
@@ -1200,6 +1202,9 @@ class PhaserHeadless:
                         self.sdr.rx_hardwaregain_chan1 = int(params["rx_gain"])
                 if "tx_gain" in params and hasattr(self.sdr, "tx_hardwaregain_chan1"):
                     self.sdr.tx_hardwaregain_chan1 = int(params["tx_gain"])
+                # A simulated scene changes on the next frame; a kit has no scene.
+                if "scene" in params and self.sim_mode and hasattr(self.sdr, "set_fmcw_scene"):
+                    self.sdr.set_fmcw_scene(params["scene"])
             except Exception as e:
                 print(f"[FMCW] live param update failed: {e}")
                 return {"status": "error", "message": str(e)}
@@ -1248,6 +1253,11 @@ class PhaserHeadless:
             "plan": getattr(self, "fmcw_plan", None) if running else None,
             "capability": self.get_radar_capabilities()["data"]["fmcw"],
         }
+        if self.sim_mode:
+            # Simulation only: the live scenes the UI can pick from.
+            import phaser_sim
+            data["scenes"] = dict(phaser_sim.FMCW_SCENES)
+            data["scene"] = (cfg or {}).get("scene") or phaser_sim.FMCW_DEFAULT_SCENE
         if error:
             data["error"] = error
         return {"status": "ok", "data": data}

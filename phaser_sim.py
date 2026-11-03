@@ -21,6 +21,8 @@ Changing the physics here means:
      -- which fail until you do
 """
 
+import time
+
 import numpy as np
 
 from ADAR_pyadi_functions import RX_GAIN_AMPLITUDE
@@ -106,6 +108,84 @@ class _StubADARArray:
         for element in self.elements.values():
             element.latch()
         self.latch_count += 1
+
+
+# --- Live FMCW scenes ---------------------------------------------------------
+#
+# Moving targets that stream indefinitely, after the ECE 444 course's own
+# simulator (ece444 scripts/radar/fmcw_sim.py, which made the course's
+# recorded captures): each scatterer's range is a function of absolute time,
+# its echo level comes from the L25 link budget, and the 0 m leakage and the
+# noise floor are the course's. A running clock (SimSDR.scene_clock) supplies
+# the absolute time of each chirp, so motion and Doppler phase carry on from
+# frame to frame instead of every frame being the same instant.
+#
+# Port of fmcw_sim's add_point / add_hand / add_walker kinematics and its
+# echo_dbfs; the array response (taper, angle, subarrays) stays this file's.
+SCENE_PT_DBM = -16.0            # transmit power
+SCENE_GTGR_DB = 6.0 + 15.0      # transmit antenna + the 8-element array
+SCENE_NF_DB = 2.0               # receiver noise figure
+SCENE_NOISE_DBFS = -60.0        # receiver noise per complex sample, summed array
+SCENE_LEAKAGE_DBFS = -20.0      # Tx->Rx leakage, the 0 m spike
+SCENE_R_MIN = 0.3               # m: the echo level stops growing inside this
+SCENE_FULL_SCALE = 2 ** 11      # counts: |x| = 2048 is 0 dBFS, as the DSP reads it
+SCENE_C = 299_792_458.0
+
+# The scenes the radar UI offers in simulation. "static" is the original
+# fixed scene (FMCW_DEFAULT_TARGETS), unchanged.
+FMCW_SCENES = {
+    "static": "Static targets: 1 m, 3.5 m walking in place, 7 m",
+    "corners": "Corner reflectors at 1, 2 and 3 m",
+    "walker": "A person walking out from 1 m to 4 m and back",
+    "hand": "A hand waving at 0.6 m, 1 Hz",
+}
+FMCW_DEFAULT_SCENE = "static"
+# The walker's five scatterer phases (torso, two legs, two arms): what
+# fmcw_sim.add_walker draws from np.random.default_rng(1).uniform(0, 6.28),
+# written out so the JS port carries the same numbers.
+SCENE_WALKER_PHASES = (3.2142, 5.9689, 0.9053, 5.9575, 1.9583)
+
+
+def scene_echo_dbfs(r, rcs, fs, fc):
+    """fmcw_sim.echo_dbfs: the radar-equation echo level, per sample, dBFS."""
+    r = np.maximum(r, SCENE_R_MIN)
+    lam = SCENE_C / fc
+    pr_dbm = (SCENE_PT_DBM + SCENE_GTGR_DB + 10 * np.log10(lam ** 2 * rcs)
+              - 30 * np.log10(4 * np.pi) - 40 * np.log10(r))
+    noise_dbm = -174.0 + 10 * np.log10(fs) + SCENE_NF_DB
+    return SCENE_NOISE_DBFS + pr_dbm - noise_dbm
+
+
+def scene_scatterers(name, t, fs, fc):
+    """The scatterers of a scene at absolute times t (s, any shape).
+
+    Returns [(range_m, level_dbfs, phase0, az_deg)], range and level arrays
+    shaped like t. fmcw_sim's conventions: range falls as a target closes.
+    """
+    out = [(np.zeros_like(t), np.full_like(t, SCENE_LEAKAGE_DBFS), 0.7, 0.0)]
+    if name == "corners":
+        for r0, ph in ((1.0, 0.0), (2.0, 1.1), (3.0, 2.3)):
+            r = np.full_like(t, r0)
+            out.append((r, scene_echo_dbfs(r, 0.47, fs, fc), ph, 0.0))
+    elif name == "hand":
+        # add_hand: r0 0.6 m, swing 0.15 m, 1 Hz, rcs 0.02 m^2.
+        r = 0.6 + 0.15 * np.sin(2 * np.pi * 1.0 * t)
+        out.append((r, scene_echo_dbfs(r, 0.02, fs, fc), 1.3, 0.0))
+    elif name == "walker":
+        # add_walker: 1 m out to 4 m and back at 1 m/s, limbs at 0.9 Hz.
+        r_start, r_turn, speed, stride_hz, rcs_body = 1.0, 4.0, 1.0, 0.9, 0.5
+        leg = 2 * (r_turn - r_start) / speed
+        s = np.mod(t, leg) / leg
+        torso = r_start + (r_turn - r_start) * (1 - np.abs(2 * s - 1))
+        phases = SCENE_WALKER_PHASES
+        out.append((torso, scene_echo_dbfs(torso, rcs_body, fs, fc), phases[0], 0.0))
+        limbs = ((0.25, 0.0, 0.08), (0.25, np.pi, 0.08), (0.15, np.pi, 0.04), (0.15, 0.0, 0.04))
+        for (swing, ph, share), p0 in zip(limbs, phases[1:]):
+            r = torso + swing * np.sin(2 * np.pi * stride_hz * t + ph)
+            out.append((r, scene_echo_dbfs(r, share * rcs_body, fs, fc), p0, 0.0))
+    elif name != "static":
+        raise ValueError(f"unknown FMCW scene {name!r}; expected one of {sorted(FMCW_SCENES)}")
+    return out
 
 
 class SimSDR:
@@ -212,6 +292,11 @@ class SimSDR:
         self._fmcw_enable = False
         self._fmcw_plan = None
         self._fmcw_targets = list(self.FMCW_DEFAULT_TARGETS)
+        # Live scenes (FMCW_SCENES). scene_clock returns the absolute time, s,
+        # of the frame being synthesized; tests replace it with a fixed one.
+        self._fmcw_scene = FMCW_DEFAULT_SCENE
+        self._scene_t0 = time.monotonic()
+        self.scene_clock = lambda: time.monotonic() - self._scene_t0
         self._fmcw = {
             "chirp_bw": 500e6,
             "ramp_time": 1e-3,
@@ -283,6 +368,9 @@ class SimSDR:
         """
         targets = params.pop("targets", None)
         plan = params.pop("plan", None)
+        scene = params.pop("scene", None)
+        if scene is not None:
+            self.set_fmcw_scene(scene)
         for key, value in params.items():
             if key in self._fmcw and value is not None:
                 self._fmcw[key] = float(value)
@@ -300,6 +388,13 @@ class SimSDR:
         self._fmcw_enable = bool(enable)
         if self._fmcw_enable:
             self._cw_enable = False
+
+    def set_fmcw_scene(self, name):
+        """Pick a live scene from FMCW_SCENES ("static" is the original)."""
+        name = str(name or FMCW_DEFAULT_SCENE)
+        if name not in FMCW_SCENES:
+            raise ValueError(f"unknown FMCW scene {name!r}; expected one of {sorted(FMCW_SCENES)}")
+        self._fmcw_scene = name
 
     def set_fmcw_targets(self, targets):
         """Replace the simulated FMCW scene.
@@ -368,6 +463,11 @@ class SimSDR:
             np.zeros(n_total, dtype=np.complex64),
         ]
 
+        if self._fmcw_scene != "static":
+            self._synthesize_fmcw_scene(chan_sub, slot, ramp_n, num_chirps, n_total, fs,
+                                        slope, f_c, wavelength)
+            return chan_sub
+
         for target_range, velocity, angle_deg, amplitude in self._fmcw_targets:
             f_beat = 2.0 * slope * float(target_range) / c
             f_doppler = 2.0 * float(velocity) * f_c / c
@@ -392,6 +492,39 @@ class SimSDR:
             self._superpose_wave(chan_sub, wave, angle_deg, amplitude, wavelength)
 
         return chan_sub
+
+    def _synthesize_fmcw_scene(self, chan_sub, slot, ramp_n, num_chirps, n_total, fs,
+                               slope, f_c, wavelength):
+        """A live scene (scene_scatterers), chirp by chirp at absolute time.
+
+        fmcw_sim._add_scatterer's beat: for a scatterer at range r(t),
+            phase = 2 pi (IF + 2 S r / c) t_fast - 4 pi r f_c / c + phase0
+        where t is the absolute time of the sample -- the frame's clock plus
+        the chirp's slot plus its fast time -- so range and Doppler move on
+        from frame to frame. The level (dBFS) becomes counts of full scale;
+        the array gain is normalized to the untapered broadside sum, so the
+        course's levels are what a rect-tapered array at boresight shows.
+        Scaled back by AMP_SCALE here because _synthesize_channels applies it.
+        """
+        cfg = self._fmcw
+        t0 = float(self.scene_clock())
+        pri = float(cfg["pri"])
+        t_fast = np.arange(ramp_n) / fs
+        t = t0 + np.arange(num_chirps)[:, None] * pri + t_fast[None, :]
+        f_if = float(cfg["signal_freq"])
+        for r, level, phase0, az in scene_scatterers(self._fmcw_scene, t, fs, f_c):
+            amp = SCENE_FULL_SCALE * 10 ** (np.asarray(level) / 20) / self.AMP_SCALE
+            phase = (2 * np.pi * (f_if + 2 * slope * r / SCENE_C) * t_fast[None, :]
+                     - 4 * np.pi * r * f_c / SCENE_C + phase0)
+            chirps = (amp * np.exp(1j * phase)) / 8.0     # /8: the 8-element rect sum
+            wave = np.zeros(n_total, dtype=np.complex64)
+            for m in range(num_chirps):
+                start = m * slot
+                if start >= n_total:
+                    break
+                k = min(ramp_n, n_total - start)
+                wave[start:start + k] = chirps[m, :k]
+            self._superpose_wave(chan_sub, wave, az, 1.0, wavelength)
 
     # enter_cw_mode loads a cyclic Tx buffer and tears it down again. Nothing
     # in the sim transmits, but the calls have to succeed.
@@ -537,6 +670,10 @@ class SimSDR:
         noise_sigma = self.NOISE_SIGMA
         if noise_sigma <= 0:
             return chan0, chan1
+        if self._fmcw_enable and self._fmcw_scene != "static":
+            # The course's floor: SCENE_NOISE_DBFS per complex sample of the
+            # summed array, half the power in each channel.
+            noise_sigma = SCENE_FULL_SCALE * 10 ** (SCENE_NOISE_DBFS / 20) / 2
         chan0 = chan0 + (self._rng.normal(0, noise_sigma, N)
                          + 1j * self._rng.normal(0, noise_sigma, N)).astype(np.complex64)
         chan1 = chan1 + (self._rng.normal(0, noise_sigma, N)
