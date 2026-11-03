@@ -197,6 +197,11 @@
                   <label for="fmcw-preset">Preset</label>
                   <select id="fmcw-preset" class="set-ctrl"></select>
                 </div>
+                <!-- Simulation only: shown when the backend (or the browser simulator) offers scenes. -->
+                <div class="set-row" id="fmcw-scene-row" hidden title="Simulated targets. Live scenes move on in real time, after the course's fmcw_sim.py.">
+                  <label for="fmcw-scene">Scene</label>
+                  <select id="fmcw-scene" class="set-ctrl"></select>
+                </div>
                 <div class="set-row" title="Empty: the preset's own">
                   <label for="fmcw-range-max">Range Max (m)</label>
                   <input type="number" id="fmcw-range-max" class="set-ctrl" step="1" min="1" placeholder="preset">

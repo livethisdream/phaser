@@ -850,6 +850,8 @@ const fmcwEl = (id) => document.getElementById(id);
 function readFmcwParams() {
     const params = {
         preset: fmcwEl('fmcw-preset').value || undefined,
+        // Simulation only; a kit has no scene to pick.
+        scene: state.fmcw.scenes ? (fmcwEl('fmcw-scene')?.value || undefined) : undefined,
         // A switch plus a mode in the UI; one value on the backend.
         mti: fmcwEl('fmcw-mti-on').checked ? fmcwEl('fmcw-mti-mode').value : 'none',
         cfar: fmcwEl('fmcw-cfar').checked,
@@ -893,6 +895,25 @@ async function refreshFmcwState() {
                 : `${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''}`;
         }
         state.fmcw.preset_info = d.preset_info || {};
+        // Scenes: only a simulator reports them. A live, moving scene is the
+        // default pick here; the backend's own default is the static one.
+        state.fmcw.scenes = d.scenes || null;
+        const sceneRow = fmcwEl('fmcw-scene-row'), sceneSel = fmcwEl('fmcw-scene');
+        if (sceneRow && sceneSel) {
+            sceneRow.hidden = !state.fmcw.scenes;
+            if (state.fmcw.scenes && sceneSel.options.length !== Object.keys(state.fmcw.scenes).length) {
+                sceneSel.innerHTML = '';
+                for (const [name, label] of Object.entries(state.fmcw.scenes)) {
+                    const short = { static: 'Static', corners: 'Corners', walker: 'Walker', hand: 'Hand Wave' }[name] || name;
+                    const opt = new Option(short, name);
+                    opt.title = label;
+                    sceneSel.add(opt);
+                }
+                sceneSel.value = d.running && d.scene ? d.scene
+                    : (FMCW_UI_DEFAULT_SCENE in state.fmcw.scenes ? FMCW_UI_DEFAULT_SCENE : d.scene);
+            }
+            sceneSel.title = state.fmcw.scenes?.[sceneSel.value] || '';
+        }
         const sel = fmcwEl('fmcw-preset');
         if (sel && Array.isArray(d.presets) && sel.options.length !== d.presets.length) {
             const keep = sel.value || d.preset;
@@ -978,6 +999,7 @@ function updateFmcwControlGating() {
     const n = state.playback ? state.playback.info.window : state.fmcw.preset_info?.[preset]?.num_chirps;
     const presetRow = fmcwEl('fmcw-preset')?.closest('.set-row');
     gateRow(presetRow, Boolean(state.playback), 'Playback: the recording sets the waveform.');
+    gateRow(fmcwEl('fmcw-scene-row'), Boolean(state.playback), 'Playback: the recording is the scene.');
     if (!n) return;  // not known yet
     const multi = n > 1;
     const gate = gateRow;
@@ -998,6 +1020,17 @@ function updateFmcwControlGating() {
     const sel = fmcwEl('fmcw-preset');
     if (sel) sel.title = state.fmcw.preset_info?.[preset]?.hint || '';
 }
+
+// The scene a simulator starts in: someone walking, so a first look shows
+// motion rather than a frozen picture.
+const FMCW_UI_DEFAULT_SCENE = 'walker';
+
+fmcwEl('fmcw-scene')?.addEventListener('change', (e) => {
+    e.target.title = state.fmcw.scenes?.[e.target.value] || '';
+    state.fmcw.waterfall = null;
+    state.fmcw.avg = null;
+    pushFmcwParams({ scene: e.target.value });
+});
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
     updateFmcwControlGating();
