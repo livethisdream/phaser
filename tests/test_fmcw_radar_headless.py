@@ -45,7 +45,7 @@ def _headless():
     h.sweeping = False
     h.cw_params = {}
     h.cw_saved_sdr = {}
-    h.cw_lock = threading.Lock()
+    h.cw_lock = threading.RLock()  # as phaser_headless: re-entrant
     h.fmcw_params = {}
     h.fmcw_saved = {}
     h.fmcw_hw = None
@@ -607,3 +607,73 @@ def test_save_capture_with_iq_ch_saves_both_halves():
 def test_save_capture_needs_fmcw_running():
     h = _headless()
     assert h.save_fmcw_capture({})["status"] == "error"
+
+
+# --- Save Capture: duration ----------------------------------------------------
+
+def test_capture_limits_per_preset():
+    """What the Duration box offers: a burst preset is bounded by the Pluto's
+    burst buffer, a single-chirp one by CAPTURE_MAX_FRAMES_S; L31's low rate
+    buys the long records."""
+    h = _headless()
+    caps = {}
+    for preset in ("range_doppler", "range_doppler_far", "l31_record", "range"):
+        h.fmcw_params = {"preset": preset}
+        caps[preset] = h.get_fmcw_radar_state()["data"]["capture"]
+    assert caps["range_doppler"]["kind"] == "burst"
+    assert caps["range_doppler"]["max_s"] == pytest.approx(2.1, abs=0.01)
+    assert caps["range_doppler_far"]["max_s"] == pytest.approx(1.05, abs=0.01)
+    assert caps["l31_record"]["max_s"] > 10
+    assert caps["range"]["kind"] == "frames" and caps["range"]["max_s"] == dsp.CAPTURE_MAX_FRAMES_S
+    for c in caps.values():
+        assert c["bytes_per_s_iq_ch"] == pytest.approx(3 * c["bytes_per_s"])
+
+
+def test_save_capture_shorter_than_a_burst_trims_it():
+    h = _headless()
+    _start(h, preset="range_doppler")
+    _, cap = _saved(h, duration_s=0.05)
+    assert cap["iq"].shape[0] == 100            # 0.05 s / 0.5 ms
+
+
+def test_save_capture_longer_than_a_burst_is_one_continuous_burst():
+    """Re-entered for one long burst, then put back as it was."""
+    h = _headless()
+    _start(h, preset="range_doppler", scene="walker")
+    before = dict(h.fmcw_plan)
+    resp, cap = _saved(h, duration_s=1.0)
+    assert cap["iq"].shape == (2000, before["good_ramp_samples"])
+    assert float(cap["PRI"]) == pytest.approx(before["pri_ms"] / 1e3)
+    assert resp["duration_s"] == pytest.approx(1.0)
+    lim = h.get_fmcw_radar_state()["data"]["capture"]
+    assert resp["size"] == pytest.approx(lim["bytes_per_s"] * 1.0, rel=0.01)
+    # Put back: the same mode, plan and preset, the live scene still on.
+    assert h.mode == "fmcw_radar" and h.fmcw_plan["num_chirps"] == before["num_chirps"]
+    assert h.fmcw_preset == "range_doppler" and h.fmcw_cfg.get("scene") == "walker"
+    assert "num_chirps" not in h.fmcw_params
+
+
+def test_save_capture_refuses_more_than_the_burst_buffer():
+    h = _headless()
+    _start(h, preset="range_doppler")
+    resp = h.save_fmcw_capture({"duration_s": 5.0})
+    assert resp["status"] == "error" and "2.1 s" in resp["message"]
+    assert h.mode == "fmcw_radar" and h.fmcw_plan["num_chirps"] == 256
+
+
+def test_l31_record_preset_saves_seconds_with_iq_ch():
+    h = _headless()
+    _start(h, preset="l31_record")
+    resp, cap = _saved(h, duration_s=3.0, iq_ch=True)
+    assert cap["iq"].shape[0] == 6000 and float(cap["fs"]) == 300_000.0
+    assert cap["iq_ch"].shape == (2,) + cap["iq"].shape
+    lim = h.get_fmcw_radar_state()["data"]["capture"]
+    assert resp["size"] == pytest.approx(lim["bytes_per_s_iq_ch"] * 3.0, rel=0.01)
+
+
+def test_single_chirp_save_takes_frames_at_the_frame_interval():
+    h = _headless()
+    _start(h, preset="range")
+    _, cap = _saved(h, duration_s=0.5)
+    assert cap["iq"].shape[0] == 10            # 0.5 s / 50 ms
+    assert float(cap["PRI"]) == pytest.approx(dsp.CAPTURE_FRAME_S, rel=0.2)

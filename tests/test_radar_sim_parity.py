@@ -92,7 +92,7 @@ def _python_frame(mode, params, clock=None):
         h.sweeping = False
         h.cw_params = {}
         h.cw_saved_sdr = {}
-        h.cw_lock = threading.Lock()
+        h.cw_lock = threading.RLock()
         h.fmcw_params = {}
         h.fmcw_saved = {}
         h.fmcw_hw = None
@@ -208,6 +208,10 @@ SAVE_CASES = [
     ("save_rd", {}, False),
     ("save_rd_iq_ch_calibrated", {"zero_range_freq": 103_000.0}, True),
     ("save_range", {"preset": "range"}, False),
+    # Duration: a burst trimmed, a long continuous burst, L31's long record.
+    ("save_rd_short", {"duration_s": 0.05}, False),
+    ("save_rd_long", {"duration_s": 0.5}, False),
+    ("save_l31_long_iq_ch", {"preset": "l31_record", "duration_s": 1.5}, True),
 ]
 
 _JS_SAVE_DRIVER = """
@@ -216,8 +220,9 @@ const cases = JSON.parse(process.argv[2]);
 const out = {};
 for (const [name, params, iqCh] of cases) {
     const engine = createRadarEngine({ noiseSigma: 0 });
-    engine.handle('start_fmcw_radar', params);
-    const resp = engine.handle('save_fmcw_capture', { iq_ch: iqCh });
+    const { duration_s, ...start } = params;
+    engine.handle('start_fmcw_radar', start);
+    const resp = engine.handle('save_fmcw_capture', { iq_ch: iqCh, duration_s });
     if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
     out[name] = resp.data;
 }
@@ -260,11 +265,12 @@ def _python_save(params, iq_ch):
         h.c = 299792458
         h._do_init_hardware()
         h.mode, h.sweeping = "idle", False
-        h.cw_params, h.cw_saved_sdr, h.cw_lock = {}, {}, threading.Lock()
+        h.cw_params, h.cw_saved_sdr, h.cw_lock = {}, {}, threading.RLock()
         h.fmcw_params, h.fmcw_saved, h.fmcw_hw = {}, {}, None
         h.fmcw_cfg = h.fmcw_plan = h.cal_process = None
-        assert h.start_fmcw_radar(dict(params))["status"] == "ok"
-        resp = h.save_fmcw_capture({"iq_ch": iq_ch})
+        start = {k: v for k, v in params.items() if k != "duration_s"}
+        assert h.start_fmcw_radar(start)["status"] == "ok"
+        resp = h.save_fmcw_capture({"iq_ch": iq_ch, "duration_s": params.get("duration_s")})
         assert resp["status"] == "ok", resp
         return resp["data"]
     finally:

@@ -17,7 +17,7 @@ import {
     RAMP_SYNCED, RX_FREQ_HZ, CAPTURE_SINGLE_CHIRP_FRAMES, FMCW_SCENES, FMCW_DEFAULT_SCENE,
 } from './constants.generated.js';
 import {
-    chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
+    captureLimits, chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
     resolveTaper, sliceChirps,
 } from './dsp.js';
 import {
@@ -38,6 +38,7 @@ const CAPABILITY = Object.freeze({
     available: true, ramp: RAMP_SYNCED, source: 'sim', reason: '', checks: [],
 });
 
+const roundHalfEvenNum = (x) => { const r = Math.round(x); return (Math.abs(x % 1) === 0.5 && r % 2 !== 0) ? r - 1 : r; };
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
 export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = null } = {}) {
@@ -143,22 +144,26 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         return noiseSigma > 0 && currentScene() !== 'static' ? SCENE_NOISE_SIGMA : noiseSigma;
     }
 
-    function synthesizeFmcwChannels() {
-        const cfg = s.fmcwCfg, plan = s.fmcwPlan;
+    // `plan` and `t0` default to the running ones: a long Save Capture
+    // synthesizes one burst of its own plan, and single-chirp saves step the
+    // scene clock a frame interval at a time.
+    function synthesizeFmcwChannels(plan = s.fmcwPlan, t0 = null) {
+        const cfg = s.fmcwCfg;
+        const n = plan === s.fmcwPlan ? s.bufferSize : plan.rx_buffer_size;
         const scene = currentScene();
         if (scene !== 'static') {
             return synthesizeFmcwScene({
-                n: s.bufferSize, fs: s.sampleRate,
+                n, fs: s.sampleRate,
                 fmcw: {
                     chirp_bw: Number(cfg.chirp_bw), ramp_time: plan.effective_ramp_time,
                     num_chirps: plan.num_chirps, pri: plan.pri_ms / 1e3,
                     signal_freq: Number(cfg.signal_freq), output_freq: Number(cfg.output_freq),
                 },
-                plan, scene, t0: sceneClock(), elements, phaseError,
+                plan, scene, t0: t0 ?? sceneClock(), elements, phaseError,
             });
         }
         return synthesizeFmcw({
-            n: s.bufferSize, fs: s.sampleRate,
+            n, fs: s.sampleRate,
             fmcw: {
                 chirp_bw: Number(cfg.chirp_bw),
                 ramp_time: plan.effective_ramp_time,
@@ -176,15 +181,36 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         if (s.mode !== 'fmcw_radar' || !s.fmcwCfg) {
             return { status: 'error', message: 'Start FMCW to save a capture' };
         }
-        const cfg = s.fmcwCfg, plan = s.fmcwPlan;
+        const cfg = s.fmcwCfg;
+        let plan = s.fmcwPlan;
         const wantCh = Boolean(params.iq_ch);
-        const frames = plan.num_chirps > 1 ? 1 : CAPTURE_SINGLE_CHIRP_FRAMES;
+        const limits = captureLimits(plan);
+        const duration = params.duration_s == null || params.duration_s === '' ? limits.default_s : Number(params.duration_s);
+        if (!(duration > 0) || duration > limits.max_s * (1 + 1e-9)) {
+            return { status: 'error', message: `Duration must be more than 0 and at most ${+limits.max_s.toPrecision(3)} s on this preset` };
+        }
+        // As phaser_headless.save_fmcw_capture: a burst of duration / PRI
+        // chirps (a longer plan if the preset's is too short), or frames at
+        // the live frame interval -- here stepped on the scene clock, since
+        // the simulator does not wait.
+        let frames = 1, keep = Infinity;
+        if (limits.kind === 'burst') {
+            const chirps = Math.max(2, roundHalfEvenNum(duration / limits.chirp_s));
+            if (chirps > plan.num_chirps) {
+                plan = chirpPlan({ ...cfg, num_chirps: chirps }, RAMP_SYNCED, rampTimeUs(cfg), 0);
+            }
+            keep = chirps;
+        } else {
+            frames = Math.max(1, roundHalfEvenNum(duration / limits.chirp_s));
+        }
         const rows = [[], [], []];   // summed, chan0, chan1: one {re, im} per chirp
         const stamps = [];
+        const tBase = sceneClock();
         for (let f = 0; f < frames; f++) {
-            stamps.push(now());
-            const [c0, c1] = finishChannels(synthesizeFmcwChannels(), { noiseSigma: fmcwNoiseSigma(), gauss });
-            const s0 = sliceChirps(c0, plan), s1 = sliceChirps(c1, plan);
+            stamps.push(f * limits.chirp_s * 1e3);
+            const t0 = limits.kind === 'frames' ? tBase + f * limits.chirp_s : null;
+            const [c0, c1] = finishChannels(synthesizeFmcwChannels(plan, t0), { noiseSigma: fmcwNoiseSigma(), gauss });
+            const s0 = sliceChirps(c0, plan).slice(0, keep), s1 = sliceChirps(c1, plan).slice(0, keep);
             s0.forEach((col, k) => {
                 const re = col.re.map((v, i) => v + s1[k].re[i]);
                 const im = col.im.map((v, i) => v + s1[k].im[i]);
@@ -228,7 +254,7 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         const blob = writeNpz(arrays);
         return {
             status: 'ok', preset: s.fmcwPreset, n_chirps: nChirps, n_samples: nSamples,
-            iq_ch: wantCh, size: blob.length, note, data: toBase64(blob),
+            duration_s: nChirps * pri, iq_ch: wantCh, size: blob.length, note, data: toBase64(blob),
         };
     }
 
@@ -302,6 +328,12 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
             cfg,
             plan: running ? s.fmcwPlan : null,
             capability: { ...CAPABILITY },
+            capture: (() => {
+                try {
+                    return captureLimits(running ? s.fmcwPlan
+                        : chirpPlan(cfg, RAMP_SYNCED, rampTimeUs(cfg), 0));
+                } catch (e) { return null; }
+            })(),
             // Simulation only: the live scenes the UI can pick from.
             scenes: { ...FMCW_SCENES },
             scene: cfg?.scene ?? FMCW_DEFAULT_SCENE,

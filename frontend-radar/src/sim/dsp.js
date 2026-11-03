@@ -12,7 +12,8 @@ import { fft, fftshift, fftfreq, window } from './fft.js';
 import {
     C, DEFAULTS, TAPER_PRESETS, TAPER_MAX, FMCW_DEFAULTS, FMCW_HW_DEFAULTS,
     FMCW_PRESETS, FMCW_PROC_DEFAULTS, MAINLOBE_HALF_BINS, MAP_SPAN_DB, DB_DECIMALS,
-    AXIS_DECIMALS,
+    AXIS_DECIMALS, CAPTURE_SINGLE_CHIRP_FRAMES, CAPTURE_MAX_FRAMES_S, CAPTURE_FRAME_S,
+    BYTES_PER_SAMPLE,
     RAMP_SYNCED, RAMP_FREE_RUNNING, RANGE_TIME_SCALE, MAX_BURST_BUFFER,
     RAMP_SETTLE_FRACTION,
 } from './constants.generated.js';
@@ -542,4 +543,20 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
         }
     }
     return out;
+}
+
+/** phaser_radar_dsp.capture_limits: what Save Capture can do for this plan. */
+export function captureLimits(plan) {
+    const good = Math.trunc(plan.good_ramp_samples);
+    if (plan.synced && plan.num_chirps > 1) {
+        const pri = plan.pri_ms / 1e3;
+        const maxChirps = Math.floor(MAX_BURST_BUFFER / (plan.sample_rate * pri));
+        const perS = (good * BYTES_PER_SAMPLE) / pri;
+        return { kind: 'burst', default_s: plan.num_chirps * pri, max_s: maxChirps * pri,
+                 chirp_s: pri, bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
+    }
+    const perS = (good * BYTES_PER_SAMPLE) / CAPTURE_FRAME_S;
+    return { kind: 'frames', default_s: CAPTURE_SINGLE_CHIRP_FRAMES * CAPTURE_FRAME_S,
+             max_s: CAPTURE_MAX_FRAMES_S, chirp_s: CAPTURE_FRAME_S,
+             bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
 }
