@@ -23,8 +23,11 @@ const state = {
         cfg: null,           // the running config, for the 0 m calibration
         plan: null,
         waterfall: null,     // rows = frames, cols = range bins
-        last: null,          // the last frame, for "Set 0 m Here"
+        last: null,          // the last frame, for the 0 m calibration
         span_db: 60,         // colour scale: the frame's peak down this far
+        avg: null,           // averaged single-chirp profile power, for the readout
+        readout_t: 0,        // when the peak readouts last changed
+        preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
         // Range-Doppler: the waterfall and "moving" trace skip |v| below
         // this, as the CW peak readout does. The strongest cell per range bin
         // over every velocity is the stationary clutter at 0 m/s -- walls,
@@ -263,8 +266,16 @@ document.getElementById('opt-autoscale')?.addEventListener('change', (e) => {
 
 ['output-freq', 'center-freq', 'sample-rate', 'fft-size', 'signal-freq', 'fft-window'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', () => {
-        // These take effect on next start; surface a hint to user.
-        log('info', 'UI', `${id} changed — applies on next Start CW`);
+        // FMCW applies these while running (the window on the next frame,
+        // the frequencies by re-entering); CW takes them on the next Start.
+        if (state.runningMode === 'fmcw') {
+            const p = readFmcwParams();
+            const key = { 'output-freq': 'output_freq', 'center-freq': 'center_freq',
+                          'fft-window': 'fft_window' }[id];
+            if (key) pushFmcwParams({ [key]: p[key] });
+            return;
+        }
+        log('info', 'UI', `${id} changed — applies on next Start`);
     });
 });
 
@@ -324,8 +335,8 @@ Plotly.newPlot('chart-waterfall', [{
     colorbar: { title: 'dB', thickness: 12 },
     hovertemplate: 'v=%{x:.2f} m/s<br>t=-%{y}<br>%{z:.1f} dB<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Velocity (m/s)', range: [-20, 20] },
-    yaxis: { title: 'Time (frames ago)', autorange: 'reversed' },
+    xaxis: { title: 'Velocity (m/s)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-20, 20] },
+    yaxis: { title: 'Time (frames ago)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', autorange: 'reversed' },
 }), { displayModeBar: false, responsive: true });
 
 Plotly.newPlot('chart-spectrum', [{
@@ -372,8 +383,8 @@ Plotly.newPlot('chart-fmcw-wf', [{
     colorbar: { title: 'dB', thickness: 12 },
     hovertemplate: 'R=%{x:.2f} m<br>t=-%{y}<br>%{z:.1f} dB<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Range (m)' },
-    yaxis: { title: 'Time (frames ago)', autorange: 'reversed' },
+    xaxis: { title: 'Range (m)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Time (frames ago)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', autorange: 'reversed' },
 }), { displayModeBar: false, responsive: true });
 
 // Range-Doppler: x = velocity, y = range (lab "Range Doppler Plotting").
@@ -382,8 +393,8 @@ Plotly.newPlot('chart-fmcw-rd', [{
     colorbar: { title: 'dB', thickness: 12 },
     hovertemplate: 'v=%{x:.2f} m/s<br>R=%{y:.2f} m<br>%{z:.1f} dB<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Velocity (m/s)' },
-    yaxis: { title: 'Range (m)' },
+    xaxis: { title: 'Velocity (m/s)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Range (m)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
 }), { displayModeBar: false, responsive: true });
 
 function refreshWaterfallScale() {
@@ -410,15 +421,93 @@ function setConnectionStatus(connected) {
         dot.classList.toggle('disconnected', !connected);
         dot.classList.toggle('connected', connected);
     }
-    if (text) text.textContent = connected ? 'Connected' : 'Disconnected';
+    if (text) text.textContent = shuttingDown ? 'Shutting down...' : connected ? 'Connected' : 'Disconnected';
+}
+
+/* --- Shutdown: hold the connection pill ---
+   As in the beamforming UI (frontend/src/main.js): where the backend reports
+   shutdown_available, a 2 s hold on the pill powers the Pi off. Releasing
+   early aborts, so the gesture is its own confirmation. Where it is not
+   available (a Pi installed before the grant, a dev box, the simulator) the
+   pill stays a plain readout: no cursor, no tooltip, no listeners. Armed once:
+   the grant is a file on the Pi and cannot change without a restart. */
+const SHUTDOWN_HOLD_MS = 2000;  // keep in step with --hold-ms in style.css
+let shutdownArmed = false;
+let shuttingDown = false;
+
+function wireHoldToCommit(el, holdMs, onCommit) {
+    let holdTimer = null;
+    let pointerActive = false;
+    const fire = () => {
+        el.classList.remove('holding');
+        Promise.resolve(onCommit()).then((ok) => {
+            if (ok === false) return;
+            el.classList.add('flash');
+            setTimeout(() => el.classList.remove('flash'), 260);
+        });
+    };
+    const cancel = () => {
+        if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+        el.classList.remove('holding');
+    };
+    el.addEventListener('pointerdown', (e) => {
+        if (!el.classList.contains('btn-hold')) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        pointerActive = true;
+        if (holdTimer) clearTimeout(holdTimer);
+        el.classList.add('holding');
+        holdTimer = setTimeout(() => { holdTimer = null; fire(); }, holdMs);
+    });
+    el.addEventListener('pointerup', () => { pointerActive = false; cancel(); });
+    el.addEventListener('pointercancel', () => { pointerActive = false; cancel(); });
+    el.addEventListener('pointerleave', () => { if (pointerActive) cancel(); pointerActive = false; });
+    // A held key repeats rather than reporting a duration; reaching for the
+    // keyboard is deliberate enough, so Enter/Space commits directly.
+    el.addEventListener('keydown', (e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && el.classList.contains('btn-hold')) {
+            e.preventDefault();
+            fire();
+        }
+    });
+}
+
+function armShutdownIfPermitted(available) {
+    if (!available || shutdownArmed) return;
+    const pill = document.getElementById('connection-pill');
+    if (!pill) return;
+    shutdownArmed = true;
+    pill.classList.add('btn-hold');
+    pill.setAttribute('role', 'button');
+    pill.setAttribute('tabindex', '0');
+    pill.title = 'Hold to shut the Phaser down cleanly.';
+    wireHoldToCommit(pill, SHUTDOWN_HOLD_MS, async () => {
+        try {
+            const resp = await transport.invoke('power_off', {});
+            if (resp?.status === 'ok') {
+                log('warn', 'POWER', 'Shutting down — the Pi is going away.');
+                shuttingDown = true;
+                // Nothing will answer after this: no more hold, and the
+                // reconnect loop must not paint Disconnected over the message.
+                pill.classList.remove('btn-hold');
+                pill.title = '';
+                setConnectionStatus(false);
+                return true;
+            }
+            log('error', 'POWER', resp?.message || 'Shutdown refused');
+        } catch (err) {
+            log('error', 'POWER', `Could not shut down: ${err.message || err}`);
+        }
+        return false;
+    });
 }
 
 function setRunningUi(running, mode = state.uiMode) {
     state.running = running;
     state.runningMode = running ? mode : null;
+    updateFmcwCalModal();
     const btn = document.getElementById('btn-radar');
     if (btn) {
-        btn.textContent = running ? 'Stop' : (state.uiMode === 'fmcw' ? 'Start FMCW' : 'Start CW');
+        btn.textContent = running ? 'Stop' : 'Start';
         btn.classList.toggle('btn-primary', !running);
         btn.classList.toggle('btn-danger', running);
         // FMCW on a kit that cannot run it: say why instead of failing.
@@ -429,10 +518,76 @@ function setRunningUi(running, mode = state.uiMode) {
 }
 
 /* --- CW / FMCW mode switch --- */
+/* The Hardware pane follows the mode. Each FMCW preset is a lab with its own
+   output frequency and gains, so in FMCW mode the pane shows the preset's
+   and an edit overrides it; CW keeps its own values. Each mode's values are
+   stashed on the way out and restored on the way back. */
+const hwStash = { cw: null, fmcw: null };
+
+function readHw() {
+    return {
+        output: document.getElementById('output-freq').value,
+        rx: document.getElementById('val-rx-gain').value,
+        tx: document.getElementById('val-tx-gain').value,
+    };
+}
+
+function writeHw(v) {
+    if (!v) return;
+    document.getElementById('output-freq').value = v.output;
+    for (const [k, id] of [['rx', 'rx-gain'], ['tx', 'tx-gain']]) {
+        document.getElementById(id).value = v[k];
+        document.getElementById('val-' + id).value = v[k];
+    }
+}
+
+function hwParams() {
+    const v = readHw();
+    const p = {};
+    const out = parseFloat(v.output), rx = parseFloat(v.rx), tx = parseFloat(v.tx);
+    if (Number.isFinite(out)) p.output_freq = out * 1e9;
+    if (Number.isFinite(rx)) p.rx_gain = rx;
+    if (Number.isFinite(tx)) p.tx_gain = tx;
+    return p;
+}
+
+// What the selected preset runs at -- or, while FMCW runs and `live` is set,
+// what it is actually running, edits included.
+function presetHw(live = true) {
+    const cfg = live && state.runningMode === 'fmcw' ? state.fmcw.cfg : null;
+    const src = cfg || state.fmcw.preset_info?.[fmcwEl('fmcw-preset')?.value];
+    if (!src || src.output_freq == null) return null;
+    return { output: String(Number((src.output_freq / 1e9).toFixed(6))),
+             rx: String(src.rx_gain), tx: String(src.tx_gain) };
+}
+
+// Controls only CW reads: greyed in FMCW mode, with the reason on hover.
+const CW_ONLY_ROWS = [
+    ['sample-rate', 'CW only: the FMCW preset sets the sample rate.'],
+    ['fft-size', 'CW only: the FMCW preset sets the capture size.'],
+    ['signal-freq', 'CW only: the FMCW preset sets the IF tone.'],
+    ['val-db-floor', 'CW only: FMCW uses Color Span.'],
+    ['val-db-ceil', 'CW only: FMCW uses Color Span.'],
+    ['opt-autoscale', 'CW only: FMCW uses Color Span.'],
+];
+function updateModeGating() {
+    const fmcw = state.uiMode === 'fmcw';
+    CW_ONLY_ROWS.forEach(([id, why]) =>
+        gateRow(document.getElementById(id)?.closest('.set-row'), fmcw, why));
+}
+
 function setUiMode(mode) {
+    const prev = state.uiMode;
     state.uiMode = mode === 'fmcw' ? 'fmcw' : 'cw';
+    if (prev !== state.uiMode) {
+        hwStash[prev] = readHw();
+        writeHw(state.uiMode === 'fmcw' ? (hwStash.fmcw || presetHw()) : hwStash.cw);
+    }
+    updateModeGating();
     document.getElementById('mode-cw')?.classList.toggle('active', state.uiMode === 'cw');
     document.getElementById('mode-fmcw')?.classList.toggle('active', state.uiMode === 'fmcw');
+    const modeTabs = document.querySelector('.mode-tabs');
+    if (modeTabs) modeTabs.dataset.mode = state.uiMode;
     // Show the mode's tabs (and Logs), and land on its first one.
     let first = null;
     document.querySelectorAll('.tab-btn').forEach(b => {
@@ -441,7 +596,11 @@ function setUiMode(mode) {
         if (!first && m === state.uiMode) first = b;
     });
     first?.click();
-    document.getElementById('box-peak-range').hidden = state.uiMode !== 'fmcw';
+    // Always shown, greyed in CW, so the stats row does not shift.
+    const rangeBox = document.getElementById('box-peak-range');
+    rangeBox.classList.toggle('set-disabled', state.uiMode !== 'fmcw');
+    rangeBox.title = state.uiMode === 'fmcw' ? '' : 'FMCW only: CW measures velocity, not range.';
+    if (state.uiMode !== 'fmcw') document.getElementById('stat-peak-range').textContent = '-- m';
     // The FMCW settings open with FMCW; CW keeps the Hardware section.
     activateSidebarSection(state.uiMode === 'fmcw' ? 4 : 0);
     setRunningUi(state.running, state.runningMode || state.uiMode);
@@ -450,16 +609,20 @@ document.getElementById('mode-cw')?.addEventListener('click', () => setUiMode('c
 document.getElementById('mode-fmcw')?.addEventListener('click', () => setUiMode('fmcw'));
 
 /* --- Frame rate, shared by both modes --- */
+// Frames counted over the last second. An average of 1/dt between messages
+// read high: WebSocket frames arrive in bunches, and each bunch's near-zero
+// gaps counted as hundreds of fps (a 20 fps stream showed 30, phaser-01).
+const frameTimes = [];
 function noteFrameRate() {
     const now = performance.now();
-    if (state.last_frame_t) {
-        const dt = (now - state.last_frame_t) / 1000;
-        const inst = dt > 0 ? 1 / dt : 0;
-        state.fps = state.fps_alpha * inst + (1 - state.fps_alpha) * state.fps;
-        const el = document.getElementById('stat-rate');
-        if (el) el.textContent = `${state.fps.toFixed(1)} fps`;
-    }
+    frameTimes.push(now);
+    while (frameTimes.length && now - frameTimes[0] > 1000) frameTimes.shift();
     state.last_frame_t = now;
+    if (frameTimes.length < 2) return;
+    const span = (frameTimes[frameTimes.length - 1] - frameTimes[0]) / 1000;
+    state.fps = span > 0 ? (frameTimes.length - 1) / span : 0;
+    const el = document.getElementById('stat-rate');
+    if (el) el.textContent = `${state.fps.toFixed(1)} fps`;
 }
 
 /* --- Frame handling --- */
@@ -548,7 +711,10 @@ let fmcwPending = null;
 function handleFmcwFrame(frame) {
     if (!frame || !frame.range_axis) return;
     state.fmcw.last = frame;
+    if (frame.kind === 'range_profile') averageFmcwProfile(frame);
+    else state.fmcw.avg = null;
     noteFrameRate();
+    updateFmcwCalModal();
     const scheduled = fmcwPending !== null;
     fmcwPending = frame;
     if (!scheduled) {
@@ -574,9 +740,13 @@ function renderFmcwFrame(frame) {
         // The range plot shows the strongest return per range bin twice: over
         // every velocity, and over the moving ones only. The waterfall gets
         // the moving one, so a hand shows against the static clutter.
+        // Skip the clutter's whole main lobe too, as the backend's peak
+        // search does: at least 3 bins (Blackman) either side of 0 m/s.
         const vel = frame.velocity_axis || [];
+        const dv = vel.length > 1 ? Math.abs(vel[1] - vel[0]) : 0;
+        const vmin = Math.max(state.fmcw.moving_min_mps, 3 * dv) - 1e-9;
         const moving = [];
-        vel.forEach((v, i) => { if (Math.abs(v) >= state.fmcw.moving_min_mps) moving.push(i); });
+        vel.forEach((v, i) => { if (Math.abs(v) >= vmin) moving.push(i); });
         const all = z.map(row => Math.max(...row));
         trace = moving.length ? z.map(row => Math.max(...moving.map(i => row[i]))) : all;
         Plotly.restyle('chart-fmcw-range', {
@@ -586,6 +756,12 @@ function renderFmcwFrame(frame) {
         trace = frame.profile_db || [];
         const thr = frame.cfar_threshold_db || [];
         const idx = frame.detection_indices || [];
+        // "Apply CFAR Threshold" (lab step 4): everything at or below the
+        // threshold goes to the trace's floor, in the plot and the waterfall.
+        if (thr.length === trace.length && fmcwEl('fmcw-cfar-mode')?.value === 'detections') {
+            const floor = Math.min(...trace);
+            trace = trace.map((v, i) => (v > thr[i] ? v : floor));
+        }
         Plotly.restyle('chart-fmcw-range', {
             x: [range, [], thr.length ? range : [], idx.map(i => range[i])],
             y: [trace, [], thr, idx.map(i => trace[i])],
@@ -593,14 +769,59 @@ function renderFmcwFrame(frame) {
     }
     pushRangeWaterfall(range, trace);
 
-    if (typeof frame.peak_range === 'number') {
-        document.getElementById('stat-peak-range').textContent = `${frame.peak_range.toFixed(2)} m`;
+    // At most 4 readout updates a second: a single-chirp preset runs at 20
+    // fps, and a number that changes 20 times a second cannot be read.
+    const now = performance.now();
+    if (now - state.fmcw.readout_t < FMCW_READOUT_MS) return;
+    state.fmcw.readout_t = now;
+    const peak = fmcwPeak(frame);
+    if (typeof peak.range === 'number') {
+        document.getElementById('stat-peak-range').textContent = `${peak.range.toFixed(2)} m`;
     }
     document.getElementById('stat-peak-vel').textContent =
         typeof frame.peak_velocity === 'number' ? `${frame.peak_velocity.toFixed(2)} m/s` : '-- m/s';
-    if (typeof frame.peak_magnitude_db === 'number') {
-        document.getElementById('stat-peak-mag').textContent = `${frame.peak_magnitude_db.toFixed(1)} dB`;
+    if (typeof peak.db === 'number') {
+        document.getElementById('stat-peak-mag').textContent = `${peak.db.toFixed(1)} dB`;
     }
+}
+
+const FMCW_READOUT_MS = 250;
+// Frames the single-chirp profile is averaged over for the readout, roughly:
+// one chirp is noisy enough that its strongest bin wanders between the
+// reflector, the leakage and the clutter from frame to frame (phaser-01,
+// 2026-11-02: "peak range moving all over the place"). A range-Doppler frame
+// already integrates 256 chirps and is read as it comes.
+const FMCW_PROFILE_AVG_FRAMES = 10;
+
+/* Average a range_profile frame's power into state.fmcw.avg. Restarts when
+   the axis changes -- a new preset, range crop or 0 m calibration. */
+function averageFmcwProfile(frame) {
+    const axis = frame.range_axis || [], prof = frame.profile_db || [];
+    const key = `${axis.length}:${axis[0]}:${axis[axis.length - 1]}`;
+    const avg = state.fmcw.avg;
+    const power = prof.map(db => 10 ** (db / 10));
+    if (!avg || avg.key !== key) {
+        state.fmcw.avg = { key, power, n: 1 };
+        return;
+    }
+    avg.n = Math.min(avg.n + 1, FMCW_PROFILE_AVG_FRAMES);
+    const a = 1 / avg.n;
+    for (let i = 0; i < power.length; i++) avg.power[i] += a * (power[i] - avg.power[i]);
+}
+
+/* The peak the readouts show: the averaged profile's on single-chirp
+   presets, the frame's own on range-Doppler. `cal` asks for the calibration
+   pop-up's strongest return, which on range-Doppler includes 0 m/s. */
+function fmcwPeak(frame, { cal = false } = {}) {
+    if (!frame) return {};
+    const avg = state.fmcw.avg;
+    if (frame.kind === 'range_profile' && avg && avg.power.length === frame.range_axis.length) {
+        let best = 0;
+        for (let i = 1; i < avg.power.length; i++) if (avg.power[i] > avg.power[best]) best = i;
+        return { range: frame.range_axis[best], db: 10 * Math.log10(avg.power[best]) };
+    }
+    const range = cal && typeof frame.cal_peak_range === 'number' ? frame.cal_peak_range : frame.peak_range;
+    return { range, db: frame.peak_magnitude_db };
 }
 
 /* --- FMCW controls --- */
@@ -609,7 +830,8 @@ const fmcwEl = (id) => document.getElementById(id);
 function readFmcwParams() {
     const params = {
         preset: fmcwEl('fmcw-preset').value || undefined,
-        mti: fmcwEl('fmcw-mti').value,
+        // A switch plus a mode in the UI; one value on the backend.
+        mti: fmcwEl('fmcw-mti-on').checked ? fmcwEl('fmcw-mti-mode').value : 'none',
         cfar: fmcwEl('fmcw-cfar').checked,
         cfar_guard: parseInt(fmcwEl('fmcw-cfar-guard').value, 10),
         cfar_ref: parseInt(fmcwEl('fmcw-cfar-ref').value, 10),
@@ -624,6 +846,10 @@ function readFmcwParams() {
     params.zero_range_freq = Number.isFinite(zero) ? zero * 1e3 : null;
     const center = parseFloat(document.getElementById('center-freq').value);
     params.center_freq = Number.isFinite(center) ? center * 1e9 : null;
+    // The Hardware pane follows the preset in FMCW mode, so this is the lab's
+    // own frequency and gains unless they were edited; FFT Window is shared.
+    Object.assign(params, hwParams());
+    params.fft_window = document.getElementById('fft-window').value;
     return params;
 }
 
@@ -639,18 +865,23 @@ async function refreshFmcwState() {
         if (capEl) {
             capEl.classList.toggle('ok', state.fmcw.available && !cap.reason);
             capEl.classList.toggle('unavailable', !state.fmcw.available);
-            capEl.textContent = !state.fmcw.available
-                ? `FMCW unavailable: ${cap.reason || 'unknown reason'}`
-                : cap.reason ? `FMCW limited: ${cap.reason}`
-                : `FMCW ready (${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''})`;
+            // One short line; the detail is in the tooltip.
+            capEl.textContent = !state.fmcw.available ? 'FMCW unavailable'
+                : cap.reason ? 'FMCW limited' : 'FMCW ready';
+            capEl.title = !state.fmcw.available ? (cap.reason || 'unknown reason')
+                : cap.reason ? cap.reason
+                : `${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''}`;
         }
+        state.fmcw.preset_info = d.preset_info || {};
         const sel = fmcwEl('fmcw-preset');
         if (sel && Array.isArray(d.presets) && sel.options.length !== d.presets.length) {
             const keep = sel.value || d.preset;
             sel.innerHTML = '';
-            d.presets.forEach(p => sel.add(new Option(p, p)));
+            // Short label in the box; the internal name stays the value.
+            d.presets.forEach(p => sel.add(new Option(d.preset_info?.[p]?.label || p, p)));
             sel.value = d.presets.includes(keep) ? keep : d.presets[0];
         }
+        updateFmcwControlGating();
         setRunningUi(state.running, state.runningMode || state.uiMode);
         return d;
     } catch (e) {
@@ -664,8 +895,9 @@ async function refreshFmcwState() {
 async function syncRunningFromBackend() {
     const fmcw = await refreshFmcwState();
     if (fmcw?.running) {
-        setUiMode('fmcw');
+        // Running first, so the Hardware pane picks up the running config.
         setRunningUi(true, 'fmcw');
+        setUiMode('fmcw');
         return;
     }
     try {
@@ -700,14 +932,65 @@ async function pushFmcwParams(partial) {
     }
 }
 
-fmcwEl('fmcw-preset')?.addEventListener('change', (e) => pushFmcwParams({ preset: e.target.value }));
-fmcwEl('fmcw-mti')?.addEventListener('change', (e) => pushFmcwParams({ mti: e.target.value }));
+// MTI cancels between chirps, so it needs a multi-chirp preset; CFAR runs on
+// the single-chirp range profile, as the lab's CFAR script does. Each used to
+// sit there doing nothing silently on the other kind of preset.
+// Grey a settings row out with its reason as the tooltip; restore its own
+// tooltip (kept in data-tip) when it applies again.
+function gateRow(row, off, why) {
+    if (!row) return;
+    if (row.dataset.tip === undefined) row.dataset.tip = row.title || '';
+    row.classList.toggle('set-disabled', off);
+    row.title = off ? why : row.dataset.tip;
+    row.querySelectorAll('input, select').forEach(el => { el.disabled = off; });
+}
+
+function updateFmcwControlGating() {
+    const preset = fmcwEl('fmcw-preset')?.value;
+    const n = state.fmcw.preset_info?.[preset]?.num_chirps;
+    if (!n) return;  // not known yet
+    const multi = n > 1;
+    const gate = gateRow;
+    // Each section is a switch and a mode: the preset decides whether the
+    // section applies at all, and the switch whether its mode can be chosen.
+    const noMti = 'MTI cancels between chirps: it needs a multi-chirp preset (Range + Velocity).';
+    const mtiOn = fmcwEl('fmcw-mti-on')?.checked;
+    gate(fmcwEl('fmcw-mti-on')?.closest('.set-row'), !multi, noMti);
+    gate(fmcwEl('fmcw-mti-mode')?.closest('.set-row'), !multi || !mtiOn,
+         !multi ? noMti : 'Turn MTI on to choose its mode.');
+    const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
+    const cfarOn = fmcwEl('fmcw-cfar')?.checked;
+    ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias']
+        .forEach(id => gate(fmcwEl(id)?.closest('.set-row'), multi, noCfar));
+    gate(fmcwEl('fmcw-cfar-mode')?.closest('.set-row'), multi || !cfarOn,
+         multi ? noCfar : 'Turn CFAR on to choose its mode.');
+    // What the preset is for, on hover rather than under the box.
+    const sel = fmcwEl('fmcw-preset');
+    if (sel) sel.title = state.fmcw.preset_info?.[preset]?.hint || '';
+}
+
+fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
+    updateFmcwControlGating();
+    // The lab's own frequency and gains, sent along: an override from an
+    // earlier preset would otherwise outlive the switch in the stored params.
+    const hw = presetHw(false);
+    if (hw && state.uiMode === 'fmcw') writeHw(hw);
+    else hwStash.fmcw = null;
+    pushFmcwParams({ preset: e.target.value, ...(hw ? hwParams() : {}) });
+});
+['fmcw-mti-on', 'fmcw-mti-mode'].forEach(id => fmcwEl(id)?.addEventListener('change', () => {
+    updateFmcwControlGating();
+    pushFmcwParams({ mti: readFmcwParams().mti });
+}));
+// Show Threshold / Detections Only is drawn in the browser: nothing to send.
+fmcwEl('fmcw-cfar-mode')?.addEventListener('change', () => { state.fmcw.waterfall = null; });
 fmcwEl('fmcw-range-max')?.addEventListener('change', () => {
     state.fmcw.waterfall = null;
     pushFmcwParams({ range_max: readFmcwParams().range_max });
 });
 ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias'].forEach(id => {
     fmcwEl(id)?.addEventListener('change', () => {
+        if (id === 'fmcw-cfar') updateFmcwControlGating();
         const p = readFmcwParams();
         pushFmcwParams({ cfar: p.cfar, cfar_guard: p.cfar_guard, cfar_ref: p.cfar_ref,
                          cfar_bias_db: p.cfar_bias_db });
@@ -721,26 +1004,108 @@ fmcwEl('fmcw-zero-khz')?.addEventListener('change', () => {
     pushFmcwParams({ zero_range_freq: readFmcwParams().zero_range_freq });
 });
 
-// Lab step 21: hold the reflector at the array, and its peak becomes 0 m.
-// The frame's peak range was computed against the current 0 m beat, so the
-// new one is that plus the beat the peak range stands for: f = 2 S R / c,
-// with S the slope over the ramp time the plan actually uses.
-fmcwEl('fmcw-zero-set')?.addEventListener('click', () => {
+// Lab step 21: hold the reflector at the array, and its return becomes 0 m.
+// The frame's cal_peak_range -- the strongest cell over every velocity, so a
+// still reflector counts on range-Doppler presets, where the peak readout
+// skips 0 m/s -- was computed against the current 0 m beat, so the new one is
+// that plus the beat the range stands for: f = 2 S R / c, with S the slope
+// over the ramp time the plan actually uses.
+const fmcwCalModal = document.getElementById('fmcw-cal-modal');
+
+// The pop-up's main button always does the next step: Start FMCW, then Turn
+// MTI Off, then Calibrate -- so it can be opened at any point and never has to
+// be closed to fix something first. MTI only matters on a multi-chirp
+// preset: it cancels a still reflector there.
+let fmcwCalBusy = false;
+
+function fmcwMtiInTheWay() {
+    if (!fmcwEl('fmcw-mti-on')?.checked) return false;
+    const f = state.fmcw.last;
+    if (state.runningMode === 'fmcw' && f) return f.kind === 'range_doppler';
+    const info = state.fmcw.preset_info?.[fmcwEl('fmcw-preset')?.value];
+    return (info?.num_chirps ?? 1) > 1;
+}
+
+function fmcwCalProposal() {
+    if (state.runningMode !== 'fmcw') {
+        if (state.fmcw.available === false) {
+            return { action: 'start', disabled: true, why: 'FMCW is not available on this kit.' };
+        }
+        return { action: 'start',
+                 why: fmcwMtiInTheWay() ? 'Starts FMCW with MTI off.' : 'FMCW is stopped.' };
+    }
     const f = state.fmcw.last, cfg = state.fmcw.cfg, plan = state.fmcw.plan;
-    if (state.runningMode !== 'fmcw' || !f || !cfg || !plan) {
-        log('error', 'FMCW', 'Start FMCW with a reflector at 0 m first');
+    const current = cfg ? (cfg.zero_range_freq ?? cfg.signal_freq) : undefined;
+    if (fmcwMtiInTheWay()) {
+        return { action: 'mti', current, why: 'MTI cancels a still reflector.' };
+    }
+    const r = f && fmcwPeak(f, { cal: true }).range;
+    if (!cfg || !plan || typeof r !== 'number') {
+        return { action: 'set', disabled: true, current, why: 'Waiting for a frame...' };
+    }
+    const slope = cfg.chirp_bw / plan.effective_ramp_time;
+    return { action: 'set', current, range: r, zero: current + 2 * slope * r / C_LIGHT };
+}
+
+const FMCW_CAL_ACTION = { start: 'Start FMCW', mti: 'Turn MTI Off', set: 'Calibrate' };
+
+function updateFmcwCalModal() {
+    const fmcwCalModal = document.getElementById('fmcw-cal-modal');
+    if (!fmcwCalModal || fmcwCalModal.hidden) return;
+    const p = fmcwCalProposal();
+    const khz = (hz) => (typeof hz === 'number' ? `${(hz / 1e3).toFixed(2)} kHz` : '--');
+    document.getElementById('fmcw-cal-peak').textContent =
+        typeof p.range === 'number' ? `${p.range.toFixed(2)} m` : '--';
+    document.getElementById('fmcw-cal-current').textContent =
+        khz(p.current) + (state.fmcw.cfg && state.fmcw.cfg.zero_range_freq == null && p.current != null ? ' (IF tone)' : '');
+    document.getElementById('fmcw-cal-new').textContent = khz(p.zero);
+    document.getElementById('fmcw-cal-hint').textContent = p.why || '';
+    const btn = document.getElementById('fmcw-cal-set');
+    btn.textContent = FMCW_CAL_ACTION[p.action];
+    btn.disabled = fmcwCalBusy || !!p.disabled;
+    btn.title = p.action === 'set' && !p.disabled ? 'Make the strongest return 0 m' : (p.why || '');
+}
+
+function openFmcwCal() {
+    fmcwCalModal.hidden = false;
+    updateFmcwCalModal();
+    document.getElementById('fmcw-cal-cancel').focus();
+}
+function closeFmcwCal() { fmcwCalModal.hidden = true; }
+
+fmcwEl('fmcw-cal-open')?.addEventListener('click', openFmcwCal);
+document.getElementById('fmcw-cal-cancel')?.addEventListener('click', closeFmcwCal);
+fmcwCalModal?.addEventListener('click', (e) => { if (e.target === fmcwCalModal) closeFmcwCal(); });
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && fmcwCalModal && !fmcwCalModal.hidden) closeFmcwCal();
+});
+document.getElementById('fmcw-cal-set')?.addEventListener('click', async () => {
+    const p = fmcwCalProposal();
+    if (p.disabled || fmcwCalBusy) return;
+    if (p.action === 'start' || p.action === 'mti') {
+        if (fmcwMtiInTheWay()) {
+            fmcwEl('fmcw-mti-on').checked = false;
+            fmcwEl('fmcw-mti-on').dispatchEvent(new Event('change'));
+            log('info', 'FMCW', 'MTI turned off for the 0 m calibration');
+        }
+        if (p.action === 'start') {
+            fmcwCalBusy = true;
+            updateFmcwCalModal();
+            try { await startRadar(); } finally { fmcwCalBusy = false; }
+        }
+        updateFmcwCalModal();
         return;
     }
-    const current = cfg.zero_range_freq ?? cfg.signal_freq;
-    const slope = cfg.chirp_bw / plan.effective_ramp_time;
-    const zero = current + 2 * slope * f.peak_range / C_LIGHT;
-    fmcwEl('fmcw-zero-khz').value = (zero / 1e3).toFixed(2);
-    pushFmcwParams({ zero_range_freq: zero });
-    log('info', 'FMCW', `0 m set to ${(zero / 1e3).toFixed(2)} kHz (peak was at ${f.peak_range.toFixed(2)} m)`);
+    fmcwEl('fmcw-zero-khz').value = (p.zero / 1e3).toFixed(2);
+    pushFmcwParams({ zero_range_freq: p.zero });
+    log('info', 'FMCW', `0 m set to ${(p.zero / 1e3).toFixed(2)} kHz (return was at ${p.range.toFixed(2)} m)`);
+    closeFmcwCal();
 });
-fmcwEl('fmcw-zero-reset')?.addEventListener('click', () => {
+document.getElementById('fmcw-cal-reset')?.addEventListener('click', () => {
     fmcwEl('fmcw-zero-khz').value = '';
     pushFmcwParams({ zero_range_freq: null });
+    log('info', 'FMCW', '0 m reset to the IF tone');
+    closeFmcwCal();
 });
 
 /* --- Param plumbing --- */
@@ -806,6 +1171,8 @@ const transport = createWebTransport({
         if (msg.type === 'state') {
             // Initial state push from backend. Only the kit's IF is used here.
             showKitIf(msg.data);
+            // get_state() nests its fields under `data`.
+            armShutdownIfPermitted((msg.data?.data ?? msg.data)?.shutdown_available === true);
             return;
         }
         if (msg.type === 'response') return;  // handled by invoke()
@@ -814,43 +1181,49 @@ const transport = createWebTransport({
     onFmcwFrame: handleFmcwFrame,
 });
 
+async function startRadar() {
+    const mode = state.uiMode;
+    try {
+        const resp = mode === 'fmcw'
+            ? await transport.startFmcwRadar(readFmcwParams())
+            : await transport.startCwRadar(readParams());
+        if (resp.status === 'ok') {
+            state.last_frame_t = null;
+            state.fmcw.waterfall = null;
+            state.fmcw.last = null;
+            setRunningUi(true, mode);
+            log('info', 'Radar', `Started ${mode.toUpperCase()}`);
+            if (mode === 'fmcw') await refreshFmcwState();
+        } else {
+            log('error', 'Radar', `Start failed: ${resp.message || JSON.stringify(resp)}`);
+        }
+    } catch (e) {
+        log('error', 'Radar', `Start failed: ${e.message || e}`);
+    }
+}
+
 document.getElementById('btn-radar').addEventListener('click', async () => {
-    if (state.running) {
-        try {
-            if (state.runningMode === 'fmcw') {
-                await transport.stopFmcwRadar();
-            } else {
-                await transport.stopCwRadar();
-            }
-            setRunningUi(false);
-            log('info', 'Radar', 'Stopped');
-        } catch (e) {
-            log('error', 'Radar', `Stop failed: ${e.message || e}`);
+    if (!state.running) {
+        await startRadar();
+        return;
+    }
+    try {
+        if (state.runningMode === 'fmcw') {
+            await transport.stopFmcwRadar();
+        } else {
+            await transport.stopCwRadar();
         }
-    } else {
-        const mode = state.uiMode;
-        try {
-            const resp = mode === 'fmcw'
-                ? await transport.startFmcwRadar(readFmcwParams())
-                : await transport.startCwRadar(readParams());
-            if (resp.status === 'ok') {
-                state.last_frame_t = null;
-                state.fmcw.waterfall = null;
-                setRunningUi(true, mode);
-                log('info', 'Radar', `Started ${mode.toUpperCase()}`);
-                if (mode === 'fmcw') await refreshFmcwState();
-            } else {
-                log('error', 'Radar', `Start failed: ${resp.message || JSON.stringify(resp)}`);
-            }
-        } catch (e) {
-            log('error', 'Radar', `Start failed: ${e.message || e}`);
-        }
+        setRunningUi(false);
+        log('info', 'Radar', 'Stopped');
+    } catch (e) {
+        log('error', 'Radar', `Stop failed: ${e.message || e}`);
     }
 });
 
 initTheme();
 refreshWaterfallScale();
 refreshAxisRanges();
+setUiMode(state.uiMode);
 transport.connect();
 
 setTimeout(() => {

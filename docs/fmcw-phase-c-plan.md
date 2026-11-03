@@ -564,3 +564,29 @@ in order:
    boot, so a late network leaves the clock wrong (tar warns about future
    timestamps on install).
 6. **Merge `radar-dev` into `main`** once the radar work is ready.
+
+## Follow-on: Phase D, browser radar simulator (decided 2026-10-31)
+
+After C5 passes on the kit and #75/#76 are merged, so the port copies
+behavior the hardware has confirmed. The Python `--sim` already synthesizes
+CW and FMCW (a corner reflector at 1 m, a walker at 3.5 m / 1.8 m/s); what is
+missing is a browser-only version, so the radar UI runs with no Pi and no
+Python -- a public demo on GitHub Pages, and lab practice before a student
+has a kit.
+
+Scope, to be planned in phases and reviewed before any code:
+
+1. Port the radar half of `phaser_sim.py` (`_synthesize_cw`,
+   `_synthesize_fmcw`, the targets) to `frontend/src/sim/` or a radar
+   sibling, Python first as the source of truth (CLAUDE.md, *Two simulators*).
+2. Port the processing in `phaser_radar_dsp.py` that the UI depends on:
+   `process_cw_frame`, `range_profile`, `range_doppler_map` (with
+   `peak_exclude` and `cal_peak_range`), `mti_filter`, `ca_cfar` /
+   `apply_cfar`, and the u8 map encoding or a direct path around it.
+3. A sim transport for `frontend-radar/`, mirroring `transport-web.js` the way
+   `frontend/src/sim/worker.js` mirrors the WebSocket protocol, run in a
+   worker so a 256-chirp frame does not block the page.
+4. Extend `tests/test_sim_parity.py` with radar cases (each preset, MTI on and
+   off, CFAR on) -- parity is only as strong as that matrix.
+5. Publish the radar UI on Pages beside the beamforming demo, with the same
+   three guards that keep the sim default off hardware builds.

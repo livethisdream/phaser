@@ -105,6 +105,16 @@ def test_range_doppler_preset_finds_range_and_velocity():
     assert abs(frame["peak_velocity"]) == pytest.approx(1.8, abs=0.3)
 
 
+def test_range_doppler_calibration_reads_the_still_reflector():
+    """The peak readout skips 0 m/s, so with MTI off it follows the mover; the
+    0 m calibration needs the still corner reflector at 1 m instead."""
+    h = _headless()
+    _start(h, preset="range_doppler", mti="none")
+    frame = h.do_fmcw_radar_frame()
+    assert frame["cal_peak_range"] == pytest.approx(1.0, abs=0.45)
+    assert frame["peak_range"] == pytest.approx(3.5, abs=0.5)
+
+
 def test_frames_report_their_timing_and_serialize():
     import json
     h = _headless()
@@ -393,11 +403,13 @@ def test_range_doppler_frame_carries_a_decodable_map_on_its_axes():
     f = h.do_fmcw_radar_frame()
     m = dsp.decode_db_u8(f["map"])
     assert m.shape == (len(f["range_axis"]), len(f["velocity_axis"]))
-    r, v = np.unravel_index(int(np.argmax(m)), m.shape)
-    # The brightest decoded cell is the peak the frame reports.
+    # The reported peak is the brightest decoded cell outside the zero-Doppler
+    # exclusion (peak_exclude), not the brightest overall.
+    vel = np.array(f["velocity_axis"])
+    moving = np.where(np.abs(vel)[None, :] >= dsp.FMCW_PROC_DEFAULTS["peak_exclude"], m, -np.inf)
+    r, v = np.unravel_index(int(np.argmax(moving)), m.shape)
     assert f["range_axis"][r] == pytest.approx(f["peak_range"], abs=1e-3)
     assert f["velocity_axis"][v] == pytest.approx(f["peak_velocity"], abs=1e-3)
-    assert f["map"]["db_max"] == pytest.approx(f["peak_magnitude_db"], abs=0.01)
 
 
 def test_range_profile_frame_carries_its_trace_and_cfar():
@@ -465,3 +477,54 @@ def test_radar_frames_are_paced_to_the_cap(monkeypatch):
     clock["t"] += 0.5                 # a slow frame: no sleep
     h._pace_radar_frames()
     assert len(slept) == 1
+
+
+def test_range_doppler_peak_follows_the_moving_target():
+    """phaser-01, 2026-10-30: Peak Range / Velocity sat at 0 m, 0 m/s -- the
+    leakage, put at 0 m by the calibration -- while the map showed a hand.
+    The simulator's strongest return is its stationary 1 m target."""
+    h = _headless()
+    _start(h, preset="range_doppler")
+    f = h.do_fmcw_radar_frame()
+    assert abs(f["peak_velocity"]) >= 0.3
+    h.set_fmcw_radar_params({"peak_exclude": 0.0})   # live; 0 = the old search
+    f0 = h.do_fmcw_radar_frame()
+    assert abs(f0["peak_velocity"]) < 0.3
+    assert f0["peak_magnitude_db"] > f["peak_magnitude_db"]
+
+
+def test_state_lists_each_presets_chirp_count():
+    """The UI greys MTI out on single-chirp presets and CFAR on multi-chirp
+    ones, before Start, from this."""
+    h = _headless()
+    info = h.get_fmcw_radar_state()["data"]["preset_info"]
+    assert set(info) == set(dsp.FMCW_PRESETS)
+    assert info["range_doppler"]["num_chirps"] > 1
+    assert info["range_sync"]["num_chirps"] == 1
+
+
+def test_state_gives_each_presets_hardware_for_the_pane():
+    """The Hardware pane follows the preset in FMCW mode: it shows the lab's
+    own output frequency and gains, not CW's."""
+    h = _headless()
+    info = h.get_fmcw_radar_state()["data"]["preset_info"]
+    for name, i in info.items():
+        cfg = dsp.fmcw_config(preset=name)
+        assert (i["output_freq"], i["rx_gain"], i["tx_gain"]) == \
+            (cfg["output_freq"], cfg["rx_gain"], cfg["tx_gain"]), name
+
+
+def test_presets_have_short_labels_in_ui_order():
+    h = _headless()
+    d = h.get_fmcw_radar_state()["data"]
+    assert d["presets"][0] == dsp.FMCW_DEFAULT_PRESET == "range_doppler"
+    assert set(d["presets"]) == set(dsp.FMCW_PRESETS)
+    for name, info in d["preset_info"].items():
+        assert info["label"] and len(info["label"]) <= 18, name  # fits the dropdown
+        assert info["hint"], name
+
+
+def test_default_falls_back_to_the_range_lab_without_chirp_sync():
+    h = _headless()
+    h.fmcw_capability = {**h.fmcw_capability, "ramp": dsp.RAMP_FREE_RUNNING}
+    assert h._default_fmcw_preset() == dsp.FMCW_FALLBACK_PRESET == "range"
