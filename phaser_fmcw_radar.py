@@ -559,6 +559,34 @@ def read_summed(sdr, raw=False, after_refill=None):
     return data[0] + data[1]
 
 
+def read_channels(sdr, raw=False, after_refill=None):
+    """One Rx buffer, the two subarray channels kept apart: (chan0, chan1).
+
+    read_summed's twin, for a capture that saves both halves of the array
+    (the course .npz's iq_ch, which the L31 monopulse task needs). Their sum
+    is exactly what read_summed returns.
+    """
+    if raw and getattr(sdr, "_rxbuf", None) is not None:
+        buf = sdr._rxbuf
+        try:
+            buf.refill()
+        except Exception:
+            sdr._rxbuf = None
+            raise
+        if after_refill is not None:
+            after_refill()
+        x = np.frombuffer(buf.read(), dtype="<i2").reshape(-1, 4)
+        c0 = np.empty(x.shape[0], dtype=np.complex64)
+        c1 = np.empty(x.shape[0], dtype=np.complex64)
+        c0.real, c0.imag = x[:, 0], x[:, 1]
+        c1.real, c1.imag = x[:, 2], x[:, 3]
+        return c0, c1
+    data = sdr.rx()
+    if after_refill is not None:
+        after_refill()
+    return np.asarray(data[0]), np.asarray(data[1])
+
+
 def fire_burst(hw):
     """Pulse the Phaser's burst GPIO: one TDD burst of num_chirps chirps."""
     gpios = hw.phaser_gpios
@@ -567,7 +595,7 @@ def fire_burst(hw):
     gpios.gpio_burst = 0
 
 
-def capture_fmcw_frame(sdr, hw, plan):
+def capture_fmcw_frame(sdr, hw, plan, channels=False):
     """One frame: trigger the burst (synced only), read, sum, slice.
 
     With plan["prefetch"], the next frame's burst is fired as soon as this
@@ -577,7 +605,8 @@ def capture_fmcw_frame(sdr, hw, plan):
     range_doppler frame, 131 ms was the burst itself inside the refill.
 
     Returns slice_chirps' samples x chirps matrix for the synced ramp, or the
-    raw summed buffer for the free-running one.
+    raw summed buffer for the free-running one. With `channels`, the two
+    subarray channels instead, each sliced the same way: (chan0, chan1).
     """
     after = None
     if plan["synced"]:
@@ -588,6 +617,9 @@ def capture_fmcw_frame(sdr, hw, plan):
             def after():
                 fire_burst(hw)
                 hw.burst_pending = True
+    if channels:
+        c0, c1 = read_channels(sdr, raw=plan.get("raw_read", False), after_refill=after)
+        return slice_chirps(c0, plan), slice_chirps(c1, plan)
     summed = read_summed(sdr, raw=plan.get("raw_read", False), after_refill=after)
     return slice_chirps(summed, plan)
 

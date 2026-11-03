@@ -528,3 +528,82 @@ def test_default_falls_back_to_the_range_lab_without_chirp_sync():
     h = _headless()
     h.fmcw_capability = {**h.fmcw_capability, "ramp": dsp.RAMP_FREE_RUNNING}
     assert h._default_fmcw_preset() == dsp.FMCW_FALLBACK_PRESET == "range"
+
+
+# --- Save Capture: the course .npz -------------------------------------------
+
+def _saved(h, **params):
+    import base64
+    import io
+    resp = h.save_fmcw_capture(params)
+    assert resp["status"] == "ok", resp
+    with np.load(io.BytesIO(base64.b64decode(resp["data"])), allow_pickle=False) as z:
+        cap = {k: z[k] for k in z.files}
+    return resp, cap
+
+
+def _course_peak_range(cap, r_min=0.3):
+    """The strongest return by the course's own formula (radar_lab.range_axis):
+    R = c T_ramp (f - f0) / (2 B), with its c = 3.00e8."""
+    iq = cap["iq"]
+    n = iq.shape[1]
+    w = np.hanning(n)
+    sp = np.abs(np.fft.fft(iq * w, axis=1)).mean(axis=0)
+    f = np.fft.fftfreq(n, 1 / float(cap["fs"]))
+    r = (f - float(cap["f0"])) * 3.00e8 * float(cap["T_ramp"]) / (2 * float(cap["B"]))
+    keep = (r >= r_min) & (r < 10)
+    return r[keep][np.argmax(sp[keep])]
+
+
+def test_save_capture_is_the_course_npz_for_a_burst():
+    """radar_lab.load_capture's contract: iq is n_chirps x n_samples complex,
+    fs fc B T_ramp PRI f0 are scalars that convert to float, SI units."""
+    h = _headless()
+    _start(h, preset="range_doppler")
+    resp, cap = _saved(h)
+    assert set(cap) == {"iq", "fs", "fc", "B", "T_ramp", "PRI", "f0", "note"}
+    assert cap["iq"].dtype == np.complex64
+    assert cap["iq"].shape == (h.fmcw_plan["num_chirps"], h.fmcw_plan["good_ramp_samples"])
+    for k in ("fs", "fc", "B", "T_ramp", "PRI", "f0"):
+        assert cap[k].shape == () and float(cap[k]) > 0, k
+    assert float(cap["fs"]) == h.fmcw_plan["sample_rate"]
+    assert float(cap["fc"]) == h.fmcw_cfg["output_freq"]
+    assert float(cap["B"]) == h.fmcw_cfg["chirp_bw"]
+    assert float(cap["T_ramp"]) == h.fmcw_plan["effective_ramp_time"]
+    assert float(cap["PRI"]) == pytest.approx(h.fmcw_plan["pri_ms"] / 1e3)
+    assert float(cap["f0"]) == h.fmcw_cfg["signal_freq"]   # not calibrated: the IF tone
+    assert "IF tone" in str(cap["note"])
+    assert resp["n_chirps"] == cap["iq"].shape[0] and resp["size"] > 0
+    # The sim's corner reflector is at 1 m, read the course's way.
+    assert _course_peak_range(cap) == pytest.approx(1.0, abs=0.3)
+
+
+def test_save_capture_on_a_single_chirp_preset_saves_32_frames():
+    h = _headless()
+    _start(h, preset="range")
+    _, cap = _saved(h)
+    assert cap["iq"].shape == (dsp.CAPTURE_SINGLE_CHIRP_FRAMES, h.fmcw_plan["good_ramp_samples"])
+    assert float(cap["PRI"]) > 0       # the measured frame interval
+    assert _course_peak_range(cap) == pytest.approx(1.0, abs=0.3)
+
+
+def test_save_capture_carries_the_0m_calibration_as_f0():
+    h = _headless()
+    _start(h, preset="range_doppler", zero_range_freq=103_500.0)
+    _, cap = _saved(h)
+    assert float(cap["f0"]) == 103_500.0
+    assert "0 m calibration" in str(cap["note"])
+
+
+def test_save_capture_with_iq_ch_saves_both_halves():
+    h = _headless()
+    _start(h, preset="range_doppler")
+    _, cap = _saved(h, iq_ch=True)
+    assert cap["iq_ch"].shape == (2,) + cap["iq"].shape
+    assert cap["iq_ch"].dtype == np.complex64
+    np.testing.assert_allclose(cap["iq_ch"].sum(axis=0), cap["iq"], atol=1e-3)
+
+
+def test_save_capture_needs_fmcw_running():
+    h = _headless()
+    assert h.save_fmcw_capture({})["status"] == "error"

@@ -193,3 +193,97 @@ def test_frame_matches_python(name, mode, params, js_frames):
             if key == "iq_mag":
                 tol = 1e-3 * max(1.0, float(np.max(np.abs(value))))
             _close(name, key, value, other, tol)
+
+
+# --- Save Capture -------------------------------------------------------------
+#
+# The browser simulator writes the course .npz itself (frontend-radar/src/npz.js),
+# so a sim cadet's saved file has to be the file a kit or a --sim backend saves:
+# the same keys, dtypes, shapes, scalars and samples. The note and, on a
+# single-chirp preset, the measured frame interval (PRI) are allowed to differ.
+
+SAVE_CASES = [
+    ("save_rd", {}, False),
+    ("save_rd_iq_ch_calibrated", {"zero_range_freq": 103_000.0}, True),
+    ("save_range", {"preset": "range"}, False),
+]
+
+_JS_SAVE_DRIVER = """
+import { createRadarEngine } from '%(sim)s/engine.js';
+const cases = JSON.parse(process.argv[2]);
+const out = {};
+for (const [name, params, iqCh] of cases) {
+    const engine = createRadarEngine({ noiseSigma: 0 });
+    engine.handle('start_fmcw_radar', params);
+    const resp = engine.handle('save_fmcw_capture', { iq_ch: iqCh });
+    if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
+    out[name] = resp.data;
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def js_saves(tmp_path_factory):
+    if NODE is None:
+        pytest.skip("node is not installed")
+    sim_dir = (ROOT / "frontend-radar" / "src" / "sim").as_posix()
+    driver = tmp_path_factory.mktemp("radar_save_parity") / "driver.mjs"
+    driver.write_text(_JS_SAVE_DRIVER % {"sim": sim_dir})
+    proc = subprocess.run([NODE, str(driver), json.dumps([list(c) for c in SAVE_CASES])],
+                          capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        raise AssertionError(f"node driver failed:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+def _load_npz(b64):
+    import io
+    with np.load(io.BytesIO(base64.b64decode(b64)), allow_pickle=False) as z:
+        return {k: z[k] for k in z.files}
+
+
+def _python_save(params, iq_ch):
+    if "adi" not in sys.modules:
+        sys.modules["adi"] = types.ModuleType("adi")
+    import phaser_sim
+
+    original = phaser_sim.SimSDR.NOISE_SIGMA
+    phaser_sim.SimSDR.NOISE_SIGMA = 0.0
+    try:
+        import phaser_headless
+
+        h = phaser_headless.PhaserHeadless.__new__(phaser_headless.PhaserHeadless)
+        h.sim_mode = True
+        h.c = 299792458
+        h._do_init_hardware()
+        h.mode, h.sweeping = "idle", False
+        h.cw_params, h.cw_saved_sdr, h.cw_lock = {}, {}, threading.Lock()
+        h.fmcw_params, h.fmcw_saved, h.fmcw_hw = {}, {}, None
+        h.fmcw_cfg = h.fmcw_plan = h.cal_process = None
+        assert h.start_fmcw_radar(dict(params))["status"] == "ok"
+        resp = h.save_fmcw_capture({"iq_ch": iq_ch})
+        assert resp["status"] == "ok", resp
+        return resp["data"]
+    finally:
+        phaser_sim.SimSDR.NOISE_SIGMA = original
+
+
+@pytest.mark.parametrize("name,params,iq_ch", SAVE_CASES, ids=[c[0] for c in SAVE_CASES])
+def test_saved_capture_matches_python(name, params, iq_ch, js_saves):
+    py = _load_npz(_python_save(params, iq_ch))
+    js = _load_npz(js_saves[name])
+    assert set(js) == set(py), f"{name}: keys {sorted(js)} vs Python {sorted(py)}"
+    single_chirp = params.get("preset") in ("range", "range_sync", "cfar")
+    for key, value in py.items():
+        other = js[key]
+        assert other.dtype.kind == value.dtype.kind and other.shape == value.shape, (
+            f"{name}.{key}: {other.dtype}{other.shape} vs Python {value.dtype}{value.shape}")
+        if key == "note" or (key == "PRI" and single_chirp):
+            continue
+        if value.dtype.kind == "c":
+            scale = float(np.max(np.abs(value)))
+            worst = float(np.max(np.abs(value - other)))
+            assert worst <= 1e-4 * scale, f"{name}.{key}: samples off by {worst:g} of {scale:g}"
+        else:
+            assert float(other) == pytest.approx(float(value), rel=1e-12), f"{name}.{key}"

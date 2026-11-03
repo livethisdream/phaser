@@ -44,6 +44,8 @@ export const RAMP_FREE_RUNNING = "continuous_triangular";
 export const RANGE_TIME_SCALE = {"single_sawtooth_burst": 1.0, "continuous_triangular": 0.5};
 export const MAX_BURST_BUFFER = 4194304;
 export const RAMP_SETTLE_FRACTION = 0.1;
+// Single-chirp frames per saved capture (the course .npz).
+export const CAPTURE_SINGLE_CHIRP_FRAMES = 32;
 
 // --- phaser_headless ---------------------------------------------------------
 // The frame-rate cap the main loop applies to radar frames.
