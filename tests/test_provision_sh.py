@@ -218,6 +218,26 @@ def test_install_sh_reports_a_failed_ui_check_honestly():
     assert "not answering yet" in text, "expected an honest line for a UI that is down"
 
 
+def test_install_sh_checks_sudo_before_copying_anything():
+    """A sudo that cannot prompt must stop install.sh in step 1, not step 5b.
+
+    Run over ssh without -t, it copied the new files, then failed in 5b with
+    "sudoers rule failed validation" -- wrong, sudo just had no tty -- and left
+    the old backend running. Found on phaser-01, 2026-10-26.
+    """
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    check = text.index("sudo needs your password")
+    assert check < text.index('step 2 "'), "the sudo check must run before any files move"
+    assert "</dev/tty" in text, "sudo prompts on /dev/tty, so that is what to test, not stdin"
+
+
+def test_install_sh_skips_the_poweroff_rule_when_already_permitted():
+    """Step 5b must not need sudo on a kit that already has the rule."""
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    skip = text.index("sudo -n -l /usr/bin/systemctl poweroff")
+    assert skip < text.index("sudo visudo"), "test the permission before rewriting the rule"
+
+
 def test_time_sync_is_verified_not_assumed():
     """provision.sh must report the time client it found running.
 

@@ -22,6 +22,7 @@ import time
 import signal
 import json
 import asyncio
+import base64
 import numpy as np
 from pathlib import Path
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -58,6 +59,8 @@ from phaser_functions import load_hb100_cal, rx_freq_source
 from SDR_functions import load_channel_cal
 
 import phaser_cw_radar  # CW Doppler radar helpers (additive; sweep path unchanged)
+import phaser_radar_dsp  # pure radar DSP/config; importable without pyadi-iio
+import phaser_fmcw_radar  # FMCW radar helpers (C0: capability probe only)
 from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additive)
 
 
@@ -100,7 +103,7 @@ class PhaserHeadless:
         self.sim_mode = bool(sim_mode)
         self.running = False
 
-        # Mode dispatcher: "idle" | "sweep" | "cw_radar".
+        # Mode dispatcher: "idle" | "sweep" | "cw_radar" | "fmcw_radar".
         # `self.sweeping` is kept as a literal attribute for backwards compatibility
         # with existing handlers and any code that assigns to it directly.
         # _set_mode() keeps the two in sync.
@@ -111,7 +114,20 @@ class PhaserHeadless:
         # CW radar runtime state
         self.cw_params = {}                # effective config (after defaults)
         self.cw_saved_sdr = {}              # snapshot for restoration
-        self.cw_lock = threading.Lock()    # serialize mode transitions
+
+        # FMCW radar runtime state
+        self.fmcw_params = {}               # what the client asked for
+        self.fmcw_cfg = None                # effective config while running
+        self.fmcw_plan = None               # chirp_plan from the read-back ramp
+        self.fmcw_saved = {}                # what exit_fmcw_mode has to undo
+        self.fmcw_hw = None                 # FmcwHardware while running
+
+        # Serializes mode transitions, and is held for each radar frame so a
+        # transition cannot tear the hardware down under a capture. Reentrant
+        # so that a frame or handler on the same thread cannot deadlock on a
+        # nested _set_mode. cw_lock is the historical name.
+        self.mode_lock = threading.RLock()
+        self.cw_lock = self.mode_lock
 
         # WebSocket clients
         self.ws_clients = set()
@@ -317,6 +333,23 @@ class PhaserHeadless:
             self.Rx_gain + self.channel_cal[1],
         )
 
+        # Free the Rx and Tx DMA, the phaser_enable pin and the ADF4159 from
+        # whatever an FMCW session left behind. They outlive this process: a
+        # session that crashed or was killed, or a lab script, leaves the TDD
+        # channels idling low, and then no Rx buffer fills and no Tx tone
+        # leaves. Before the first capture, so the sweep's buffer is not the
+        # first casualty.
+        self._reset_fmcw_leftovers()
+
+        # Ask once whether this kit can run FMCW, so the radar UI can say why
+        # not instead of showing an empty plot. Read-only, and never raises.
+        self.fmcw_capability = self._probe_fmcw()
+        if self.fmcw_capability["available"]:
+            print(f"[FMCW] available ({self.fmcw_capability['ramp']}, "
+                  f"{self.fmcw_capability['source']})")
+        if self.fmcw_capability["reason"]:
+            print(f"[FMCW] {self.fmcw_capability['reason']}")
+
         # Default taper (all elements equal). Through _apply_gain_cal, or the
         # array runs on uncalibrated element gains until someone happens to
         # touch a taper slider.
@@ -327,6 +360,11 @@ class PhaserHeadless:
         # steering phase inside ADAR_set_Phase. Zeros by default; the
         # frontend Phase Control sliders write here via set_state.
         self.phaseList = [0.0] * 8
+
+        # Boresight, latched now. Nothing else writes the phases until the
+        # first sweep, so a radar mode -- or anything else -- started before
+        # one ran found the array deaf (docs/calibration-bugs.md, bug 5).
+        phaser_cw_radar.apply_boresight(self.array, self.phase_cal)
 
         # Sweep settings. phase_step and steer_res are DIFFERENT quantities
         # and used to be the same attribute, which is why the Phase Shift
@@ -893,36 +931,57 @@ class PhaserHeadless:
 
     # --- Mode dispatcher --------------------------------------------------
 
+    # Modes that reconfigure the hardware, as {mode: (enter, exit)} method
+    # names. idle and sweep need neither: the sweep path is the baseline every
+    # radar mode's exit restores.
+    _MODE_HANDLERS = {
+        "cw_radar": ("_enter_cw", "_exit_cw"),
+        "fmcw_radar": ("_enter_fmcw", "_exit_fmcw"),
+    }
+
     def _set_mode(self, new_mode):
         """Single source of truth for mode transitions.
 
-        Handles hardware reconfiguration when entering/leaving CW radar mode,
-        and keeps `self.sweeping` in sync with `self.mode` for legacy code.
+        Always leaves the old mode before entering the new one, so CW -> FMCW
+        is a full restore and then a full enter, never a half-swap. A failed
+        enter is unwound by that mode's own exit, which tolerates a half-entered
+        mode, and lands in idle. Keeps `self.sweeping` in sync for legacy code.
+
+        Runs under mode_lock, which the main loop also holds for each radar
+        frame, so a transition never tears the hardware down mid-capture.
         """
         if new_mode == self.mode:
             return {"status": "ok", "mode": self.mode}
 
-        with self.cw_lock:
+        with self._get_mode_lock():
             # Leave current mode
-            if self.mode == "cw_radar":
+            handlers = self._MODE_HANDLERS.get(self.mode)
+            if handlers:
                 try:
-                    phaser_cw_radar.exit_cw_mode(self.sdr, self.cw_saved_sdr)
+                    getattr(self, handlers[1])()
                 except Exception as e:
-                    print(f"[CW] exit_cw_mode failed: {e}")
-                self.cw_saved_sdr = {}
+                    print(f"[MODE] leaving {self.mode} failed: {e}")
+            self.mode = "idle"
+            self.sweeping = False
 
             # Enter new mode
-            if new_mode == "cw_radar":
+            handlers = self._MODE_HANDLERS.get(new_mode)
+            if handlers:
                 try:
-                    self.cw_saved_sdr = {}
-                    self.cw_params = phaser_cw_radar.enter_cw_mode(
-                        self.sdr, self.cw_params, self.cw_saved_sdr
-                    )
+                    getattr(self, handlers[0])()
                 except Exception as e:
-                    print(f"[CW] enter_cw_mode failed: {e}")
-                    self.mode = "idle"
-                    self.sweeping = False
-                    return {"status": "error", "message": f"enter_cw_mode failed: {e}"}
+                    print(f"[MODE] entering {new_mode} failed: {e}")
+                    # Unwind whatever did land. enter_cw_mode moves the LO and
+                    # the taper before it touches the SDR, so a failure partway
+                    # through used to leave the array illuminated for radar and
+                    # the LO parked on the CW mixing frequency -- and the next
+                    # sweep then saw nothing, with no error to explain it.
+                    try:
+                        getattr(self, handlers[1])()
+                    except Exception as unwind_err:
+                        print(f"[MODE] unwind after failed enter failed: {unwind_err}")
+                    return {"status": "error",
+                            "message": f"entering {new_mode} failed: {e}"}
 
             self.mode = new_mode
             self.sweeping = (new_mode == "sweep")
@@ -931,10 +990,461 @@ class PhaserHeadless:
 
     # --- CW Radar handlers ------------------------------------------------
 
+    def _cw_params_with_kit_if(self):
+        """cw_params with center_freq defaulted to this kit's characterized IF.
+
+        As FMCW does (_fmcw_effective_cfg): the DEFAULTS value is one kit's IF,
+        and kits differ by ~200 MHz, so it leaves some deaf. One the client
+        sent wins; None (the radar UI's empty field) means "the kit's IF".
+        """
+        params = dict(self.cw_params or {})
+        if params.get("center_freq") is None:
+            params["center_freq"] = self.Rx_freq
+        return params
+
+    def _enter_cw(self):
+        self.cw_saved_sdr = {}
+        self.cw_params = phaser_cw_radar.enter_cw_mode(
+            self.sdr,
+            self._cw_params_with_kit_if(),
+            self.cw_saved_sdr,
+            array=self.array,
+            rpi_ip=self._cw_rpi_ip(),
+            phase_cal=getattr(self, "phase_cal", None),
+        )
+        self._sim_set_cw(True)
+
+    def _exit_cw(self):
+        try:
+            self._restore_from_cw()
+        finally:
+            self.cw_saved_sdr = {}
+            self._sim_set_cw(False)
+
+    def _get_mode_lock(self):
+        """mode_lock, created on first use for an object built without
+        __init__ (the tests build PhaserHeadless with __new__ and set only the
+        historical cw_lock)."""
+        lock = getattr(self, "mode_lock", None)
+        if lock is None:
+            lock = getattr(self, "cw_lock", None) or threading.RLock()
+            self.mode_lock = lock
+        return lock
+
+    # --- FMCW Radar handlers ----------------------------------------------
+
+    # Params that only change processing; they apply on the next frame.
+    _FMCW_LIVE_KEYS = frozenset({
+        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
+        "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
+    })
+    # Params written straight to the hardware while running, as CW does.
+    _FMCW_WRITE_KEYS = frozenset({"taper", "rx_gain", "tx_gain"})
+
+    def _fmcw_effective_cfg(self):
+        """The config the next enter would use, and its preset name.
+
+        center_freq defaults to this kit's characterized IF, never a preset's:
+        kits differ by ~200 MHz, and a fixed value is out of some kits'
+        passband (docs/calibration-bugs.md). One the client sent wins.
+        """
+        params = dict(getattr(self, "fmcw_params", None) or {})
+        preset = params.pop("preset", None) or self._default_fmcw_preset()
+        # None means "this kit's IF" too: the radar UI sends it for an empty
+        # Center Freq field, as it does for CW, so a value typed earlier and
+        # then cleared does not linger in fmcw_params.
+        if params.get("center_freq") is None:
+            params["center_freq"] = self.Rx_freq
+        # And None range_max means the preset's own (range_doppler_far shows
+        # 100 m), not "no crop": the UI sends it for an empty field.
+        if "range_max" in params and params["range_max"] is None:
+            del params["range_max"]
+        return phaser_radar_dsp.fmcw_config(params, preset=preset), preset
+
+    def _default_fmcw_preset(self):
+        """range_doppler, or the single-chirp range lab on a kit whose probe
+        found no chirp sync (range_doppler needs it and would refuse)."""
+        cap = getattr(self, "fmcw_capability", None) or {}
+        if cap.get("available") and cap.get("ramp") != phaser_radar_dsp.RAMP_SYNCED:
+            return phaser_radar_dsp.FMCW_FALLBACK_PRESET
+        return phaser_radar_dsp.FMCW_DEFAULT_PRESET
+
+    def _enter_fmcw(self):
+        cap = getattr(self, "fmcw_capability", None) or {}
+        if not cap.get("available"):
+            raise RuntimeError(cap.get("reason") or "FMCW is not available on this kit")
+        ramp_mode = cap["ramp"]
+        synced = ramp_mode == phaser_radar_dsp.RAMP_SYNCED
+
+        cfg, preset = self._fmcw_effective_cfg()
+        if not synced and int(cfg["num_chirps"]) > 1:
+            raise RuntimeError(
+                f"preset {preset!r} uses {int(cfg['num_chirps'])} chirps; range-Doppler "
+                f"needs chirp sync, which this kit lacks ({cap.get('reason')})")
+
+        self.fmcw_saved = {}
+        if self.sim_mode:
+            import phaser_sim
+            self.fmcw_hw = phaser_sim.make_stub_fmcw_hardware(self.gpios)
+        else:
+            self.fmcw_hw = phaser_fmcw_radar.FmcwHardware.open(
+                adi, self.rpi_ip, self.sdr_ip, self.gpios, synced=synced)
+
+        self.fmcw_cfg, self.fmcw_plan = phaser_fmcw_radar.enter_fmcw_mode(
+            self.sdr, cfg, self.fmcw_saved, self.fmcw_hw,
+            array=self.array, ramp_mode=ramp_mode,
+            phase_cal=getattr(self, "phase_cal", None))
+        self.fmcw_preset = preset
+        self._sim_set_fmcw(True)
+        plan = self.fmcw_plan
+        print(f"[FMCW] {preset}: {plan['ramp_mode']}, {plan['num_chirps']} chirp(s), "
+              f"ramp {plan['ramp_time'] * 1e6:.0f} us, buffer {plan['rx_buffer_size']}")
+
+    def _exit_fmcw(self):
+        """Put the SDR, ramp, LO, TDD and array back for the sweep path.
+
+        The taper goes back through _apply_gain_cal for the same reason as
+        _restore_from_cw. The LO goes back through the held ADF4159 handle.
+        """
+        try:
+            if getattr(self, "fmcw_hw", None) is not None or getattr(self, "fmcw_saved", None):
+                phaser_fmcw_radar.exit_fmcw_mode(
+                    self.sdr,
+                    self.fmcw_saved,
+                    self.fmcw_hw,
+                    array=self.array,
+                    restore_taper=self._apply_gain_cal(self.gainList),
+                    restore_lo_freq=self.LO_freq,
+                )
+        finally:
+            self.fmcw_hw = None
+            self.fmcw_saved = {}
+            self.fmcw_cfg = None
+            self.fmcw_plan = None
+            self._sim_set_fmcw(False)
+
+    def _sim_set_fmcw(self, enable):
+        """Point the simulator at the FMCW scene, laid out by the plan."""
+        if not self.sim_mode or not hasattr(self.sdr, "set_fmcw_mode"):
+            return
+        try:
+            if enable:
+                cfg = self.fmcw_cfg
+                self.sdr.set_fmcw_mode(
+                    True,
+                    plan=self.fmcw_plan,
+                    chirp_bw=cfg["chirp_bw"],
+                    signal_freq=cfg["signal_freq"],
+                    output_freq=cfg["output_freq"],
+                )
+            else:
+                self.sdr.set_fmcw_mode(False)
+        except Exception as e:
+            print(f"[FMCW] sim set_fmcw_mode failed: {e}")
+
+    def start_fmcw_radar(self, params):
+        """Switch to FMCW radar. `params` may name a `preset` (a lab).
+
+        Already running, it applies `params` the way set_fmcw_radar_params
+        does. It used to store them and return ok without touching the
+        running config, so a Start from a reloaded page or a second tab
+        silently kept the old preset.
+        """
+        if self.mode == "fmcw_radar" and params:
+            return self.set_fmcw_radar_params(params)
+        if params:
+            self.fmcw_params = {**(getattr(self, "fmcw_params", None) or {}), **params}
+        return self._set_mode("fmcw_radar")
+
+    def stop_fmcw_radar(self):
+        """Leave FMCW radar mode (back to idle)."""
+        if self.mode != "fmcw_radar":
+            return {"status": "ok", "mode": self.mode}
+        return self._set_mode("idle")
+
+    def set_fmcw_radar_params(self, params):
+        """Update FMCW parameters.
+
+        Processing params apply on the next frame, and the taper and gains are
+        written straight away, as in CW. Anything else -- preset, ramp, timing,
+        frequencies, chirp count -- changes the plan, so while running the mode
+        is left and re-entered here rather than leaving that to the client:
+        FMCW has too many such knobs for a stop/start in the UI to be pleasant.
+        """
+        if not params:
+            return {"status": "ok"}
+        self.fmcw_params = {**(getattr(self, "fmcw_params", None) or {}), **params}
+        if self.mode != "fmcw_radar":
+            return {"status": "ok", "params": self.fmcw_params, "reentered": False}
+
+        keys = set(params)
+        if keys - self._FMCW_LIVE_KEYS - self._FMCW_WRITE_KEYS:
+            self._set_mode("idle")
+            resp = self._set_mode("fmcw_radar")
+            return {**resp, "params": self.fmcw_params, "reentered": True}
+
+        with self._get_mode_lock():
+            if self.mode != "fmcw_radar" or self.fmcw_cfg is None:
+                return {"status": "ok", "params": self.fmcw_params, "reentered": False}
+            live = dict(params)
+            if "range_max" in live and live["range_max"] is None:
+                live["range_max"] = phaser_radar_dsp.fmcw_config(
+                    preset=getattr(self, "fmcw_preset", None))["range_max"]
+            self.fmcw_cfg = {**self.fmcw_cfg, **live}
+            try:
+                if "taper" in params:
+                    phaser_cw_radar.apply_taper(self.array, params["taper"])
+                if "rx_gain" in params:
+                    self.sdr.rx_hardwaregain_chan0 = int(params["rx_gain"])
+                    if hasattr(self.sdr, "rx_hardwaregain_chan1"):
+                        self.sdr.rx_hardwaregain_chan1 = int(params["rx_gain"])
+                if "tx_gain" in params and hasattr(self.sdr, "tx_hardwaregain_chan1"):
+                    self.sdr.tx_hardwaregain_chan1 = int(params["tx_gain"])
+            except Exception as e:
+                print(f"[FMCW] live param update failed: {e}")
+                return {"status": "error", "message": str(e)}
+        return {"status": "ok", "params": self.fmcw_params, "reentered": False}
+
+    @staticmethod
+    def _fmcw_preset_info(name):
+        cfg = phaser_radar_dsp.fmcw_config(preset=name)
+        label, hint = phaser_radar_dsp.FMCW_PRESET_UI.get(name, (name, ""))
+        return {
+            "num_chirps": int(cfg["num_chirps"]),
+            "label": label,
+            "hint": hint,
+            "output_freq": float(cfg["output_freq"]),
+            "rx_gain": float(cfg["rx_gain"]),
+            "tx_gain": float(cfg["tx_gain"]),
+        }
+
+    def get_fmcw_radar_state(self):
+        """FMCW config, plan and capability, running or not."""
+        running = self.mode == "fmcw_radar"
+        cfg, preset, error = getattr(self, "fmcw_cfg", None), getattr(self, "fmcw_preset", None), None
+        if not running or cfg is None:
+            try:
+                cfg, preset = self._fmcw_effective_cfg()
+            except ValueError as e:
+                cfg, error = None, str(e)
+        data = {
+            "mode": self.mode,
+            "running": running,
+            "preset": preset,
+            # In the UI's order (FMCW_PRESET_UI), then any preset it lacks.
+            "presets": [p for p in phaser_radar_dsp.FMCW_PRESET_UI
+                        if p in phaser_radar_dsp.FMCW_PRESETS]
+                       + sorted(set(phaser_radar_dsp.FMCW_PRESETS)
+                                - set(phaser_radar_dsp.FMCW_PRESET_UI)),
+            # Per preset, what the UI needs to know before Start: chirp count
+            # decides whether MTI (multi-chirp) or CFAR (single-chirp) applies,
+            # and the Hardware pane shows the lab's own frequency and gains.
+            "preset_info": {
+                name: self._fmcw_preset_info(name)
+                for name in phaser_radar_dsp.FMCW_PRESETS
+            },
+            "params": dict(getattr(self, "fmcw_params", None) or {}),
+            "cfg": cfg,
+            "plan": getattr(self, "fmcw_plan", None) if running else None,
+            "capability": self.get_radar_capabilities()["data"]["fmcw"],
+        }
+        if error:
+            data["error"] = error
+        return {"status": "ok", "data": data}
+
+    def save_fmcw_capture(self, params=None):
+        """Capture raw chirps into the course .npz and return it, base64.
+
+        Range-Doppler presets save one burst (num_chirps chirps, PRI apart);
+        single-chirp presets save CAPTURE_SINGLE_CHIRP_FRAMES consecutive
+        frames as rows, with PRI the measured frame interval, as the course's
+        L28 recordings do. `iq_ch` adds the two subarray channels (the L31
+        monopulse task), doubling the size. The browser names and downloads
+        the file.
+
+        Holds mode_lock throughout, so frames pause while it captures.
+        """
+        params = params or {}
+        want_ch = bool(params.get("iq_ch"))
+        if self.mode != "fmcw_radar":
+            return {"status": "error", "message": "Start FMCW to save a capture"}
+        with self._get_mode_lock():
+            cfg, plan = self.fmcw_cfg, self.fmcw_plan
+            if self.mode != "fmcw_radar" or cfg is None or plan is None:
+                return {"status": "error", "message": "Start FMCW to save a capture"}
+            frames = 1 if plan["num_chirps"] > 1 else phaser_radar_dsp.CAPTURE_SINGLE_CHIRP_FRAMES
+            rows, rows_ch, stamps = [], [[], []], []
+            for _ in range(frames):
+                stamps.append(time.perf_counter())
+                got = phaser_fmcw_radar.capture_fmcw_frame(
+                    self.sdr, self.fmcw_hw, plan, channels=want_ch)
+                mats = got if want_ch else (got,)
+                mats = [np.asarray(m) for m in mats]
+                if mats[0].ndim == 1:      # free-running: one long "chirp"
+                    mats = [m[:, None] for m in mats]
+                if want_ch:
+                    rows_ch[0].append(mats[0].T)
+                    rows_ch[1].append(mats[1].T)
+                    rows.append(mats[0].T + mats[1].T)
+                else:
+                    rows.append(mats[0].T)
+
+        iq = np.concatenate(rows, axis=0)
+        iq_ch = (np.stack([np.concatenate(rows_ch[0]), np.concatenate(rows_ch[1])])
+                 if want_ch else None)
+        if frames > 1:
+            pri = (stamps[-1] - stamps[0]) / (frames - 1)
+        else:
+            pri = plan["pri_ms"] / 1e3 if plan.get("pri_ms") else plan["ramp_time"]
+        zero = cfg.get("zero_range_freq")
+        calibrated = zero is not None
+        f0 = float(zero if calibrated else cfg["signal_freq"])
+        fs, t_ramp = float(plan["sample_rate"]), float(plan["effective_ramp_time"])
+        preset = getattr(self, "fmcw_preset", None)
+        note = (f"Phaser radar GUI capture: preset {preset}, {iq.shape[0]} chirps of "
+                f"{t_ramp * 1e6:g} us every {pri * 1e3:.4g} ms, {fs / 1e6:g} MSPS, "
+                f"B {float(cfg['chirp_bw']) / 1e6:g} MHz, fc {float(cfg['output_freq']) / 1e9:g} GHz, "
+                f"f0 {f0:.0f} Hz ({'0 m calibration' if calibrated else 'IF tone, not calibrated'}); "
+                f"{'simulated' if self.sim_mode else socket.gethostname()}, "
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
+        blob = phaser_radar_dsp.capture_npz(
+            iq, fs=fs, fc=cfg["output_freq"], chirp_bw=cfg["chirp_bw"], t_ramp=t_ramp,
+            pri=pri, f0=f0, note=note, iq_ch=iq_ch)
+        return {
+            "status": "ok",
+            "preset": preset,
+            "n_chirps": int(iq.shape[0]),
+            "n_samples": int(iq.shape[1]),
+            "iq_ch": want_ch,
+            "size": len(blob),
+            "note": note,
+            "data": base64.b64encode(blob).decode("ascii"),
+        }
+
+    def do_fmcw_radar_frame(self):
+        """Capture and process one FMCW frame. Returns the broadcast payload.
+
+        The peaks and timings, and the arrays the plots need: the encoded
+        range-Doppler map or the range profile (and CFAR). The format is in
+        docs/fmcw-phase-c-plan.md, C3.
+        """
+        cfg, plan = self.fmcw_cfg, self.fmcw_plan
+        t0 = time.perf_counter()
+        data = phaser_fmcw_radar.capture_fmcw_frame(self.sdr, self.fmcw_hw, plan)
+        t1 = time.perf_counter()
+
+        fs = plan["sample_rate"]
+        ramp = plan["effective_ramp_time"]
+        zero = cfg.get("zero_range_freq")
+        if zero is None:
+            zero = cfg["signal_freq"]
+        window = cfg.get("fft_window", "blackman")
+        out = {
+            "preset": getattr(self, "fmcw_preset", None),
+            "ramp_mode": plan["ramp_mode"],
+            "num_chirps": plan["num_chirps"],
+            "pri_ms": plan["pri_ms"],
+            "ramp_time": plan["ramp_time"],
+        }
+
+        if plan["synced"] and plan["num_chirps"] > 1:
+            matrix = phaser_radar_dsp.mti_filter(data, cfg.get("mti", "none"))
+            rd = phaser_radar_dsp.range_doppler_map(
+                matrix, fs, cfg["chirp_bw"], ramp, plan["pri_ms"] / 1e3,
+                cfg["output_freq"], zero_range_freq=zero, fft_window=window,
+                range_max=cfg.get("range_max"), vel_max=cfg.get("vel_max"),
+                peak_exclude=cfg.get("peak_exclude", 0.0))
+            out.update({
+                "kind": "range_doppler",
+                "peak_range": rd["peak_range"],
+                "cal_peak_range": rd["cal_peak_range"],
+                "peak_velocity": rd["peak_velocity"],
+                "peak_magnitude_db": rd["peak_magnitude_db"],
+                "range_resolution": rd["range_resolution"],
+                "velocity_resolution": rd["velocity_resolution"],
+                "max_velocity": rd["max_velocity"],
+                "map": phaser_radar_dsp.encode_db_u8(rd["map_db"]),
+                "range_axis": phaser_radar_dsp.rounded(
+                    rd["range_axis"], phaser_radar_dsp.AXIS_DECIMALS),
+                "velocity_axis": phaser_radar_dsp.rounded(
+                    rd["velocity_axis"], phaser_radar_dsp.AXIS_DECIMALS),
+            })
+        else:
+            iq = data[:, 0] if np.ndim(data) == 2 else data
+            prof = phaser_radar_dsp.range_profile(
+                iq, fs, cfg["chirp_bw"], ramp, zero_range_freq=zero,
+                fft_window=window, range_max=cfg.get("range_max"))
+            out.update({
+                "kind": "range_profile",
+                "peak_range": prof["peak_range"],
+                "cal_peak_range": prof["peak_range"],
+                "peak_magnitude_db": prof["peak_magnitude_db"],
+                "range_resolution": prof["range_resolution"],
+                "max_range": prof["max_range"],
+                "range_axis": phaser_radar_dsp.rounded(
+                    prof["range_axis"], phaser_radar_dsp.AXIS_DECIMALS),
+                "profile_db": phaser_radar_dsp.rounded(
+                    prof["profile_db"], phaser_radar_dsp.DB_DECIMALS),
+            })
+            if cfg.get("cfar"):
+                spectrum = np.asarray(prof["profile_db"], dtype=float)
+                threshold = phaser_radar_dsp.ca_cfar(
+                    spectrum, num_guard=int(cfg["cfar_guard"]),
+                    num_ref=int(cfg["cfar_ref"]), bias_db=float(cfg["cfar_bias_db"]))
+                _, detections = phaser_radar_dsp.apply_cfar(spectrum, threshold)
+                out["detections"] = int(len(detections))
+                # The lab's two checkboxes: draw the threshold, then blank
+                # below it. The browser does the blanking from these.
+                out["cfar_threshold_db"] = phaser_radar_dsp.rounded(
+                    threshold, phaser_radar_dsp.DB_DECIMALS)
+                out["detection_indices"] = [int(i) for i in detections]
+
+        out["capture_ms"] = (t1 - t0) * 1e3
+        out["process_ms"] = (time.perf_counter() - t1) * 1e3
+        return out
+
+    def _cw_rpi_ip(self):
+        """The Phaser IP to program the ADF4159 through, or None in sim mode.
+
+        Sim mode has no libiio to reach, so the LO write is skipped there; the
+        simulator is told the CW carrier directly via _sim_set_cw instead.
+        """
+        return None if self.sim_mode else self.rpi_ip
+
+    def _restore_from_cw(self):
+        """Put the SDR, LO and array back the way the sweep path expects them.
+
+        The taper goes back through _apply_gain_cal, not raw: self.gainList is
+        on the frontend's 0-100 scale and the ADAR1000 register is 0-127, so
+        restoring it raw would leave the array at 79% of full scale with the
+        gain calibration dropped. apply_taper writes register codes, which is
+        the right scale for the CW presets and the wrong one for gainList.
+        """
+        phaser_cw_radar.exit_cw_mode(
+            self.sdr,
+            self.cw_saved_sdr,
+            array=self.array,
+            rpi_ip=self._cw_rpi_ip(),
+            restore_taper=self._apply_gain_cal(self.gainList),
+            restore_lo_freq=self.LO_freq,
+        )
+
+    def _sim_set_cw(self, enable):
+        """Point the simulator at the CW scene (no-op on real hardware)."""
+        if not self.sim_mode or not hasattr(self.sdr, "set_cw_mode"):
+            return
+        cfg = {**phaser_radar_dsp.DEFAULTS, **(self.cw_params or {})}
+        try:
+            self.sdr.set_cw_mode(
+                enable,
+                signal_freq=cfg["signal_freq"],
+                output_freq=cfg["output_freq"],
+            )
+        except Exception as e:
+            print(f"[CW] sim set_cw_mode failed: {e}")
+
     def start_cw_radar(self, params):
         """Switch to CW radar mode. If a sweep is running, it is stopped first."""
-        if self.sim_mode:
-            return {"status": "error", "message": "CW radar not available in --sim mode"}
         # Merge requested params on top of stored ones (with defaults applied later
         # by phaser_cw_radar.enter_cw_mode).
         if params:
@@ -957,6 +1467,15 @@ class PhaserHeadless:
         # Apply gain changes live if running
         if self.mode == "cw_radar":
             try:
+                # The taper is an array write, not an SDR one, and it is live:
+                # the frontend's Rect/Hann/Black buttons pushed it here and it
+                # went no further than this dict until now.
+                if "taper" in params:
+                    gains = phaser_cw_radar.apply_taper(self.array, params["taper"])
+                    if gains is not None:
+                        print(f"[CW] Taper applied: {gains}")
+                if "signal_freq" in params or "output_freq" in params:
+                    self._sim_set_cw(True)
                 if "rx_gain" in params:
                     self.sdr.rx_hardwaregain_chan0 = int(params["rx_gain"])
                     if hasattr(self.sdr, "rx_hardwaregain_chan1"):
@@ -974,9 +1493,57 @@ class PhaserHeadless:
                 return {"status": "error", "message": str(e)}
         return {"status": "ok", "params": self.cw_params}
 
+    def _reset_fmcw_leftovers(self):
+        """Undo what an FMCW session that never exited cleanly left behind.
+
+        Three pieces of state outlive the process, and FMCW exit resets each:
+        the Pluto TDD (release_tdd), the Pluto's phaser_enable pin, and the
+        ADF4159 ramp. Each is reset on its own, and none raises: a Pluto
+        without the TDD core or the pin (older firmware) has nothing to reset,
+        and must still come up for beamforming.
+        """
+        if self.sim_mode:
+            return
+        if hasattr(adi, "tddn"):
+            try:
+                phaser_fmcw_radar.release_tdd(adi.tddn(self.sdr_ip))
+                print("[TDD] Pluto TDD released (non-TDD mode)")
+            except Exception as e:
+                print(f"[TDD] No Pluto TDD to release: {e}")
+        try:
+            pins = adi.one_bit_adc_dac(self.sdr_ip)
+            if hasattr(pins, "gpio_phaser_enable"):
+                pins.gpio_phaser_enable = False
+                print("[TDD] Pluto phaser_enable cleared")
+        except Exception as e:
+            print(f"[TDD] No Pluto phaser_enable to clear: {e}")
+        try:
+            phaser_fmcw_radar.stop_ramp(adi.adf4159(self.rpi_ip))
+            print("[LO] ADF4159 ramp disabled")
+        except Exception as e:
+            print(f"[LO] Could not disable the ADF4159 ramp: {e}")
+
+    def _probe_fmcw(self):
+        """Run the FMCW capability probe against the contexts already open."""
+        return phaser_fmcw_radar.probe_fmcw(
+            adi,
+            sdr_ctx=getattr(self.sdr, "_ctx", None),
+            rpi_ctx=getattr(self.gpios, "_ctx", None),
+            sim=self.sim_mode,
+        )
+
+    def get_radar_capabilities(self):
+        """Which radar modes this kit can run. CW needs nothing beyond the
+        stock kit; FMCW is whatever the startup probe found."""
+        fmcw = getattr(self, "fmcw_capability", None) or {
+            "available": False, "ramp": None, "source": "hardware",
+            "reason": "not probed yet", "checks": [],
+        }
+        return {"status": "ok", "data": {"fmcw": fmcw}}
+
     def get_cw_radar_state(self):
         """Return current CW radar config and mode."""
-        cfg = {**phaser_cw_radar.DEFAULTS, **(self.cw_params or {})}
+        cfg = {**phaser_radar_dsp.DEFAULTS, **(self.cw_params or {})}
         return {
             "status": "ok",
             "data": {
@@ -988,14 +1555,16 @@ class PhaserHeadless:
 
     def do_cw_radar_frame(self):
         """Capture and process a single CW radar frame. Returns the broadcast payload."""
-        cfg = {**phaser_cw_radar.DEFAULTS, **(self.cw_params or {})}
+        cfg = {**phaser_radar_dsp.DEFAULTS, **(self.cw_params or {})}
         iq = phaser_cw_radar.capture_cw_frame(self.sdr)
-        return phaser_cw_radar.process_cw_frame(
+        return phaser_radar_dsp.process_cw_frame(
             iq,
             fs=cfg["sample_rate"],
             signal_freq=cfg["signal_freq"],
             output_freq=cfg["output_freq"],
             fft_window=cfg.get("fft_window", "blackman"),
+            vel_max=cfg.get("vel_max"),
+            peak_exclude=cfg.get("peak_exclude"),
         )
 
     def shutdown_permitted(self):
@@ -1053,6 +1622,7 @@ class PhaserHeadless:
                 "mvdrK": self.mvdr_K,
                 "mvdrDiagLoad": self.mvdr_diag_load,
                 "sim_mode": self.sim_mode,
+                "fmcw": self.get_radar_capabilities()["data"]["fmcw"],
                 "interferer_enable": self.interferer_enable,
                 "interferer_angle_deg": self.interferer_angle_deg,
                 "interferer_power_dbfs": self.interferer_power_dbfs,
@@ -1520,6 +2090,23 @@ class PhaserHeadless:
 
         elif cmd == "get_cw_radar_state":
             return self.get_cw_radar_state()
+        elif cmd == "get_radar_capabilities":
+            return self.get_radar_capabilities()
+
+        elif cmd == "start_fmcw_radar":
+            return self.start_fmcw_radar(data)
+
+        elif cmd == "stop_fmcw_radar":
+            return self.stop_fmcw_radar()
+
+        elif cmd == "set_fmcw_radar_params":
+            return self.set_fmcw_radar_params(data)
+
+        elif cmd == "get_fmcw_radar_state":
+            return self.get_fmcw_radar_state()
+
+        elif cmd == "save_fmcw_capture":
+            return self.save_fmcw_capture(data)
 
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}
@@ -1529,12 +2116,14 @@ class PhaserHeadless:
         if not self.ws_clients:
             return
 
+        # Serialize once, not once per client: an FMCW frame carries its map.
+        text = json.dumps(message)
         with self.ws_lock:
             dead_clients = set()
             for client in self.ws_clients:
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        client.send(json.dumps(message)),
+                        client.send(text),
                         self.ws_loop
                     )
                 except Exception:
@@ -1542,13 +2131,76 @@ class PhaserHeadless:
 
             self.ws_clients -= dead_clients
 
+    # Radar frames are capped at this rate. A single-chirp FMCW capture
+    # refills in ~5 ms on a kit and in well under that in --sim (range_sync
+    # ran at ~475 fps there): every frame is a WebSocket message and a
+    # browser redraw, and at those rates the page fell minutes behind its
+    # own clicks. CW (~9 fps) and range_doppler (~5 fps) never reach it.
+    RADAR_MAX_FPS = 20.0
+
+    # Radar modes the main loop drives: {mode: (frame method, frame type)}.
+    _RADAR_FRAMES = {
+        "cw_radar": ("do_cw_radar_frame", "cw_radar_frame"),
+        "fmcw_radar": ("do_fmcw_radar_frame", "fmcw_radar_frame"),
+    }
+
+    def _pace_radar_frames(self):
+        """Sleep off whatever is left of this frame's 1/RADAR_MAX_FPS slot."""
+        now = time.perf_counter()
+        last = getattr(self, "_last_radar_frame_t", None)
+        if last is not None:
+            wait = 1.0 / self.RADAR_MAX_FPS - (now - last)
+            if wait > 0:
+                time.sleep(wait)
+                now = time.perf_counter()
+        self._last_radar_frame_t = now
+
+    def _radar_frame_step(self):
+        """One radar frame, under mode_lock.
+
+        Holding the lock means a stop from the WebSocket thread waits for the
+        frame instead of restoring the SDR -- or, in FMCW, switching the TDD
+        off -- underneath a capture in progress. A transition waits at most one
+        frame. The mode is re-read inside the lock because it may have changed
+        while this thread waited for it.
+        """
+        with self._get_mode_lock():
+            mode = self.mode
+            entry = self._RADAR_FRAMES.get(mode)
+            if entry is None:
+                return
+            method, frame_type = entry
+            try:
+                frame = {
+                    "type": frame_type,
+                    "timestamp": time.time(),
+                    "data": getattr(self, method)(),
+                }
+            except Exception as e:
+                frame = None
+                print(f"{mode} error: {e}")
+                error = {
+                    "type": "error",
+                    "source": mode,
+                    "timestamp": time.time(),
+                    "message": str(e),
+                }
+        # Broadcast outside the lock (skip ZMQ -- desktop clients don't use radar).
+        if frame is not None:
+            self.broadcast_to_ws(frame)
+        else:
+            self.broadcast_to_ws(error)
+            # Brief pause on error so we don't tight-loop
+            time.sleep(0.1)
+
     def run(self):
         """Main run loop"""
         self.running = True
 
         # Start command handler thread (ZMQ)
-        cmd_thread = threading.Thread(target=self._command_loop, daemon=True)
-        cmd_thread.start()
+        # Kept so stop() can wait for it before closing its socket.
+        self._cmd_thread = threading.Thread(target=self._command_loop, daemon=True)
+        self._cmd_thread.start()
 
         # Start WebSocket server if available
         if HAS_WEBSOCKETS:
@@ -1602,26 +2254,9 @@ class PhaserHeadless:
                     self.pub_socket.send(msgpack.packb(frame, use_bin_type=True))
                     self.broadcast_to_ws(frame)
 
-            elif self.mode == "cw_radar":
-                try:
-                    radar_data = self.do_cw_radar_frame()
-                    frame = {
-                        "type": "cw_radar_frame",
-                        "timestamp": time.time(),
-                        "data": radar_data,
-                    }
-                    # Broadcast to WebSocket clients (skip ZMQ — desktop clients don't use radar)
-                    self.broadcast_to_ws(frame)
-                except Exception as e:
-                    print(f"CW radar error: {e}")
-                    self.broadcast_to_ws({
-                        "type": "error",
-                        "source": "cw_radar",
-                        "timestamp": time.time(),
-                        "message": str(e),
-                    })
-                    # Brief pause on error so we don't tight-loop
-                    time.sleep(0.1)
+            elif self.mode in self._RADAR_FRAMES:
+                self._radar_frame_step()
+                self._pace_radar_frames()
 
             else:
                 time.sleep(0.1)
@@ -1632,7 +2267,14 @@ class PhaserHeadless:
         poller.register(self.rep_socket, zmq.POLLIN)
 
         while self.running:
-            socks = dict(poller.poll(100))
+            try:
+                socks = dict(poller.poll(100))
+            except zmq.ZMQError:
+                # stop() closed the socket under us. Only an error while
+                # shutting down is expected; anything else is real.
+                if not self.running:
+                    return
+                raise
             if self.rep_socket in socks:
                 try:
                     msg = self.rep_socket.recv_json()
@@ -1809,10 +2451,10 @@ class PhaserHeadless:
         print("Shutting down...")
         # Cleanly leave any active mode so SDR state is restored.
         try:
-            if getattr(self, "mode", "idle") == "cw_radar":
+            if getattr(self, "mode", "idle") in self._MODE_HANDLERS:
                 self._set_mode("idle")
         except Exception as e:
-            print(f"[CW] cleanup on stop failed: {e}")
+            print(f"[MODE] cleanup on stop failed: {e}")
         self.running = False
         self.sweeping = False
         self.mode = "idle"
@@ -1820,6 +2462,15 @@ class PhaserHeadless:
         # Kill any running calibration
         if self.cal_process and self.cal_process.poll() is None:
             self.cal_process.terminate()
+
+        # Let the command thread see running=False and leave its 100 ms poll
+        # before its socket goes. Closing a ZMQ socket another thread is
+        # polling is not thread-safe: it raised in that thread on most stops,
+        # and the process exited mid-traceback, leaving a bare
+        # "Exception in thread Thread-1" in the journal on every restart.
+        cmd_thread = getattr(self, "_cmd_thread", None)
+        if cmd_thread is not None and cmd_thread is not threading.current_thread():
+            cmd_thread.join(timeout=1.0)
 
         self.pub_socket.close()
         self.rep_socket.close()

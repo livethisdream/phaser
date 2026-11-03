@@ -167,6 +167,22 @@ function handle(cmd, data) {
         case 'set_cw_radar_params':
         case 'get_cw_radar_state':
             return { status: 'error', message: 'CW radar is not available in simulation' };
+        case 'start_fmcw_radar':
+        case 'stop_fmcw_radar':
+        case 'set_fmcw_radar_params':
+        case 'get_fmcw_radar_state':
+            return { status: 'error', message: 'FMCW radar is not available in the browser simulator' };
+        case 'get_radar_capabilities':
+            return {
+                status: 'ok',
+                data: {
+                    fmcw: {
+                        available: false, ramp: null, source: 'sim',
+                        reason: 'FMCW radar is not available in the browser simulator',
+                        checks: [],
+                    },
+                },
+            };
         case 'reboot_phaser':
             return { status: 'error', message: 'There is no hardware to reboot in simulation' };
 

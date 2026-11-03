@@ -279,8 +279,12 @@ h1, h2, h3 {
 }
 
 .btn-header-sweep {
-  width: auto;
+  /* One size, whatever it says (Start, or Stop with its border), so the
+     header never shifts. */
+  width: 84px;
   min-width: 84px;
+  height: 30px;
+  box-sizing: border-box;
   padding: 0.35rem 0.8rem;
   font-size: 0.82rem;
   line-height: 1;
@@ -311,6 +315,10 @@ h1, h2, h3 {
 .dot.disconnected {
   background: var(--error);
   box-shadow: 0 0 10px var(--error);
+}
+.dot.connected.warn {
+  background: var(--warn, #e0a44c);
+  box-shadow: 0 0 10px var(--warn, #e0a44c);
 }
 
 /* Layout */
@@ -790,7 +798,7 @@ input[type=number]::-webkit-outer-spin-button {
   width: 100%;
 }
 .btn-primary.btn-header-sweep {
-  width: auto;
+  width: 84px;
 }
 .btn-primary:hover {
   transform: translateY(-2px);
@@ -1320,5 +1328,222 @@ input[type=number]::-webkit-outer-spin-button {
 }
 
 .cal-output:empty {
+  display: none;
+}
+
+/* --- CW / FMCW mode switch and the FMCW section ------------------------ */
+/* CW | FMCW: one big pill toggle under the settings title, a blue thumb
+   sliding behind the selected mode. The mode decides which settings apply,
+   so it sits with them. */
+.mode-tabs {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    height: 40px;
+    padding: 3px;
+    margin-bottom: 0.65rem;
+    background: var(--ctrl-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    box-sizing: border-box;
+}
+.mode-tabs::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 3px;
+    width: calc(50% - 3px);
+    border-radius: 999px;
+    background: var(--primary);
+    box-shadow: 0 3px 10px var(--primary-glow);
+    transition: transform 0.2s ease;
+}
+.mode-tabs[data-mode="fmcw"]::before {
+    transform: translateX(100%);
+}
+.mode-tab {
+    position: relative;
+    z-index: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    border-radius: 999px;
+    transition: color 0.2s ease;
+}
+.mode-tab.active {
+    color: #fff;
+}
+.mode-tab:hover:not(.active):not(:disabled) {
+    color: var(--text-main);
+}
+.mode-tab:disabled {
+    cursor: not-allowed;
+}
+.mode-tabs:has(.mode-tab:disabled) {
+    opacity: 0.6;
+}
+.controls-panel.collapsed .mode-tabs {
+    display: none;
+}
+.taper-buttons .btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+.fmcw-capability {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+.fmcw-capability.ok {
+    color: var(--success);
+}
+.fmcw-capability.unavailable {
+    color: var(--error);
+}
+.stat-box.set-disabled .stat-value {
+    color: var(--text-muted);
+}
+.tab-btn[hidden],
+.stat-box[hidden] {
+    display: none;
+}
+
+/* Greyed out, but still hoverable: its tooltip says why. The inputs are
+   disabled in main.js, so nothing here needs pointer-events: none. */
+.set-disabled {
+    opacity: 0.45;
+    cursor: help;
+}
+
+/* Settings rows, in every pane: the same two columns, every control the
+   same size, right edges aligned. */
+.set-row {
+    display: grid;
+    /* minmax(0, 1fr): a long label must not push its control out of line. */
+    grid-template-columns: minmax(0, 1fr) var(--set-ctrl-width, 150px);
+    align-items: center;
+    column-gap: 0.5rem;
+    min-height: 32px;
+    margin-top: 0.4rem;
+}
+.set-row > label:first-child {
+    margin: 0;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.set-ctrl {
+    box-sizing: border-box;
+    width: 100%;
+    height: 30px;
+    padding: 0 0.5rem;
+    background: var(--ctrl-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--text-main);
+    border-radius: 6px;
+    outline: none;
+    font-family: inherit;
+    font-size: 0.85rem;
+}
+input.set-ctrl {
+    font-family: monospace;
+    text-align: right;
+}
+.set-ctrl:focus {
+    border-color: var(--primary);
+}
+.set-switch {
+    justify-self: end;
+}
+/* A slider row, as in the beamforming UI: the label on its own line, then
+   the slider and a compact box side by side, the box on the common right
+   edge. */
+.set-slider-row {
+    grid-template-columns: minmax(0, 1fr) 70px;
+    grid-template-areas: "label label" "slider box";
+    column-gap: 10px;
+    row-gap: 0.15rem;
+}
+.set-slider-row > label:first-child { grid-area: label; }
+.set-slider-row > .set-slider { grid-area: slider; width: 100%; margin: 0; }
+.set-slider-row > .set-ctrl { grid-area: box; }
+.taper-buttons.taper-3 { grid-template-columns: repeat(3, 1fr); }
+
+/* FMCW 0 m calibration pop-up */
+.btn-block { display: block; width: 100%; }
+.cal-steps {
+  margin: 0 0 1rem 1.25rem;
+  padding: 0;
+  color: var(--text-main);
+  line-height: 1.6;
+}
+.cal-readout {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.75rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.cal-readout > div { display: flex; justify-content: space-between; }
+.cal-readout > div > span:last-child { font-variant-numeric: tabular-nums; font-weight: 600; }
+.cal-hint { min-height: 1.2em; margin: 0.75rem 0 0; font-size: 0.85rem; color: var(--text-muted, #94a3b8); }
+.cal-footer > .btn { flex: 1 1 0; white-space: nowrap; }
+
+/* Hold-to-commit, from the beamforming UI: a fill sweeps across while the
+   control is held, and releasing early aborts, so the gesture is its own
+   confirmation. The connection pill uses it as the power switch: red, and a
+   2 s hold, because the machine it powers off is the one serving the page.
+   Keep --hold-ms in step with SHUTDOWN_HOLD_MS in main.js. */
+.btn-hold-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: var(--hold-fill);
+  pointer-events: none;
+  border-radius: inherit;
+  transition: width 0s linear;
+}
+.btn-hold.holding .btn-hold-fill {
+  width: 100%;
+  transition: width var(--hold-ms) linear;
+}
+.btn-hold.flash {
+  animation: btn-hold-flash 240ms ease-out;
+}
+@keyframes btn-hold-flash {
+  0%   { background: rgba(239, 68, 68, 0.4); }
+  100% { background: transparent; }
+}
+.status-indicator.btn-hold {
+  --hold-ms: 2000ms;
+  --hold-fill: rgba(239, 68, 68, 0.55);
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+}
+.status-indicator.btn-hold > .dot,
+.status-indicator.btn-hold > span:not(.btn-hold-fill) {
+  position: relative;
+  z-index: 1;
+}
+.status-indicator.btn-hold:focus-visible {
+  outline: 2px solid rgba(239, 68, 68, 0.8);
+  outline-offset: 2px;
+}
+.status-indicator:not(.btn-hold) > .btn-hold-fill {
   display: none;
 }
