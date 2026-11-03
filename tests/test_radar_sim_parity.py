@@ -287,3 +287,119 @@ def test_saved_capture_matches_python(name, params, iq_ch, js_saves):
             assert worst <= 1e-4 * scale, f"{name}.{key}: samples off by {worst:g} of {scale:g}"
         else:
             assert float(other) == pytest.approx(float(value), rel=1e-12), f"{name}.{key}"
+
+
+# --- Load Recording: reading and playing a course .npz in the browser ----------
+#
+# frontend-radar/src/npz.js reads the course's captures and playback-worker.js
+# plays them through dsp.fmcwPayload(). The reader has to read what numpy
+# writes -- np.savez and np.savez_compressed, complex64 and complex128, the
+# scalars and the note -- and a played frame has to be what the Python
+# processing makes of the same chirps.
+
+_JS_READ_DRIVER = """
+import { readNpz } from '%(src)s/npz.js';
+import { readFileSync } from 'node:fs';
+const out = {};
+for (const path of JSON.parse(process.argv[2])) {
+    const z = await readNpz(readFileSync(path));
+    out[path] = Object.fromEntries(Object.entries(z).map(([k, v]) => [k, {
+        dtype: v.dtype, shape: v.shape,
+        data: v.data && v.data.re ? { re: Array.from(v.data.re), im: Array.from(v.data.im) }
+            : ArrayBuffer.isView(v.data) ? Array.from(v.data) : v.data,
+    }]));
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _node(driver_src, arg, tmp_path):
+    if NODE is None:
+        pytest.skip("node is not installed")
+    driver = tmp_path / "driver.mjs"
+    driver.write_text(driver_src)
+    proc = subprocess.run([NODE, str(driver), json.dumps(arg)],
+                          capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        raise AssertionError(f"node driver failed:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["savez", "savez_compressed"])
+@pytest.mark.parametrize("cdtype", [np.complex64, np.complex128])
+def test_browser_reads_what_numpy_writes(compressed, cdtype, tmp_path):
+    rng = np.random.default_rng(1)
+    iq = (rng.standard_normal((5, 7)) + 1j * rng.standard_normal((5, 7))).astype(cdtype)
+    path = tmp_path / "cap.npz"
+    (np.savez_compressed if compressed else np.savez)(
+        path, iq=iq, fs=np.float64(4e6), f0=np.float64(101400.0), PRI=0.0005,
+        note=np.str_("a corner at 1.0 m, ± 0.1"), truth_t=np.arange(3, dtype=np.float64))
+    src = (ROOT / "frontend-radar" / "src").as_posix()
+    got = _node(_JS_READ_DRIVER % {"src": src}, [str(path)], tmp_path)[str(path)]
+    assert got["iq"]["shape"] == [5, 7]
+    js_iq = np.array(got["iq"]["data"]["re"]) + 1j * np.array(got["iq"]["data"]["im"])
+    np.testing.assert_allclose(js_iq, iq.ravel(), rtol=1e-6, atol=1e-6)
+    assert got["fs"]["data"] == 4e6 and got["f0"]["data"] == 101400.0 and got["PRI"]["data"] == 0.0005
+    assert got["note"]["data"] == "a corner at 1.0 m, ± 0.1"
+    assert got["truth_t"]["data"] == [0.0, 1.0, 2.0]
+
+
+_JS_PLAY_DRIVER = """
+import { readNpz } from '%(src)s/npz.js';
+import { playbackRecording, playbackFrame } from '%(src)s/playback-worker.js';
+import { readFileSync } from 'node:fs';
+const [path, settings] = JSON.parse(process.argv[2]);
+const rec = playbackRecording(await readNpz(readFileSync(path)));
+const f = playbackFrame(rec, settings, 0);
+process.stdout.write(JSON.stringify({ mode: rec.mode, window: rec.window, frame: f }));
+"""
+
+
+@pytest.mark.parametrize("preset,settings", [
+    ("range_doppler", {}),
+    ("range_doppler", {"mti": "2pulse", "fft_window": "hann"}),
+    ("range", {"cfar": True}),
+], ids=["rd", "rd_mti_hann", "range_cfar"])
+def test_playback_frame_matches_python_on_a_saved_capture(preset, settings, tmp_path):
+    """Save a capture from a --sim backend, play it in the browser: the frame
+    is what phaser_radar_dsp makes of the same chirps with the same settings."""
+    import phaser_radar_dsp as dsp
+
+    data = _python_save({"preset": preset}, False)
+    path = tmp_path / "cap.npz"
+    path.write_bytes(base64.b64decode(data))
+    cap = _load_npz(data)
+    src = (ROOT / "frontend-radar" / "src").as_posix()
+    got = _node(_JS_PLAY_DRIVER % {"src": src}, [str(path), settings], tmp_path)
+    f = got["frame"]
+
+    iq = cap["iq"]
+    fs, B, T, PRI, fc, f0 = (float(cap[k]) for k in ("fs", "B", "T_ramp", "PRI", "fc", "f0"))
+    window = settings.get("fft_window", "blackman")
+    if iq.shape[0] > 1 and PRI <= 5e-3:
+        assert got["mode"] == "burst" and f["kind"] == "range_doppler"
+        matrix = dsp.mti_filter(iq.T, settings.get("mti", "none"))
+        rd = dsp.range_doppler_map(matrix, fs, B, T, PRI, fc, zero_range_freq=f0,
+                                   fft_window=window, range_max=20.0, peak_exclude=0.3)
+        assert f["peak_range"] == pytest.approx(rd["peak_range"], abs=1e-6)
+        assert f["peak_velocity"] == pytest.approx(rd["peak_velocity"], abs=1e-6)
+        assert f["cal_peak_range"] == pytest.approx(rd["cal_peak_range"], abs=1e-6)
+        enc = dsp.encode_db_u8(rd["map_db"])
+        steps = np.abs(_decode(f["map"]) - _decode(enc))
+        assert steps.max() <= 1
+    else:
+        assert got["mode"] == "profile" and f["kind"] == "range_profile"
+        prof = dsp.range_profile(iq[0], fs, B, T, zero_range_freq=f0, fft_window=window,
+                                 range_max=20.0)
+        assert f["peak_range"] == pytest.approx(prof["peak_range"], abs=1e-6)
+        a, b = np.asarray(prof["profile_db"]), np.asarray(f["profile_db"])
+        keep = a > a.max() - DB_FLOOR_BELOW_PEAK
+        assert np.max(np.abs(a[keep] - b[keep])) <= DB_TOL
+        if settings.get("cfar"):
+            thr = dsp.ca_cfar(np.asarray(prof["profile_db"]))
+            _, det = dsp.apply_cfar(np.asarray(prof["profile_db"]), thr)
+            assert f["detection_indices"] == [int(i) for i in det]
+    # The sim's stationary reflector is at 1 m -- unless MTI cancelled it,
+    # which is what MTI is for.
+    if settings.get("mti", "none") == "none":
+        assert f["cal_peak_range"] == pytest.approx(1.0, abs=0.35)
