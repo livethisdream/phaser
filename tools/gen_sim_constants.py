@@ -131,6 +131,9 @@ def main():
 
 // --- Scene -----------------------------------------------------------------
 export const TARGET_ANGLE_DEG = {sdr.TARGET_ANGLE_DEG!r};
+export const TARGET_RANGE_M = {sdr.TARGET_RANGE_M!r};
+export const TARGET_RANGE_MIN_M = {sdr.TARGET_RANGE_MIN_M!r};
+export const TARGET_RANGE_MAX_M = {sdr.TARGET_RANGE_MAX_M!r};
 export const TARGET_IF_HZ = {sdr.TARGET_IF_HZ!r};
 
 // --- Synthesis -------------------------------------------------------------

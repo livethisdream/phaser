@@ -1779,3 +1779,111 @@ input[type=number]::-webkit-outer-spin-button {
   letter-spacing: 1px;
   text-transform: uppercase;
 }
+
+/* --- Sources: mini scene (scene.js) and the Polar tab's markers ------- */
+#chart-polar.polar-source-hover,
+#chart-polar.polar-source-hover * { cursor: grab !important; }
+#chart-polar.polar-source-dragging,
+#chart-polar.polar-source-dragging * { cursor: grabbing !important; }
+
+.scene-svg {
+  --scene-target: var(--success);
+  --scene-interferer: var(--warning);
+  --scene-beam: var(--error);
+  touch-action: none;
+  user-select: none;
+  font-family: inherit;
+}
+.scene-field { fill: var(--ctrl-bg-soft); }
+.scene-grid path,
+.scene-grid line {
+  fill: none;
+  stroke: var(--ctrl-track);
+  stroke-width: 0.8;
+}
+.scene-grid .scene-field { stroke: var(--ctrl-track); }
+.scene-pattern {
+  fill: rgba(16, 185, 129, 0.14);
+  stroke: var(--success);
+  stroke-width: 2.4;
+  stroke-linejoin: round;
+}
+.scene-beam-ray {
+  stroke: var(--scene-beam);
+  stroke-width: 2.4;
+  stroke-dasharray: 4 3;
+}
+.scene-source-ray {
+  stroke-width: 1;
+  stroke-dasharray: 1 3;
+  stroke-linecap: round;
+}
+.scene-source-ray.scene-target { stroke: var(--scene-target); }
+.scene-source-ray.scene-interferer { stroke: var(--scene-interferer); }
+.scene-array .scene-sub0 { fill: var(--primary); }
+.scene-array .scene-sub1 { fill: var(--secondary); }
+
+.scene-handle { cursor: grab; outline: none; }
+.scene-handle.dragging { cursor: grabbing; }
+.scene-hit { fill: transparent; }
+.scene-handle .scene-icon { stroke: var(--bg-dark); stroke-width: 1.2; }
+.scene-handle.scene-target .scene-icon { fill: var(--scene-target); }
+.scene-handle.scene-interferer .scene-icon { fill: var(--scene-interferer); }
+.scene-icon-face { fill: var(--bg-dark); opacity: 0.55; }
+.scene-handle:focus-visible .scene-hit,
+.scene-handle.dragging .scene-hit {
+  fill: var(--ctrl-hover);
+  stroke: var(--text-muted);
+  stroke-width: 0.8;
+}
+.scene-handle-value {
+  font-size: 22px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.scene-handle.scene-target text { fill: var(--scene-target); }
+.scene-handle.scene-interferer text { fill: var(--scene-interferer); }
+
+/* Mini pane: top right of the plots while the interferer is on. */
+.scene-mini {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 6;
+  width: 240px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.scene-mini[hidden] { display: none; }
+.scene-mini svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0 4px 2px;
+}
+.scene-mini-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 4px 0 8px;
+}
+.scene-mini-open,
+.scene-mini-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.scene-mini-open:hover,
+.scene-mini-close:hover { color: var(--text-main); }
+.scene-mini-close { font-size: 1rem; line-height: 1; padding: 0 4px; }
+@media (max-width: 600px) {
+  .scene-mini { width: 150px; }
+}

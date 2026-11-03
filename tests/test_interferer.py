@@ -114,9 +114,8 @@ def test_interferer_shows_as_a_lobe_in_the_manual_beam_pattern():
 def test_mvdr_suppresses_the_interferer_on_a_held_beam():
     """The lab's headline: beam held on the target, jammer in a sidelobe.
 
-    Compared as interferer-to-target ratio, not absolute level: MVDR's
-    distortionless weights are [0.5, 0.5] where manual's are [1, 1], so MVDR
-    reads everything 6 dB lower.
+    Compared as interferer-to-target ratio, the number the lab's readout
+    tile shows.
     """
     common = {
         "mode": "Static Phase",
@@ -133,6 +132,27 @@ def test_mvdr_suppresses_the_interferer_on_a_held_beam():
                      - _tone_dbfs(r, r["target_tone_hz"]))
     # ~13 dB with the default 128 snapshots; the margin absorbs noise.
     assert sir["mvdr"] < sir["manual"] - 8.0, f"MVDR did not suppress the interferer: {sir}"
+
+
+def test_mvdr_keeps_the_target_at_manuals_level():
+    """MVDR's output is scaled by Nr, so a held beam reads the target at the
+    level Manual does. Unscaled, the distortionless weights [0.5, 0.5] put it
+    6 dB below Manual's [1, 1], which the 2026-10-25 bench run read as MVDR
+    cancelling the target."""
+    common = {
+        "mode": "Static Phase",
+        "hold_angle": 0.0,
+        "interferer_enable": True,
+        "interferer_angle_deg": 20.0,
+        "interferer_power_dbfs": -12.0,
+        "interferer_offset_hz": 100e3,
+        "mvdrDiagLoad": 0.1,
+    }
+    level = {}
+    for mode in ("manual", "mvdr"):
+        r = _sweeps(_headless({**common, "bfMode": mode}), 2)
+        level[mode] = _tone_dbfs(r, r["target_tone_hz"])
+    assert abs(level["mvdr"] - level["manual"]) < 1.0, f"target level moved: {level}"
 
 
 def test_a_loud_interferer_cannot_capture_the_tone_tracker():
@@ -231,3 +251,43 @@ def test_adaptive_pattern_only_on_a_held_mvdr_beam():
     manual = _sweeps(_headless({"mode": "Static Phase", "interferer_enable": True}), 1)
     assert "adaptive_pattern" not in sweep
     assert "adaptive_pattern" not in manual
+
+
+def test_interferer_and_mvdr_settings_survive_a_hardware_reinit():
+    """Find HB100 and Calibrate re-run _do_init_hardware. The operator's
+    interferer and MVDR settings must come through it; they used to reset to
+    -20 deg / -10 dBFS and the default loading."""
+    h = _headless({
+        "bfMode": "mvdr",
+        "mvdrDiagLoad": 0.1,
+        "interferer_enable": True,
+        "interferer_angle_deg": 20.0,
+        "interferer_power_dbfs": 0.0,
+    })
+    with contextlib.redirect_stdout(io.StringIO()):
+        h._do_init_hardware()
+    assert h.bf_mode == "mvdr"
+    assert h.mvdr_diag_load == 0.1
+    assert h.interferer_enable is True
+    assert h.interferer_angle_deg == 20.0
+    assert h.interferer_power_dbfs == 0.0
+
+
+def test_readout_frequency_is_the_one_injected_when_the_target_drifts():
+    """The interferer goes in off the tone measured on the previous sweep.
+    If the HB100 drifted since, the payload must still name where the
+    interferer actually is, or the readout reads the noise floor."""
+    h = _headless({
+        "mode": "Static Phase",
+        "hold_angle": 0.0,
+        "interferer_enable": True,
+        "interferer_angle_deg": 20.0,
+        "interferer_offset_hz": 100e3,
+    })
+    measured = _sweeps(h, 1)["target_tone_hz"]
+    h.target_tone_hz = measured + 5e3   # as if the HB100 moved 5 kHz
+    h._last_fft_t = None
+    r = h.do_sweep()
+    assert r["interferer_freq_hz"] == pytest.approx(measured + 5e3 + 100e3)
+    # And the spectrum has the interferer there, well above the floor.
+    assert _tone_dbfs(r, r["interferer_freq_hz"]) > _tone_dbfs(r, measured + 100e3) + 20

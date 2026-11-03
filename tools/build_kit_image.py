@@ -190,8 +190,6 @@ flashing -- you do not need a separate image per kit.
                     help="overwrite the output image if it already exists")
     args = ap.parse_args(argv)
 
-    require_mtools()
-
     source = Path(args.image).expanduser()
     if not source.is_file():
         raise Failure(f"--image {source} does not exist")
@@ -232,6 +230,11 @@ flashing -- you do not need a separate image per kit.
             )
     except OSError:
         pass
+
+    # After the argument and source checks, which need no mtools, so a bad
+    # --image or --out says so wherever it runs; before the copy, so a missing
+    # mtools does not cost a multi-GB write first.
+    require_mtools()
 
     print(f"Source: {source}  ({human(source.stat().st_size)})")
     print(f"Output: {out}\n")
