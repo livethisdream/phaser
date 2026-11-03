@@ -514,6 +514,8 @@ function setUiMode(mode) {
     updateModeGating();
     document.getElementById('mode-cw')?.classList.toggle('active', state.uiMode === 'cw');
     document.getElementById('mode-fmcw')?.classList.toggle('active', state.uiMode === 'fmcw');
+    const modeTabs = document.querySelector('.mode-tabs');
+    if (modeTabs) modeTabs.dataset.mode = state.uiMode;
     // Show the mode's tabs (and Logs), and land on its first one.
     let first = null;
     document.querySelectorAll('.tab-btn').forEach(b => {

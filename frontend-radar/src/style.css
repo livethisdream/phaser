@@ -1332,34 +1332,60 @@ input[type=number]::-webkit-outer-spin-button {
 }
 
 /* --- CW / FMCW mode switch and the FMCW section ------------------------ */
-/* CW | FMCW, as tabs under the settings title, styled like the header's
-   plot tabs: the mode decides which settings apply, so it sits with them. */
+/* CW | FMCW: one big pill toggle under the settings title, a blue thumb
+   sliding behind the selected mode. The mode decides which settings apply,
+   so it sits with them. */
 .mode-tabs {
+    position: relative;
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 0.35rem;
-    margin-bottom: 0.55rem;
+    height: 40px;
+    padding: 3px;
+    margin-bottom: 0.65rem;
+    background: var(--ctrl-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 999px;
+    box-sizing: border-box;
+}
+.mode-tabs::before {
+    content: '';
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 3px;
+    width: calc(50% - 3px);
+    border-radius: 999px;
+    background: var(--primary);
+    box-shadow: 0 3px 10px var(--primary-glow);
+    transition: transform 0.2s ease;
+}
+.mode-tabs[data-mode="fmcw"]::before {
+    transform: translateX(100%);
 }
 .mode-tab {
+    position: relative;
+    z-index: 1;
     background: transparent;
     border: none;
-    padding: 0.5rem 1rem;
     color: var(--text-muted);
     font-family: inherit;
-    font-weight: 500;
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
     cursor: pointer;
-    border-radius: 6px;
-    transition: var(--transition);
-}
-.mode-tab:hover:not(:disabled) {
-    background: rgba(255,255,255,0.1);
+    border-radius: 999px;
+    transition: color 0.2s ease;
 }
 .mode-tab.active {
-    background: rgba(0, 103, 185, 0.15);
-    color: var(--primary);
+    color: #fff;
+}
+.mode-tab:hover:not(.active):not(:disabled) {
+    color: var(--text-main);
 }
 .mode-tab:disabled {
     cursor: not-allowed;
+}
+.mode-tabs:has(.mode-tab:disabled) {
     opacity: 0.6;
 }
 .controls-panel.collapsed .mode-tabs {
