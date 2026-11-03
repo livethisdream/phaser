@@ -28,12 +28,18 @@ import types
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+import json                        # noqa: E402
+
 import ADAR_pyadi_functions        # noqa: E402
 import config                      # noqa: E402
 import phaser_ctf                  # noqa: E402
+import phaser_radar_dsp            # noqa: E402
 import phaser_sim                  # noqa: E402
 
 OUT = REPO / "frontend" / "src" / "sim" / "constants.generated.js"
+# The radar UI's simulator (frontend-radar/src/sim/) gets its own file: the
+# radar half of phaser_sim.py plus the phaser_radar_dsp tables it processes with.
+RADAR_OUT = REPO / "frontend-radar" / "src" / "sim" / "constants.generated.js"
 
 
 def steering_pi():
@@ -212,6 +218,71 @@ export const DEFAULT_GAIN_CAL = {list(h.gain_cal)!r};
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(body)
     print(f"wrote {OUT.relative_to(REPO)}")
+    write_radar(h)
+
+
+def _js(value):
+    """A Python literal as JS: dicts, lists, tuples, numbers, None, bools."""
+    return json.dumps(value)
+
+
+def write_radar(h):
+    sdr = phaser_sim.SimSDR
+    dsp = phaser_radar_dsp
+    body = f"""// GENERATED FILE -- DO NOT EDIT BY HAND.
+//
+// Produced by tools/gen_sim_constants.py from phaser_sim.py,
+// phaser_radar_dsp.py and phaser_headless.py, for the radar UI's in-browser
+// simulator. Python is the source of truth; re-run after changing any of these:
+//     python tools/gen_sim_constants.py
+//
+// CI regenerates this file and fails if the result differs from what is
+// committed.
+
+// --- Scenes (phaser_sim.SimSDR) --------------------------------------------
+// CW: [velocity_mps, angle_deg, amplitude]; FMCW: [range_m, velocity_mps,
+// angle_deg, amplitude]. Velocity is positive for closing targets.
+export const CW_DEFAULT_TARGETS = {_js(sdr.CW_DEFAULT_TARGETS)};
+export const FMCW_DEFAULT_TARGETS = {_js(sdr.FMCW_DEFAULT_TARGETS)};
+export const AMP_SCALE = {sdr.AMP_SCALE!r};
+export const NOISE_SIGMA = {sdr.NOISE_SIGMA!r};
+export const ELEMENT_SPACING_M = {h.d!r};
+// The kit IF a sim backend reports (get_state's Rx_freq).
+export const RX_FREQ_HZ = {h.Rx_freq!r};
+// ADAR1000 rx_gain register code -> voltage amplitude (ADAR_pyadi_functions).
+export const RX_GAIN_AMPLITUDE = {list(ADAR_pyadi_functions.RX_GAIN_AMPLITUDE)!r};
+
+// --- phaser_radar_dsp --------------------------------------------------------
+export const C = {dsp.C!r};
+export const DEFAULTS = {_js(dsp.DEFAULTS)};
+export const TAPER_PRESETS = {_js(dsp.TAPER_PRESETS)};
+export const TAPER_MAX = {dsp.TAPER_MAX!r};
+export const FMCW_DEFAULTS = {_js(dsp.FMCW_DEFAULTS)};
+export const FMCW_HW_DEFAULTS = {_js(dsp.FMCW_HW_DEFAULTS)};
+export const FMCW_PRESETS = {_js(dsp.FMCW_PRESETS)};
+export const FMCW_PROC_DEFAULTS = {_js(dsp.FMCW_PROC_DEFAULTS)};
+export const FMCW_DEFAULT_PRESET = {_js(dsp.FMCW_DEFAULT_PRESET)};
+export const FMCW_FALLBACK_PRESET = {_js(dsp.FMCW_FALLBACK_PRESET)};
+// [label, hint] per preset, in the dropdown's order.
+export const FMCW_PRESET_UI = {_js(dsp.FMCW_PRESET_UI)};
+export const MTI_MODES = {_js(dsp.MTI_MODES)};
+export const MAINLOBE_HALF_BINS = {_js(dsp.MAINLOBE_HALF_BINS)};
+export const MAP_SPAN_DB = {dsp.MAP_SPAN_DB!r};
+export const AXIS_DECIMALS = {dsp.AXIS_DECIMALS!r};
+export const DB_DECIMALS = {dsp.DB_DECIMALS!r};
+export const RAMP_SYNCED = {_js(dsp.RAMP_SYNCED)};
+export const RAMP_FREE_RUNNING = {_js(dsp.RAMP_FREE_RUNNING)};
+export const RANGE_TIME_SCALE = {_js(dsp.RANGE_TIME_SCALE)};
+export const MAX_BURST_BUFFER = {dsp.MAX_BURST_BUFFER!r};
+export const RAMP_SETTLE_FRACTION = {dsp.RAMP_SETTLE_FRACTION!r};
+
+// --- phaser_headless ---------------------------------------------------------
+// The frame-rate cap the main loop applies to radar frames.
+export const RADAR_MAX_FPS = {type(h).RADAR_MAX_FPS!r};
+"""
+    RADAR_OUT.parent.mkdir(parents=True, exist_ok=True)
+    RADAR_OUT.write_text(body)
+    print(f"wrote {RADAR_OUT.relative_to(REPO)}")
 
 
 if __name__ == "__main__":

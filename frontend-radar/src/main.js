@@ -1,4 +1,4 @@
-import { createWebTransport } from './transport-web.js';
+import { createTransport, resolveTransportMode } from './transport.js';
 
 /* --- State --- */
 const state = {
@@ -421,7 +421,18 @@ function setConnectionStatus(connected) {
         dot.classList.toggle('disconnected', !connected);
         dot.classList.toggle('connected', connected);
     }
-    if (text) text.textContent = shuttingDown ? 'Shutting down...' : connected ? 'Connected' : 'Disconnected';
+    // Simulated data never reads as a live kit: amber, "Simulated".
+    const sim = connected && resolveTransportMode() === 'sim';
+    if (dot) dot.classList.toggle('warn', sim);
+    if (text) {
+        text.textContent = shuttingDown ? 'Shutting down...'
+            : sim ? 'Simulated' : connected ? 'Connected' : 'Disconnected';
+    }
+    // An armed pill keeps its own tooltip: how to shut down.
+    const pill = document.getElementById('connection-pill');
+    if (pill && !shutdownArmed) {
+        pill.title = sim ? 'Simulated data from the in-browser simulator. No Phaser hardware is connected.' : '';
+    }
 }
 
 /* --- Shutdown: hold the connection pill ---
@@ -1156,11 +1167,12 @@ function maybePushParams(partial) {
 }
 
 /* --- Transport / wiring --- */
-const transport = createWebTransport({
+const transport = createTransport({
     onLog: log,
     onOpen: () => {
         setConnectionStatus(true);
-        log('info', 'WS', 'Connected to backend');
+        log('info', resolveTransportMode() === 'sim' ? 'SIM' : 'WS',
+            resolveTransportMode() === 'sim' ? 'Connected to the radar simulator' : 'Connected to backend');
         syncRunningFromBackend();
     },
     onClose: () => {
