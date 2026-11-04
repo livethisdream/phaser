@@ -899,6 +899,7 @@ function setHoldAngleFromInput(raw) {
     if (!Number.isFinite(theta)) return;
     state.hold_angle = Math.max(-90, Math.min(90, theta));
     if (isHoldMode()) syncStateToBackend();
+    drawRectOverlays();
 }
 if (steerAngleSlider && steerAngleInput) {
     steerAngleSlider.addEventListener('input', (e) => {
@@ -942,6 +943,7 @@ document.getElementById('btn-apply-steer')?.addEventListener('click', () => {
         // boresight, so Phase Control is zeroed instead.
         state.hold_angle = Math.max(-90, Math.min(90, theta_deg));
         applyPhaseList([0, 0, 0, 0, 0, 0, 0, 0]);
+        drawRectOverlays();
     } else {
         applyPhaseList(ramp);
     }
@@ -967,6 +969,7 @@ function setSweepMode(mode, { selectTab = true } = {}) {
     resetSvtHistory();
     if (!isHoldMode()) clearAdaptivePattern();
     syncSweepModeControls();
+    drawRectOverlays();
     if (selectTab && state.mode === 'Signal vs Time') {
         document.querySelector('[data-target="tab-tracking"]')?.click();
     }
@@ -1350,9 +1353,10 @@ function wireHoldToCommit(el, holdMs, onCommit) {
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
 
 /* --- Sources: the simulated HB100 and the interferer ---
-   Drawn on the Polar tab (Plot Options > Show Sources) and in a mini pane in
-   the plots' top-right corner while the interferer is on (scene.js). Both are
-   draggable. The HB100 only in the simulator -- on the kit it is a real one,
+   Drawn on the Polar tab (Plot Options > Show HB100 / Show Interferer on
+   Polar) and in a mini pane in the plots' top-right corner while the
+   interferer is on (scene.js); the HB100 also on the Rectangular tab, as a
+   vertical line (rectOverlayShapes). All are draggable. The HB100 only in the simulator -- on the kit it is a real one,
    wherever it was put, and get_state reports sim_target_angle_deg and
    sim_target_range_m as null. Its drag sets angle and range (radius is
    log(range); see rangeToFrac). The interferer is computed on the kit too and
@@ -1388,13 +1392,20 @@ function onSourceDrag(kind, angle, range = null) {
 
 const miniScene = createScene(document.getElementById('scene-mini-svg'), { onDrag: onSourceDrag });
 
-function sourcesOnPolar() {
-    return document.getElementById('opt-show-sources')?.checked ?? true;
+function showHb100() {
+    return document.getElementById('opt-show-hb100')?.checked ?? true;
+}
+
+function showInterfererOnPolar() {
+    return document.getElementById('opt-show-interferer')?.checked ?? true;
 }
 
 // `polar: false` from the sweep and hold paths: new data never moves a source,
-// and the sweep path redraws the Polar tab itself.
-function renderSources({ polar = true } = {}) {
+// and the sweep path redraws the Polar tab itself. The Rectangular overlays
+// are skipped on the sweep path too (it applies them with its own shapes);
+// drawRectOverlays() is a no-op when nothing it draws has changed, so the
+// hold path can call it every update.
+function renderSources({ polar = true, rect = true } = {}) {
     miniScene.update({
         ...sceneLast,
         targetAngle: state.sim_target_angle_deg,
@@ -1403,28 +1414,89 @@ function renderSources({ polar = true } = {}) {
         interfererAngle: state.interferer_angle_deg,
     });
     if (polar) schedulePolarSources();
+    if (rect) drawRectOverlays();
 }
 
 function applySourcesUi() {
-    // The Polar tab draws the sources itself; the pane would only repeat it.
+    // The Polar tab draws the interferer itself; the pane would only repeat it.
     const activeTab = document.querySelector('.tab-btn.active')?.getAttribute('data-target');
-    const polarShowsThem = activeTab === 'tab-polar' && sourcesOnPolar();
+    const polarShowsThem = activeTab === 'tab-polar' && showInterfererOnPolar();
     document.getElementById('scene-mini').hidden =
         !(state.interferer_enable && !sceneMiniDismissed && !polarShowsThem);
     renderSources();
 }
 
 document.getElementById('scene-mini-open')?.addEventListener('click', () => {
-    const toggle = document.getElementById('opt-show-sources');
-    if (toggle && !toggle.checked) toggle.checked = true;
+    for (const id of ['opt-show-hb100', 'opt-show-interferer']) {
+        const toggle = document.getElementById(id);
+        if (toggle && !toggle.checked) toggle.checked = true;
+    }
     document.querySelector('.tab-btn[data-target="tab-polar"]')?.click();
 });
 document.getElementById('scene-mini-close')?.addEventListener('click', () => {
     sceneMiniDismissed = true;
     applySourcesUi();
 });
-document.getElementById('opt-show-sources')?.addEventListener('change', applySourcesUi);
+document.getElementById('opt-show-hb100')?.addEventListener('change', applySourcesUi);
+document.getElementById('opt-show-interferer')?.addEventListener('change', applySourcesUi);
 applySourcesUi();
+
+/* --- Rectangular tab overlays: the HB100 and, with the beam held, its angle -
+   chart-rect's x-axis is already the angle in degrees, so the HB100 is a
+   vertical line at sim_target_angle_deg (it has no range axis here; range
+   stays a Polar drag), and in a hold mode a dashed one at the held angle, so
+   the gap between where the beam points and where the source is reads off
+   the plot. Shapes, not traces: the freeze stack adds traces by index.
+   updateCharts() rebuilds layout.shapes each sweep and includes these;
+   drawRectOverlays() covers everything else (drags, toggles, hold-angle
+   changes) and leaves other shapes alone. Shapes are matched by name. */
+const RECT_OVERLAY_NAMES = ['hb100', 'hold-angle'];
+const RECT_GRAB_PX = 10;
+
+function rectHb100Visible() {
+    return showHb100() && Number.isFinite(state.sim_target_angle_deg);
+}
+
+function rectHoldAngle() {
+    return isHoldMode() && Number.isFinite(state.hold_angle) ? state.hold_angle : null;
+}
+
+function rectOverlayShapes() {
+    const shapes = [];
+    const hold = rectHoldAngle();
+    if (Number.isFinite(hold)) {
+        shapes.push({
+            name: 'hold-angle', type: 'line', x0: hold, x1: hold, y0: 0, y1: 1, yref: 'paper',
+            line: { color: '#6366f1', width: 2, dash: 'dash' },
+            label: { text: `Beam ${Math.round(hold)}°`, textposition: 'start', textangle: 0,
+                     yanchor: 'bottom', xanchor: 'right', font: { color: '#6366f1', size: 11 } },
+        });
+    }
+    if (rectHb100Visible()) {
+        const a = state.sim_target_angle_deg;
+        shapes.push({
+            name: 'hb100', type: 'line', x0: a, x1: a, y0: 0, y1: 1, yref: 'paper',
+            line: { color: SOURCE_COLORS.target, width: 2 },
+            label: { text: `${SOURCE_LABELS.target} ${Math.round(a)}°`, textposition: 'end', textangle: 0,
+                     yanchor: 'top', xanchor: 'left', font: { color: SOURCE_COLORS.target, size: 11 } },
+        });
+    }
+    return shapes;
+}
+
+function drawRectOverlays() {
+    const el = document.getElementById('chart-rect');
+    if (!el || !el.layout || !window.Plotly) return;
+    const current = el.layout.shapes || [];
+    const ours = current.filter(sh => RECT_OVERLAY_NAMES.includes(sh.name));
+    const next = rectOverlayShapes();
+    const key = (list) => JSON.stringify(list.map(sh => [sh.name, sh.x0, sh.label?.text]));
+    if (key(ours) === key(next)) return;
+    const others = current.filter(sh => !RECT_OVERLAY_NAMES.includes(sh.name));
+    try {
+        Plotly.relayout('chart-rect', { shapes: others.concat(next) });
+    } catch (e) { /* chart not ready yet; the next sweep will draw them */ }
+}
 
 /* --- Interferer ---
    The backend computes a jammer and adds it to the received IQ before the
@@ -2014,6 +2086,7 @@ async function loadStateFromServer() {
             ? msg.data.sim_target_range_m : null;
         loadInterfererState(msg.data);
         applyInitialStateToControls();
+        renderSources();
     } catch (err) {
         console.warn('Failed to load initial state from server:', err);
     }
@@ -2228,15 +2301,15 @@ function polarRadialRange(el) {
 /** { angle, range, frac } per draggable source currently on the Polar tab;
     frac is its radius over the plot's (scene.js rangeToFrac). */
 function polarSources() {
-    if (!sourcesOnPolar()) return {};
     const out = {};
-    if (Number.isFinite(state.sim_target_angle_deg)) {
+    if (showHb100() && Number.isFinite(state.sim_target_angle_deg)) {
         // A backend from before ranges existed sends none: the reference range.
         const range = Number.isFinite(state.sim_target_range_m)
             ? state.sim_target_range_m : TARGET_RANGE_M;
         out.target = { angle: state.sim_target_angle_deg, range, frac: rangeToFrac(range) };
     }
-    if (state.interferer_enable && Number.isFinite(state.interferer_angle_deg)) {
+    if (showInterfererOnPolar() && state.interferer_enable
+        && Number.isFinite(state.interferer_angle_deg)) {
         out.interferer = { angle: state.interferer_angle_deg, range: null, frac: SOURCE_RING_FRAC };
     }
     return out;
@@ -2354,6 +2427,63 @@ function polarPointer(el, evt) {
         dragging = null;
         if (el.hasPointerCapture(evt.pointerId)) el.releasePointerCapture(evt.pointerId);
         el.classList.remove('polar-source-dragging');
+    };
+    el.addEventListener('pointerup', end, true);
+    el.addEventListener('pointercancel', end, true);
+})();
+
+// Drag the HB100's line sideways on the Rectangular tab: angle only. Same
+// capture-phase scheme as the Polar drag, so Plotly's zoom never sees it.
+(function wireRectSourceDrag() {
+    const el = document.getElementById('chart-rect');
+    if (!el) return;
+    let dragging = false;
+    const axes = () => {
+        const xa = el._fullLayout?.xaxis;
+        const ya = el._fullLayout?.yaxis;
+        return xa && ya && typeof xa.l2p === 'function' ? { xa, ya } : null;
+    };
+    const overLine = (evt) => {
+        if (!rectHb100Visible()) return false;
+        const ax = axes();
+        if (!ax) return false;
+        const box = el.getBoundingClientRect();
+        const px = evt.clientX - box.left;
+        const py = evt.clientY - box.top;
+        const xLine = ax.xa._offset + ax.xa.l2p(state.sim_target_angle_deg);
+        return Math.abs(px - xLine) <= RECT_GRAB_PX
+            && py >= ax.ya._offset && py <= ax.ya._offset + ax.ya._length;
+    };
+    el.addEventListener('pointerdown', (evt) => {
+        if (!overLine(evt)) return;
+        evt.preventDefault();
+        evt.stopPropagation();
+        dragging = true;
+        el.setPointerCapture(evt.pointerId);
+        el.classList.add('rect-source-dragging');
+    }, true);
+    el.addEventListener('touchstart', (evt) => {
+        if (dragging) evt.stopPropagation();
+    }, { capture: true, passive: true });
+    el.addEventListener('pointermove', (evt) => {
+        if (!dragging) {
+            el.classList.toggle('rect-source-hover', overLine(evt));
+            return;
+        }
+        evt.stopPropagation();
+        const ax = axes();
+        if (!ax) return;
+        const px = evt.clientX - el.getBoundingClientRect().left - ax.xa._offset;
+        const angle = clampAngle(Math.round(ax.xa.p2l(px)));
+        if (Number.isFinite(angle) && angle !== state.sim_target_angle_deg) {
+            onSourceDrag('target', angle);
+        }
+    }, true);
+    const end = (evt) => {
+        if (!dragging) return;
+        dragging = false;
+        if (el.hasPointerCapture(evt.pointerId)) el.releasePointerCapture(evt.pointerId);
+        el.classList.remove('rect-source-dragging');
     };
     el.addEventListener('pointerup', end, true);
     el.addEventListener('pointercancel', end, true);
@@ -3323,6 +3453,7 @@ function applyLabPreset(preset) {
             steerAngleSlider.value = String(state.hold_angle);
             steerAngleInput.value = String(state.hold_angle);
         }
+        drawRectOverlays();
     }
     state.BW = Number.isFinite(preset.BW) ? preset.BW : state.BW;
     state.steer_res = Number.isFinite(preset.steer_res) ? preset.steer_res : state.steer_res;
@@ -3496,6 +3627,7 @@ function updateCharts(data) {
         if(document.getElementById('opt-peak-gain').checked) {
             shapes.push({ type: 'line', x0: 0, y0: peakValue, x1: 1, y1: peakValue, xref: 'paper', line: { color: '#10b981', dash: 'dash'} });
         }
+        shapes.push(...rectOverlayShapes());
 
 
         // Snapshot the live Sum trace for the Memory feature.
@@ -3503,7 +3635,7 @@ function updateCharts(data) {
         updateMemoryButtons();
 
         sceneLast = { angles: xData, gain: yData, beamAngle: xData[peakIndex] };
-        renderSources({ polar: false });
+        renderSources({ polar: false, rect: false });
 
         // Update rectangular plot (Sum beam)
         const rectEl = document.getElementById('chart-rect');

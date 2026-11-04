@@ -1887,3 +1887,7 @@ input[type=number]::-webkit-outer-spin-button {
 @media (max-width: 600px) {
   .scene-mini { width: 150px; }
 }
+#chart-rect.rect-source-hover,
+#chart-rect.rect-source-hover * { cursor: ew-resize !important; }
+#chart-rect.rect-source-dragging,
+#chart-rect.rect-source-dragging * { cursor: ew-resize !important; }
