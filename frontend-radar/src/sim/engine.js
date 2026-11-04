@@ -14,7 +14,7 @@
 import {
     CW_DEFAULT_TARGETS, DEFAULTS, FMCW_DEFAULT_PRESET, FMCW_DEFAULT_TARGETS,
     FMCW_PRESETS, FMCW_PRESET_UI, NOISE_SIGMA,
-    RAMP_SYNCED, RX_FREQ_HZ, CAPTURE_SINGLE_CHIRP_FRAMES, FMCW_SCENES, FMCW_DEFAULT_SCENE,
+    RAMP_SYNCED, RX_FREQ_HZ, CAPTURE_SINGLE_CHIRP_FRAMES, FMCW_SCENES, FMCW_DEFAULT_SCENE, SCENE_NOISE_LEVELS, FMCW_DEFAULT_SCENE_NOISE,
 } from './constants.generated.js';
 import {
     captureLimits, chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
@@ -22,7 +22,7 @@ import {
 } from './dsp.js';
 import {
     createGauss, finishCapture, finishChannels, synthesizeCw, synthesizeFmcw,
-    synthesizeFmcwScene, SCENE_NOISE_SIGMA,
+    synthesizeFmcwScene, sceneNoiseSigma,
 } from './scene.js';
 import { toBase64, writeNpz } from '../npz.js';
 
@@ -30,7 +30,7 @@ import { toBase64, writeNpz } from '../npz.js';
 // to the hardware; anything else re-enters FMCW. phaser_headless's sets.
 const FMCW_LIVE_KEYS = new Set([
     'mti', 'fft_window', 'range_max', 'vel_max', 'zero_range_freq', 'peak_exclude',
-    'cfar', 'cfar_guard', 'cfar_ref', 'cfar_bias_db', 'scene',
+    'cfar', 'cfar_guard', 'cfar_ref', 'cfar_bias_db', 'scene', 'scene_noise',
 ]);
 const FMCW_WRITE_KEYS = new Set(['taper', 'rx_gain', 'tx_gain']);
 
@@ -138,10 +138,16 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         return name;
     }
 
+    function currentSceneNoise() {
+        const name = s.fmcwCfg?.scene_noise ?? FMCW_DEFAULT_SCENE_NOISE;
+        if (!(name in SCENE_NOISE_LEVELS)) throw new Error(`unknown scene noise '${name}'`);
+        return name;
+    }
+
     // A live scene has the course's noise floor; the static one this
     // simulator's own. Off when the caller turned noise off (parity tests).
     function fmcwNoiseSigma() {
-        return noiseSigma > 0 && currentScene() !== 'static' ? SCENE_NOISE_SIGMA : noiseSigma;
+        return noiseSigma > 0 && currentScene() !== 'static' ? sceneNoiseSigma(currentSceneNoise()) : noiseSigma;
     }
 
     // `plan` and `t0` default to the running ones: a long Save Capture
@@ -159,7 +165,7 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
                     num_chirps: plan.num_chirps, pri: plan.pri_ms / 1e3,
                     signal_freq: Number(cfg.signal_freq), output_freq: Number(cfg.output_freq),
                 },
-                plan, scene, t0: t0 ?? sceneClock(), elements, phaseError,
+                plan, scene, noise: currentSceneNoise(), t0: t0 ?? sceneClock(), elements, phaseError,
             });
         }
         return synthesizeFmcw({
@@ -337,6 +343,8 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
             // Simulation only: the live scenes the UI can pick from.
             scenes: { ...FMCW_SCENES },
             scene: cfg?.scene ?? FMCW_DEFAULT_SCENE,
+            scene_noise_levels: { ...SCENE_NOISE_LEVELS },
+            scene_noise: cfg?.scene_noise ?? FMCW_DEFAULT_SCENE_NOISE,
         };
         if (error) data.error = error;
         return { status: 'ok', data };

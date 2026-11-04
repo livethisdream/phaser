@@ -32,6 +32,13 @@ export const SCENE_LEAKAGE_DBFS = -20.0;
 export const SCENE_R_MIN = 0.3;
 export const SCENE_FULL_SCALE = 2048;
 export const SCENE_WALKER_PHASES = [3.2142, 5.9689, 0.9053, 5.9575, 1.9583];
+export const SCENE_NOISE_LEVELS = {"clean": "Clean: the course's simulator, targets and noise floor only", "typical": "Typical: a room's clutter, leakage skirt, ~3 dB target fading, 10 dB more noise", "noisy": "Noisy: stronger clutter, ~6 dB fading, 18 dB more noise"};
+export const FMCW_DEFAULT_SCENE_NOISE = "clean";
+export const SCENE_NOISE = {"clean": {"floor_dbfs": -60.0, "clutter_db": null, "fluct_db": 0.0}, "typical": {"floor_dbfs": -50.0, "clutter_db": 0.0, "fluct_db": 3.0}, "noisy": {"floor_dbfs": -42.0, "clutter_db": 6.0, "fluct_db": 6.0}};
+export const SCENE_CLUTTER = [[1.6, 0.3, 0.4, -25.0], [3.3, 0.8, 2.1, 30.0], [5.0, 4.0, 4.4, 0.0], [6.5, 2.0, 1.7, -15.0]];
+export const SCENE_SKIRT = [[0.15, -34.0, 2.9], [0.3, -42.0, 5.1], [0.5, -48.0, 0.3]];
+export const SCENE_FLUCT_HZ = [1.7, 2.9, 4.3];
+export const SCENE_FLUCT_PHASE = [1.1, 2.3, 0.7];
 
 // --- phaser_radar_dsp --------------------------------------------------------
 export const C = 299792458.0;

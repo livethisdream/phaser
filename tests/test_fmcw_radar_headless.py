@@ -677,3 +677,63 @@ def test_single_chirp_save_takes_frames_at_the_frame_interval():
     _, cap = _saved(h, duration_s=0.5)
     assert cap["iq"].shape[0] == 10            # 0.5 s / 50 ms
     assert float(cap["PRI"]) == pytest.approx(dsp.CAPTURE_FRAME_S, rel=0.2)
+
+
+# --- scene noise (simulation only) -------------------------------------
+
+def test_scene_noise_levels_are_offered_and_default_to_clean():
+    import phaser_sim
+    h = _headless()
+    _start(h, scene="walker")
+    d = h.get_fmcw_radar_state()["data"]
+    assert set(d["scene_noise_levels"]) == set(phaser_sim.SCENE_NOISE) == {"clean", "typical", "noisy"}
+    assert d["scene_noise"] == "clean"
+    assert h.sdr._fmcw_scene_noise == "clean"
+
+
+def test_clean_is_the_course_scene_and_static_ignores_noise():
+    import phaser_sim as ps
+    t = np.linspace(0, 2, 7)
+    for name in ("corners", "walker", "hand"):
+        clean = ps.scene_scatterers(name, t, 2e6, 10e9, "clean")
+        assert len(clean) == len(ps._scene_targets(name, t, 2e6, 10e9))
+        noisy = ps.scene_scatterers(name, t, 2e6, 10e9, "typical")
+        assert len(noisy) == len(clean) + len(ps.SCENE_SKIRT) + len(ps.SCENE_CLUTTER)
+    assert len(ps.scene_scatterers("static", t, 2e6, 10e9, "noisy")) == 1
+    with pytest.raises(ValueError):
+        ps.scene_scatterers("walker", t, 2e6, 10e9, "bogus")
+
+
+def test_fading_stays_within_its_depth_and_corners_hold_steady():
+    import phaser_sim as ps
+    t = np.linspace(0, 10, 4001)
+    for k in range(5):
+        f = ps.scene_fluct_db(t, k, 6.0)
+        assert np.all(np.abs(f) <= 6.0)
+        assert f.max() - f.min() > 6.0          # it does fade, and by several dB
+    clean = ps.scene_scatterers("corners", t, 2e6, 10e9, "clean")
+    noisy = ps.scene_scatterers("corners", t, 2e6, 10e9, "noisy")
+    for (_, a, _, _), (_, b, _, _) in zip(clean, noisy):
+        assert np.array_equal(a, b)
+
+
+def test_noisier_levels_raise_the_floor():
+    """Median of the range profile (mostly noise bins) climbs with the level."""
+    medians = {}
+    for level in ("clean", "typical", "noisy"):
+        h = _headless()
+        _start(h, preset="range", scene="hand", scene_noise=level)
+        medians[level] = float(np.median(h.do_fmcw_radar_frame()["profile_db"]))
+    assert medians["typical"] > medians["clean"] + 6, medians
+    assert medians["noisy"] > medians["typical"] + 4, medians
+
+
+def test_scene_noise_changes_live_without_reentering():
+    h = _headless()
+    _start(h, scene="walker", scene_noise="clean")
+    resp = h.set_fmcw_radar_params({"scene_noise": "noisy"})
+    assert resp["status"] == "ok" and resp["reentered"] is False
+    assert h.sdr._fmcw_scene_noise == "noisy"
+    assert h.get_fmcw_radar_state()["data"]["scene_noise"] == "noisy"
+    with pytest.raises(ValueError):
+        h.sdr.set_fmcw_scene_noise("bogus")

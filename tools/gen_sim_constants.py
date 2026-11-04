@@ -263,6 +263,13 @@ export const SCENE_LEAKAGE_DBFS = {phaser_sim.SCENE_LEAKAGE_DBFS!r};
 export const SCENE_R_MIN = {phaser_sim.SCENE_R_MIN!r};
 export const SCENE_FULL_SCALE = {phaser_sim.SCENE_FULL_SCALE!r};
 export const SCENE_WALKER_PHASES = {_js(phaser_sim.SCENE_WALKER_PHASES)};
+export const SCENE_NOISE_LEVELS = {_js(phaser_sim.SCENE_NOISE_LEVELS)};
+export const FMCW_DEFAULT_SCENE_NOISE = {_js(phaser_sim.FMCW_DEFAULT_SCENE_NOISE)};
+export const SCENE_NOISE = {_js(phaser_sim.SCENE_NOISE)};
+export const SCENE_CLUTTER = {_js(phaser_sim.SCENE_CLUTTER)};
+export const SCENE_SKIRT = {_js(phaser_sim.SCENE_SKIRT)};
+export const SCENE_FLUCT_HZ = {_js(phaser_sim.SCENE_FLUCT_HZ)};
+export const SCENE_FLUCT_PHASE = {_js(phaser_sim.SCENE_FLUCT_PHASE)};
 
 // --- phaser_radar_dsp --------------------------------------------------------
 export const C = {dsp.C!r};
