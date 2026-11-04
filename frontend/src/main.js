@@ -1353,10 +1353,10 @@ function wireHoldToCommit(el, holdMs, onCommit) {
 wireHoldToCommit(document.getElementById('ctf-progress-box'), CTF_HOLD_MS, ctfReset);
 
 /* --- Sources: the simulated HB100 and the interferer ---
-   Drawn on the Polar tab (Plot Options > Show HB100 / Show Interferer on
-   Polar) and in a mini pane in the plots' top-right corner while the
-   interferer is on (scene.js); the HB100 also on the Rectangular tab, as a
-   vertical line (rectOverlayShapes). All are draggable. The HB100 only in the simulator -- on the kit it is a real one,
+   Drawn on the Polar and Rectangular tabs (Plot Options > Show HB100 / Show
+   Interferer; on Rectangular as vertical lines, rectOverlayShapes) and in a
+   mini pane in the plots' top-right corner while the interferer is on
+   (scene.js). All are draggable. The HB100 only in the simulator -- on the kit it is a real one,
    wherever it was put, and get_state reports sim_target_angle_deg and
    sim_target_range_m as null. Its drag sets angle and range (radius is
    log(range); see rangeToFrac). The interferer is computed on the kit too and
@@ -1393,11 +1393,11 @@ function onSourceDrag(kind, angle, range = null) {
 const miniScene = createScene(document.getElementById('scene-mini-svg'), { onDrag: onSourceDrag });
 
 function showHb100() {
-    return document.getElementById('opt-show-hb100')?.checked ?? true;
+    return document.getElementById('opt-show-hb100')?.checked ?? false;
 }
 
-function showInterfererOnPolar() {
-    return document.getElementById('opt-show-interferer')?.checked ?? true;
+function showInterferer() {
+    return document.getElementById('opt-show-interferer')?.checked ?? false;
 }
 
 // `polar: false` from the sweep and hold paths: new data never moves a source,
@@ -1418,9 +1418,11 @@ function renderSources({ polar = true, rect = true } = {}) {
 }
 
 function applySourcesUi() {
-    // The Polar tab draws the interferer itself; the pane would only repeat it.
+    // Polar and Rectangular draw the interferer themselves; the pane would
+    // only repeat it there.
     const activeTab = document.querySelector('.tab-btn.active')?.getAttribute('data-target');
-    const polarShowsThem = activeTab === 'tab-polar' && showInterfererOnPolar();
+    const polarShowsThem = (activeTab === 'tab-polar' || activeTab === 'tab-rect')
+        && showInterferer();
     document.getElementById('scene-mini').hidden =
         !(state.interferer_enable && !sceneMiniDismissed && !polarShowsThem);
     renderSources();
@@ -1450,11 +1452,26 @@ applySourcesUi();
    updateCharts() rebuilds layout.shapes each sweep and includes these;
    drawRectOverlays() covers everything else (drags, toggles, hold-angle
    changes) and leaves other shapes alone. Shapes are matched by name. */
-const RECT_OVERLAY_NAMES = ['hb100', 'hold-angle'];
+const RECT_OVERLAY_NAMES = ['hb100', 'interferer', 'hold-angle'];
 const RECT_GRAB_PX = 10;
 
-function rectHb100Visible() {
+function hb100Visible() {
     return showHb100() && Number.isFinite(state.sim_target_angle_deg);
+}
+
+// The interferer is computed on the kit too, so unlike the HB100 it is drawn
+// there as well -- while it is on.
+function interfererVisible() {
+    return showInterferer() && !!state.interferer_enable
+        && Number.isFinite(state.interferer_angle_deg);
+}
+
+// Angle per source currently drawn on the Rectangular tab, by drag kind.
+function rectSourceAngles() {
+    const out = {};
+    if (hb100Visible()) out.target = state.sim_target_angle_deg;
+    if (interfererVisible()) out.interferer = state.interferer_angle_deg;
+    return out;
 }
 
 function rectHoldAngle() {
@@ -1472,13 +1489,22 @@ function rectOverlayShapes() {
                      yanchor: 'bottom', xanchor: 'right', font: { color: '#6366f1', size: 11 } },
         });
     }
-    if (rectHb100Visible()) {
+    if (interfererVisible()) {
+        const a = state.interferer_angle_deg;
+        shapes.push({
+            name: 'interferer', type: 'line', x0: a, x1: a, y0: 0, y1: 1, yref: 'paper',
+            line: { color: SOURCE_COLORS.interferer, width: 2 },
+            label: { text: `${SOURCE_LABELS.interferer} ${Math.round(a)}°`, textposition: 'middle',
+                     textangle: 0, xanchor: 'left', font: { color: SOURCE_COLORS.interferer, size: 11 } },
+        });
+    }
+    if (hb100Visible()) {
         const a = state.sim_target_angle_deg;
         shapes.push({
             name: 'hb100', type: 'line', x0: a, x1: a, y0: 0, y1: 1, yref: 'paper',
             line: { color: SOURCE_COLORS.target, width: 2 },
-            label: { text: `${SOURCE_LABELS.target} ${Math.round(a)}°`, textposition: 'end', textangle: 0,
-                     yanchor: 'top', xanchor: 'left', font: { color: SOURCE_COLORS.target, size: 11 } },
+            label: { text: `${SOURCE_LABELS.target} ${Math.round(a)}°`, textposition: 'start', textangle: 0,
+                     yanchor: 'bottom', xanchor: 'left', font: { color: SOURCE_COLORS.target, size: 11 } },
         });
     }
     return shapes;
@@ -2308,8 +2334,7 @@ function polarSources() {
             ? state.sim_target_range_m : TARGET_RANGE_M;
         out.target = { angle: state.sim_target_angle_deg, range, frac: rangeToFrac(range) };
     }
-    if (showInterfererOnPolar() && state.interferer_enable
-        && Number.isFinite(state.interferer_angle_deg)) {
+    if (interfererVisible()) {
         out.interferer = { angle: state.interferer_angle_deg, range: null, frac: SOURCE_RING_FRAC };
     }
     return out;
@@ -2432,33 +2457,39 @@ function polarPointer(el, evt) {
     el.addEventListener('pointercancel', end, true);
 })();
 
-// Drag the HB100's line sideways on the Rectangular tab: angle only. Same
-// capture-phase scheme as the Polar drag, so Plotly's zoom never sees it.
+// Drag a source's line sideways on the Rectangular tab: angle only (the
+// HB100's range stays a Polar drag). Same capture-phase scheme as the Polar
+// drag, so Plotly's zoom never sees it.
 (function wireRectSourceDrag() {
     const el = document.getElementById('chart-rect');
     if (!el) return;
-    let dragging = false;
+    let dragging = null;
     const axes = () => {
         const xa = el._fullLayout?.xaxis;
         const ya = el._fullLayout?.yaxis;
         return xa && ya && typeof xa.l2p === 'function' ? { xa, ya } : null;
     };
-    const overLine = (evt) => {
-        if (!rectHb100Visible()) return false;
+    // The source whose line is under the pointer, nearest first.
+    const lineAt = (evt) => {
         const ax = axes();
-        if (!ax) return false;
+        if (!ax) return null;
         const box = el.getBoundingClientRect();
         const px = evt.clientX - box.left;
         const py = evt.clientY - box.top;
-        const xLine = ax.xa._offset + ax.xa.l2p(state.sim_target_angle_deg);
-        return Math.abs(px - xLine) <= RECT_GRAB_PX
-            && py >= ax.ya._offset && py <= ax.ya._offset + ax.ya._length;
+        if (py < ax.ya._offset || py > ax.ya._offset + ax.ya._length) return null;
+        let best = null;
+        for (const [kind, angle] of Object.entries(rectSourceAngles())) {
+            const d = Math.abs(px - (ax.xa._offset + ax.xa.l2p(angle)));
+            if (d <= RECT_GRAB_PX && (!best || d < best.d)) best = { kind, d };
+        }
+        return best?.kind ?? null;
     };
     el.addEventListener('pointerdown', (evt) => {
-        if (!overLine(evt)) return;
+        const kind = lineAt(evt);
+        if (!kind) return;
         evt.preventDefault();
         evt.stopPropagation();
-        dragging = true;
+        dragging = kind;
         el.setPointerCapture(evt.pointerId);
         el.classList.add('rect-source-dragging');
     }, true);
@@ -2467,7 +2498,7 @@ function polarPointer(el, evt) {
     }, { capture: true, passive: true });
     el.addEventListener('pointermove', (evt) => {
         if (!dragging) {
-            el.classList.toggle('rect-source-hover', overLine(evt));
+            el.classList.toggle('rect-source-hover', lineAt(evt) !== null);
             return;
         }
         evt.stopPropagation();
@@ -2475,13 +2506,12 @@ function polarPointer(el, evt) {
         if (!ax) return;
         const px = evt.clientX - el.getBoundingClientRect().left - ax.xa._offset;
         const angle = clampAngle(Math.round(ax.xa.p2l(px)));
-        if (Number.isFinite(angle) && angle !== state.sim_target_angle_deg) {
-            onSourceDrag('target', angle);
-        }
+        const current = dragging === 'target' ? state.sim_target_angle_deg : state.interferer_angle_deg;
+        if (Number.isFinite(angle) && angle !== current) onSourceDrag(dragging, angle);
     }, true);
     const end = (evt) => {
         if (!dragging) return;
-        dragging = false;
+        dragging = null;
         if (el.hasPointerCapture(evt.pointerId)) el.releasePointerCapture(evt.pointerId);
         el.classList.remove('rect-source-dragging');
     };
