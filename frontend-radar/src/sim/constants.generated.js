@@ -40,12 +40,12 @@ export const TAPER_PRESETS = {"rect": [127, 127, 127, 127, 127, 127, 127, 127], 
 export const TAPER_MAX = 127;
 export const FMCW_DEFAULTS = {"sample_rate": 600000, "chirp_bw": 500000000.0, "ramp_time": 0.001, "num_chirps": 1, "pri": 0.001, "signal_freq": 100000, "output_freq": 12200000000.0, "center_freq": 2200000000.0, "rx_gain": 30, "tx_gain": 0, "fft_window": "blackman", "taper": "blackman", "range_max": 20.0, "mti": "none", "zero_range_freq": null};
 export const FMCW_HW_DEFAULTS = {"pri_guard_ms": 1.0, "fft_size": 4096, "prefetch": true};
-export const FMCW_PRESETS = {"range": {"sample_rate": 600000, "output_freq": 12145000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.001, "num_chirps": 1, "pri_guard_ms": 1.0, "fft_size": 4096, "rx_gain": 30, "tx_gain": 0}, "range_sync": {"sample_rate": 5000000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0005, "num_chirps": 1, "pri_guard_ms": 1.0, "rx_gain": 20, "tx_gain": 0}, "cfar": {"sample_rate": 2000000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0005, "num_chirps": 1, "pri_guard_ms": 1.0, "rx_gain": 20, "tx_gain": 0}, "range_doppler": {"sample_rate": 2000000, "output_freq": 9900000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0}, "range_doppler_far": {"sample_rate": 4000000, "output_freq": 9900000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0, "range_max": 100.0}};
+export const FMCW_PRESETS = {"range": {"sample_rate": 600000, "output_freq": 12145000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.001, "num_chirps": 1, "pri_guard_ms": 1.0, "fft_size": 4096, "rx_gain": 30, "tx_gain": 0}, "range_sync": {"sample_rate": 5000000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0005, "num_chirps": 1, "pri_guard_ms": 1.0, "rx_gain": 20, "tx_gain": 0}, "cfar": {"sample_rate": 2000000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0005, "num_chirps": 1, "pri_guard_ms": 1.0, "rx_gain": 20, "tx_gain": 0}, "range_doppler": {"sample_rate": 2000000, "output_freq": 9900000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0}, "range_doppler_far": {"sample_rate": 4000000, "output_freq": 9900000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0, "range_max": 100.0}, "l31_record": {"sample_rate": 300000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0, "range_max": 4.0}};
 export const FMCW_PROC_DEFAULTS = {"vel_max": null, "cfar": false, "cfar_guard": 4, "cfar_ref": 16, "cfar_bias_db": 6.0, "peak_exclude": 0.3};
 export const FMCW_DEFAULT_PRESET = "range_doppler";
 export const FMCW_FALLBACK_PRESET = "range";
 // [label, hint] per preset, in the dropdown's order.
-export const FMCW_PRESET_UI = {"range_doppler": ["Range + Velocity", "Indoor, ~5 fps. Hand wave, fidget spinner, MTI."], "range_doppler_far": ["Range + Vel (Far)", "Outdoor, out to ~180 m, ~2.4 fps."], "range": ["Range (Basic)", "FMCW lab: the 0 m calibration and kHz per metre."], "range_sync": ["Range (Fast)", "A steeper chirp, out to ~375 m."], "cfar": ["Range (CFAR)", "CFAR lab: tune the threshold, then Apply."]};
+export const FMCW_PRESET_UI = {"range_doppler": ["Range + Velocity", "Indoor, ~5 fps. Hand wave, fidget spinner, MTI."], "range_doppler_far": ["Range + Vel (Far)", "Outdoor, out to ~180 m, ~2.4 fps."], "range": ["Range (Basic)", "FMCW lab: the 0 m calibration and kHz per metre."], "range_sync": ["Range (Fast)", "A steeper chirp, out to ~375 m."], "cfar": ["Range (CFAR)", "CFAR lab: tune the threshold, then Apply."], "l31_record": ["Range + Vel (L31)", "L31 records: 0.3 MS/s, continuous captures up to ~14 s, out to 4 m."]};
 export const MTI_MODES = ["none", "2pulse", "3pulse"];
 export const MAINLOBE_HALF_BINS = {"blackman": 3, "hann": 2, "hamming": 2, "rect": 1};
 export const MAP_SPAN_DB = 100.0;
@@ -58,6 +58,9 @@ export const MAX_BURST_BUFFER = 4194304;
 export const RAMP_SETTLE_FRACTION = 0.1;
 // Single-chirp frames per saved capture (the course .npz).
 export const CAPTURE_SINGLE_CHIRP_FRAMES = 32;
+export const CAPTURE_MAX_FRAMES_S = 60.0;
+export const CAPTURE_FRAME_S = 0.05;
+export const BYTES_PER_SAMPLE = 8;
 
 // --- phaser_headless ---------------------------------------------------------
 // The frame-rate cap the main loop applies to radar frames.

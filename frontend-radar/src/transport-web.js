@@ -83,7 +83,8 @@ export function createWebTransport(callbacks = {}) {
         }
     }
 
-    function invoke(cmd, args = {}) {
+    // timeoutMs: a long Save Capture takes as long as its duration, and more.
+    function invoke(cmd, args = {}, timeoutMs = 30000) {
         return new Promise((resolve, reject) => {
             if (!ws || ws.readyState !== WebSocket.OPEN) {
                 reject(new Error('Not connected'));
@@ -98,7 +99,7 @@ export function createWebTransport(callbacks = {}) {
                     pendingRequests.delete(id);
                     reject(new Error('Timeout'));
                 }
-            }, 30000);
+            }, timeoutMs);
         });
     }
 

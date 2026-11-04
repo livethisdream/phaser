@@ -289,6 +289,9 @@ export const MAX_BURST_BUFFER = {dsp.MAX_BURST_BUFFER!r};
 export const RAMP_SETTLE_FRACTION = {dsp.RAMP_SETTLE_FRACTION!r};
 // Single-chirp frames per saved capture (the course .npz).
 export const CAPTURE_SINGLE_CHIRP_FRAMES = {dsp.CAPTURE_SINGLE_CHIRP_FRAMES!r};
+export const CAPTURE_MAX_FRAMES_S = {dsp.CAPTURE_MAX_FRAMES_S!r};
+export const CAPTURE_FRAME_S = {dsp.CAPTURE_FRAME_S!r};
+export const BYTES_PER_SAMPLE = {dsp.BYTES_PER_SAMPLE!r};
 
 // --- phaser_headless ---------------------------------------------------------
 // The frame-rate cap the main loop applies to radar frames.

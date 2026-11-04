@@ -1547,3 +1547,8 @@ input.set-ctrl {
 .status-indicator:not(.btn-hold) > .btn-hold-fill {
   display: none;
 }
+
+/* A settings box whose value cannot be used (e.g. a capture too long). */
+.set-ctrl.set-invalid {
+    border-color: var(--error);
+}
