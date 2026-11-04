@@ -590,3 +590,77 @@ Scope, to be planned in phases and reviewed before any code:
    off, CFAR on) -- parity is only as strong as that matrix.
 5. Publish the radar UI on Pages beside the beamforming demo, with the same
    three guards that keep the sim default off hardware builds.
+
+## Capture and playback fixes (planned 2026-11-04, not started)
+
+Reported by the ECE 444 L28 thread. Findings below are from `radar-dev` at
+`f38633a`: the simulator, the Python and JS code, and saves replayed through
+`playback-worker.js` under Windows Node. No kit was involved.
+
+Open decisions: the 1 m default in item 4, and merging #85 first (item 1).
+Neither has been approved yet.
+
+### Findings
+
+| Issue | Status | Cause |
+| --- | --- | --- |
+| Course recordings play 66 dB low | Reproduced: exactly 66.2 dB | Course files (`ece444 scripts/radar/fmcw_sim.py`) are complex64 in full-scale units, with `|iq|` = 1 at 0 dBFS (peaks 0.14 to 0.37). `_to_db`/`toDb` divide by 2**11 again, as if they held ADC counts. |
+| Save Capture reads 40-60 dB high in the notebook | Reported, same cause reversed | Save Capture stores raw counts (peak about 500), and the notebook treats them as full scale. |
+| Calibrate misses the plate | Reproduced by setting 0 m above the plate's beat | `range_profile` and `range_doppler_map` crop to range >= 0, so the plate is cropped out and the next cell wins (due at -1 m, picked 1.66 m). `fmcwPeak` also ignores `cal` when averaging. A real kit's beat below the IF tone would hit this, unverified. |
+| Peak Range reads leakage | Seen by the L28 thread | `L28_corner_3m.npz` gives Peak Range 0.25 m, because the corner at 3 m is weaker than the leakage. |
+| Single-chirp save replays as a burst | Fixed on `radar-dev` by #83, still on `main` at the time of writing | The old simulator stamped 32 back-to-back frames (PRI 3.9 ms), under `playbackLayout`'s 5 ms burst limit. Now 50 ms, replays as profiles. |
+| One-chirp save stores the wrong PRI | Reproduced | Duration 0.05 s stores the plan's PRI (2 ms on `range`, 1.5 ms on `range_sync`) instead of 50 ms. |
+| "metre", "Colour" | Found | Two radar UI tooltips, preset text in `phaser_radar_dsp.py` (it feeds `constants.generated.js`), comments, tests and docs. |
+
+### Plan
+
+1. **Merge #85** so `main` and the Pages demo get the burst fix. Files already
+   saved with the old PRI still replay as bursts; leave those.
+2. **One unit: full scale.** Everything else below is one PR into `radar-dev`,
+   Python first, then the JS mirror, with parity cases added
+   (`tests/test_radar_sim_parity.py`).
+   - Save Capture divides `iq` and `iq_ch` by 2**11, in `capture_npz` and in
+     `engine.js saveFmcwCapture`.
+   - Load Capture multiplies by 2**11 before `fmcwPayload`.
+   - A peak `|iq|` above 4 cannot be full scale (two channels sum to at most
+     about 2.83), so older raw-count saves load as counts, with a log line.
+   - The saved scale changes, so ask the ece444 thread to check
+     `radar_lab.load_capture` and its autograders.
+3. **Calibrate searches the whole band.** `cal_peak_range` ignores the display
+   crop, including below 0 m, and `fmcwPeak` uses it when averaging too. That
+   should make the page's "type 95 in 0 m Beat" workaround unnecessary; remove
+   it from the course page if so.
+4. **Peak Range skips leakage.** A minimum range in the peak search on
+   range-profile frames, proposed default 1 m (the Blackman main lobe is about
+   0.9 m at B = 500 MHz, and leakage at 0.25 m spreads past a smaller cutoff).
+   Adjustable, 0 turns it off. A real target inside it is not reported.
+   Calibrate still reads the strongest cell anywhere.
+5. **One-chirp PRI.** Store 50 ms, not the plan's PRI.
+6. **Spelling.** meter and color throughout, plurals too, then
+   `python tools/gen_sim_constants.py`. `frontend-radar/dist/` is rebuilt by CI.
+
+Test item 4 on `L28_corner_3m.npz` if the file is available (it is in ece444,
+not this repo), otherwise on an equivalent synthetic file. Run the full suite
+where Node is on the path: the JS parity tests skip without it.
+
+### Then on the kit: C5 on phaser-00
+
+Needs local access, so not a cloud step. phaser-00 answers at
+`phaser-00.local` but rejects the laptop's SSH key, so add the key first, then
+install `radar-dev`. Check especially that a DC spur or real leakage does not
+beat the plate in the whole-band Calibrate, and that 1 m suits item 4. The
+simulator models neither.
+
+| # | Step | Result to record |
+| --- | --- | --- |
+| 1 | Startup log, FMCW available, IF, clock | Pass/fail |
+| 2 | `tools/bench_fmcw_capture.py` against `--no-prefetch` (expected ~220 ms a frame) | Frame timings |
+| 3 | Reflector at about 0 m, calibrate through the pop-up | `zero_range_freq` |
+| 4 | Reflector at 1, 2 and 3 m | Hz/m against 3.34 kHz/m |
+| 5 | Steer off target | Amplitude drop |
+| 6 | Hand wave toward and away, MTI on and off | Doppler sign, clutter suppression |
+| 7 | CFAR in both modes | Working bias, guard, ref |
+| 8 | Stop FMCW, sweep with the HB100; Hardware pane for each preset | Beam matches the one before |
+| 9 | Save Capture: empty room, static reflector, walker | Real noise floor, clutter and fading, to replace #84's estimates |
+
+Add the results to this doc.
