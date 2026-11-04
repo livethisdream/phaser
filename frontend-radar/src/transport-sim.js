@@ -53,7 +53,8 @@ export function createSimTransport(callbacks = {}) {
         if (worker) worker.postMessage(msg);
     }
 
-    function invoke(cmd, args = {}) {
+    // timeoutMs: a long Save Capture takes as long as its duration, and more.
+    function invoke(cmd, args = {}, timeoutMs = 30000) {
         return new Promise((resolve, reject) => {
             if (!worker) { reject(new Error('Simulator not started')); return; }
             const id = `sim_${++requestId}`;
@@ -64,7 +65,7 @@ export function createSimTransport(callbacks = {}) {
                     pending.delete(id);
                     reject(new Error('Timeout'));
                 }
-            }, 30000);
+            }, timeoutMs);
         });
     }
 

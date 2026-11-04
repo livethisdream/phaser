@@ -15,6 +15,7 @@ import {
     AMP_SCALE, C, ELEMENT_SPACING_M, NOISE_SIGMA, RX_GAIN_AMPLITUDE,
     SCENE_PT_DBM, SCENE_GTGR_DB, SCENE_NF_DB, SCENE_NOISE_DBFS, SCENE_LEAKAGE_DBFS,
     SCENE_R_MIN, SCENE_FULL_SCALE, SCENE_WALKER_PHASES,
+    SCENE_NOISE, FMCW_DEFAULT_SCENE_NOISE, SCENE_CLUTTER, SCENE_SKIRT, SCENE_FLUCT_HZ, SCENE_FLUCT_PHASE,
 } from './constants.generated.js';
 import { roundHalfEven } from './dsp.js';
 
@@ -179,17 +180,54 @@ export function sceneEchoDbfs(r, rcs, fs, fc) {
     return SCENE_NOISE_DBFS + prDbm - noiseDbm;
 }
 
+/** phaser_sim.scene_fluct_db: scatterer k's fading at time t, within +-depthDb. */
+export function sceneFluctDb(t, k, depthDb) {
+    if (!depthDb) return 0;
+    let tone = 0;
+    for (let i = 0; i < SCENE_FLUCT_HZ.length; i++) {
+        tone += Math.sin(2 * Math.PI * SCENE_FLUCT_HZ[i] * t + SCENE_FLUCT_PHASE[i] * (k + 1));
+    }
+    return (depthDb * tone) / SCENE_FLUCT_HZ.length;
+}
+
 /**
- * A scene's scatterers as [{range(t), level(r), phase0, az}]: range in m at
- * absolute time t, s; level in dBFS for that range. The same list, in the same
- * order, as phaser_sim.scene_scatterers.
+ * A scene's scatterers as [{range(t), level(r, t), phase0, az}]: range in m at
+ * absolute time t, s; level in dBFS for that range and time. The same list, in
+ * the same order, as phaser_sim.scene_scatterers, `noise` (SCENE_NOISE) adding
+ * the room's clutter and the leakage skirt and fading the moving targets.
  */
-export function sceneScatterers(name, fs, fc) {
+export function sceneScatterers(name, fs, fc, noise = FMCW_DEFAULT_SCENE_NOISE) {
+    const out = sceneTargets(name, fs, fc);
+    if (name === 'static') return out;
+    const level = SCENE_NOISE[noise];
+    if (!level) throw new Error(`unknown scene noise '${noise}'`);
+    const depth = level.fluct_db;
+    let res = out;
+    if (depth && name !== 'corners') {          // corner reflectors hold steady
+        res = [out[0], ...out.slice(1).map((sc, k) => ({
+            ...sc, level: (r, t) => sc.level(r, t) + sceneFluctDb(t, k, depth),
+        }))];
+    }
+    if (level.clutter_db !== null) {
+        const extra = level.clutter_db;
+        for (const [r0, lv, p0] of SCENE_SKIRT) {
+            res.push({ range: () => r0, level: () => lv + extra, phase0: p0, az: 0, still: true });
+        }
+        for (const [r0, rcs, p0, az] of SCENE_CLUTTER) {
+            res.push({ range: () => r0, level: (r) => sceneEchoDbfs(r, rcs, fs, fc) + extra, phase0: p0, az, still: true });
+        }
+    }
+    return res;
+}
+
+/** A scene's own scatterers, as fmcw_sim places them: leakage first. */
+function sceneTargets(name, fs, fc) {
     const echo = (rcs) => (r) => sceneEchoDbfs(r, rcs, fs, fc);
-    const out = [{ range: () => 0, level: () => SCENE_LEAKAGE_DBFS, phase0: 0.7, az: 0 }];
+    // `still`: range and level never change, so every chirp is the same one.
+    const out = [{ range: () => 0, level: () => SCENE_LEAKAGE_DBFS, phase0: 0.7, az: 0, still: true }];
     if (name === 'corners') {
         for (const [r0, ph] of [[1.0, 0.0], [2.0, 1.1], [3.0, 2.3]]) {
-            out.push({ range: () => r0, level: echo(0.47), phase0: ph, az: 0 });
+            out.push({ range: () => r0, level: echo(0.47), phase0: ph, az: 0, still: true });
         }
     } else if (name === 'hand') {
         out.push({ range: (t) => 0.6 + 0.15 * Math.sin(2 * Math.PI * 1.0 * t), level: echo(0.02), phase0: 1.3, az: 0 });
@@ -219,7 +257,7 @@ export function sceneScatterers(name, fs, fc) {
  * A live scene, chirp by chirp at absolute time t0 + m PRI + t_fast:
  * phaser_sim._synthesize_fmcw_scene. Pre-AMP_SCALE units, like the others.
  */
-export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, t0, elements, phaseError }) {
+export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, noise, t0, elements, phaseError }) {
     const chans = emptyChannels(n);
     const numChirps = Math.max(1, Math.trunc(fmcw.num_chirps));
     let slot, rampN;
@@ -235,16 +273,31 @@ export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, t0, elements, ph
     const wavelength = C / Math.max(fc, 1);
     const pri = fmcw.pri, fIf = fmcw.signal_freq;
     const wr = new Float64Array(rampN), wi = new Float64Array(rampN);
-    for (const sc of sceneScatterers(scene, fs, fc)) {
+    const still = emptyChannels(rampN);
+    for (const sc of sceneScatterers(scene, fs, fc, noise)) {
         const coef = subarrayCoefficients(elements, phaseError, sc.az, 1.0, wavelength);
+        if (sc.still) {
+            // Range and level never change: the same chirp in every slot, so
+            // the still scatterers sum into one template, added once a slot.
+            const r = sc.range(t0);
+            const amp = (SCENE_FULL_SCALE * 10 ** (sc.level(r, t0) / 20)) / AMP_SCALE / 8;
+            for (let i = 0; i < rampN; i++) {
+                const ph = 2 * Math.PI * (fIf + (2 * slope * r) / C) * (i / fs) - (4 * Math.PI * r * fc) / C + sc.phase0;
+                wr[i] = amp * Math.cos(ph); wi[i] = amp * Math.sin(ph);
+            }
+            addScaled(still[0], coef[0], wr, wi);
+            addScaled(still[1], coef[1], wr, wi);
+            continue;
+        }
         for (let m = 0; m < numChirps; m++) {
             const offset = m * slot;
             if (offset >= n) break;
             const len = Math.min(rampN, n - offset);
             for (let i = 0; i < len; i++) {
                 const tf = i / fs;
-                const r = sc.range(t0 + m * pri + tf);
-                const amp = (SCENE_FULL_SCALE * 10 ** (sc.level(r) / 20)) / AMP_SCALE / 8;
+                const t = t0 + m * pri + tf;
+                const r = sc.range(t);
+                const amp = (SCENE_FULL_SCALE * 10 ** (sc.level(r, t) / 20)) / AMP_SCALE / 8;
                 const ph = 2 * Math.PI * (fIf + (2 * slope * r) / C) * tf - (4 * Math.PI * r * fc) / C + sc.phase0;
                 wr[i] = amp * Math.cos(ph); wi[i] = amp * Math.sin(ph);
             }
@@ -254,8 +307,24 @@ export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, t0, elements, ph
             addScaled(chans[1], coef[1], wrS, wiS, offset);
         }
     }
+    for (let m = 0; m < numChirps; m++) {
+        const offset = m * slot;
+        if (offset >= n) break;
+        const len = Math.min(rampN, n - offset);
+        for (let c = 0; c < 2; c++) {
+            const dst = chans[c], src = still[c];
+            for (let k = 0; k < len; k++) {
+                dst.re[offset + k] += src.re[k];
+                dst.im[offset + k] += src.im[k];
+            }
+        }
+    }
     return chans;
 }
 
-/** The course's noise floor for a live scene, as phaser_sim applies it: sigma per channel, per part. */
-export const SCENE_NOISE_SIGMA = (SCENE_FULL_SCALE * 10 ** (SCENE_NOISE_DBFS / 20)) / 2;
+/** A live scene's noise floor, as phaser_sim applies it: sigma per channel, per part. */
+export function sceneNoiseSigma(noise = FMCW_DEFAULT_SCENE_NOISE) {
+    const level = SCENE_NOISE[noise];
+    if (!level) throw new Error(`unknown scene noise '${noise}'`);
+    return (SCENE_FULL_SCALE * 10 ** (level.floor_dbfs / 20)) / 2;
+}

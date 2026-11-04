@@ -852,6 +852,7 @@ function readFmcwParams() {
         preset: fmcwEl('fmcw-preset').value || undefined,
         // Simulation only; a kit has no scene to pick.
         scene: state.fmcw.scenes ? (fmcwEl('fmcw-scene')?.value || undefined) : undefined,
+        scene_noise: state.fmcw.sceneNoise ? (fmcwEl('fmcw-scene-noise')?.value || undefined) : undefined,
         // A switch plus a mode in the UI; one value on the backend.
         mti: fmcwEl('fmcw-mti-on').checked ? fmcwEl('fmcw-mti-mode').value : 'none',
         cfar: fmcwEl('fmcw-cfar').checked,
@@ -895,6 +896,8 @@ async function refreshFmcwState() {
                 : `${cap.ramp}${cap.source === 'sim' ? ', simulated' : ''}`;
         }
         state.fmcw.preset_info = d.preset_info || {};
+        state.fmcw.capture = d.capture || null;
+        updateFmcwSaveButton();
         // Scenes: only a simulator reports them. A live, moving scene is the
         // default pick here; the backend's own default is the static one.
         state.fmcw.scenes = d.scenes || null;
@@ -913,6 +916,22 @@ async function refreshFmcwState() {
                     : (FMCW_UI_DEFAULT_SCENE in state.fmcw.scenes ? FMCW_UI_DEFAULT_SCENE : d.scene);
             }
             sceneSel.title = state.fmcw.scenes?.[sceneSel.value] || '';
+        }
+        state.fmcw.sceneNoise = d.scene_noise_levels || null;
+        const noiseRow = fmcwEl('fmcw-scene-noise-row'), noiseSel = fmcwEl('fmcw-scene-noise');
+        if (noiseRow && noiseSel) {
+            const levels = state.fmcw.sceneNoise;
+            noiseRow.hidden = !levels;
+            if (levels && noiseSel.options.length !== Object.keys(levels).length) {
+                noiseSel.innerHTML = '';
+                for (const [name, label] of Object.entries(levels)) {
+                    const opt = new Option(name[0].toUpperCase() + name.slice(1), name);
+                    opt.title = label;
+                    noiseSel.add(opt);
+                }
+                noiseSel.value = d.running && d.scene_noise ? d.scene_noise
+                    : (FMCW_UI_DEFAULT_SCENE_NOISE in levels ? FMCW_UI_DEFAULT_SCENE_NOISE : d.scene_noise);
+            }
         }
         const sel = fmcwEl('fmcw-preset');
         if (sel && Array.isArray(d.presets) && sel.options.length !== d.presets.length) {
@@ -1000,6 +1019,12 @@ function updateFmcwControlGating() {
     const presetRow = fmcwEl('fmcw-preset')?.closest('.set-row');
     gateRow(presetRow, Boolean(state.playback), 'Playback: the recording sets the waveform.');
     gateRow(fmcwEl('fmcw-scene-row'), Boolean(state.playback), 'Playback: the recording is the scene.');
+    const staticScene = fmcwEl('fmcw-scene')?.value === 'static';
+    gateRow(fmcwEl('fmcw-scene-noise-row'), Boolean(state.playback) || staticScene,
+            state.playback ? 'Playback: the recording has its own noise.'
+                : 'The static scene has its own fixed noise: pick a live scene.');
+    const noiseSel = fmcwEl('fmcw-scene-noise');
+    if (noiseSel && !noiseSel.disabled) noiseSel.title = state.fmcw.sceneNoise?.[noiseSel.value] || '';
     if (!n) return;  // not known yet
     const multi = n > 1;
     const gate = gateRow;
@@ -1024,12 +1049,22 @@ function updateFmcwControlGating() {
 // The scene a simulator starts in: someone walking, so a first look shows
 // motion rather than a frozen picture.
 const FMCW_UI_DEFAULT_SCENE = 'walker';
+// And a room that looks like a room: clutter, fading and a kit-like floor.
+const FMCW_UI_DEFAULT_SCENE_NOISE = 'typical';
 
 fmcwEl('fmcw-scene')?.addEventListener('change', (e) => {
     e.target.title = state.fmcw.scenes?.[e.target.value] || '';
     state.fmcw.waterfall = null;
     state.fmcw.avg = null;
     pushFmcwParams({ scene: e.target.value });
+    updateFmcwControlGating();
+});
+
+fmcwEl('fmcw-scene-noise')?.addEventListener('change', (e) => {
+    e.target.title = state.fmcw.sceneNoise?.[e.target.value] || '';
+    state.fmcw.waterfall = null;
+    state.fmcw.avg = null;
+    pushFmcwParams({ scene_noise: e.target.value });
 });
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
@@ -1179,15 +1214,57 @@ document.getElementById('fmcw-cal-reset')?.addEventListener('click', () => {
    a range-Doppler preset, 32 single chirps on the others. */
 let fmcwSaving = false;
 
+function formatBytes(n) {
+    if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)} MB`;
+    return `${Math.max(1, Math.round(n / 1e3))} kB`;
+}
+
+/* The Duration box: what this preset can save (get_fmcw_radar_state's
+   capture limits), and the file size it will make -- on hover, and checked
+   before anything is sent. Empty means the preset's default. */
+function captureDuration() {
+    const cap = state.fmcw.capture;
+    const raw = document.getElementById('fmcw-save-dur')?.value;
+    const d = raw === '' || raw == null ? cap?.default_s : parseFloat(raw);
+    return { cap, d, ok: Boolean(cap) && d > 0 && d <= cap.max_s * (1 + 1e-9) };
+}
+
+function updateCaptureEstimate() {
+    const row = document.getElementById('fmcw-save-dur-row');
+    const input = document.getElementById('fmcw-save-dur');
+    const { cap, d, ok } = captureDuration();
+    if (!row || !input) return '';
+    if (!cap) {
+        row.title = 'Start FMCW to see what this preset can save.';
+        return '';
+    }
+    input.placeholder = String(+cap.default_s.toPrecision(3));
+    input.max = String(cap.max_s);
+    input.classList.toggle('set-invalid', !ok);
+    const what = cap.kind === 'burst'
+        ? `One continuous burst, chirps ${+(cap.chirp_s * 1e3).toPrecision(3)} ms apart, up to ${+cap.max_s.toPrecision(3)} s on this preset (the Pluto's burst buffer).`
+        : `Single chirps every ${+(cap.chirp_s * 1e3).toPrecision(3)} ms, up to ${cap.max_s} s.`;
+    const withCh = document.getElementById('fmcw-save-ch')?.checked;
+    const size = ok ? `About ${formatBytes(cap.bytes_per_s * d)}, or ${formatBytes(cap.bytes_per_s_iq_ch * d)} with Subarray Channels${withCh ? ' (on)' : ''}.`
+        : `${+d.toPrecision(3)} s is too long: at most ${+cap.max_s.toPrecision(3)} s here.`;
+    row.title = `${what} Empty: ${+cap.default_s.toPrecision(3)} s. ${size}`;
+    return ok ? `${+d.toPrecision(3)} s, about ${formatBytes((withCh ? cap.bytes_per_s_iq_ch : cap.bytes_per_s) * d)}` : size;
+}
+
 function updateFmcwSaveButton() {
     const btn = document.getElementById('fmcw-save');
     if (!btn) return;
     const ready = state.runningMode === 'fmcw' && !state.playback;
-    btn.disabled = !ready || fmcwSaving;
+    const est = updateCaptureEstimate();
+    const { ok } = captureDuration();
+    btn.disabled = !ready || fmcwSaving || (ready && !ok);
     btn.title = state.playback ? 'Saving is for live captures; this is a recording already'
-        : ready ? 'Save raw chirps as a course .npz (iq, fs, fc, B, T_ramp, PRI, f0), downloaded to this computer'
-        : 'Start FMCW to save a capture';
+        : !ready ? 'Start FMCW to save a capture'
+        : !ok ? est
+        : `Save raw chirps as a course .npz (iq, fs, fc, B, T_ramp, PRI, f0), downloaded to this computer: ${est}`;
 }
+document.getElementById('fmcw-save-dur')?.addEventListener('input', updateFmcwSaveButton);
+document.getElementById('fmcw-save-ch')?.addEventListener('change', updateFmcwSaveButton);
 
 function captureFilename(preset) {
     const d = new Date();
@@ -1202,9 +1279,11 @@ document.getElementById('fmcw-save')?.addEventListener('click', async () => {
     updateFmcwSaveButton();
     btn.textContent = 'Saving...';
     try {
+        const { d } = captureDuration();
         const resp = await transport.invoke('save_fmcw_capture', {
             iq_ch: Boolean(document.getElementById('fmcw-save-ch')?.checked),
-        });
+            duration_s: d,
+        }, 60000 + 2000 * (d || 0));
         if (resp.status !== 'ok') throw new Error(resp.message || 'capture failed');
         const name = captureFilename(resp.preset);
         const url = URL.createObjectURL(new Blob([fromBase64(resp.data)], { type: 'application/octet-stream' }));

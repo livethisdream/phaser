@@ -92,7 +92,7 @@ def _python_frame(mode, params, clock=None):
         h.sweeping = False
         h.cw_params = {}
         h.cw_saved_sdr = {}
-        h.cw_lock = threading.Lock()
+        h.cw_lock = threading.RLock()
         h.fmcw_params = {}
         h.fmcw_saved = {}
         h.fmcw_hw = None
@@ -208,6 +208,10 @@ SAVE_CASES = [
     ("save_rd", {}, False),
     ("save_rd_iq_ch_calibrated", {"zero_range_freq": 103_000.0}, True),
     ("save_range", {"preset": "range"}, False),
+    # Duration: a burst trimmed, a long continuous burst, L31's long record.
+    ("save_rd_short", {"duration_s": 0.05}, False),
+    ("save_rd_long", {"duration_s": 0.5}, False),
+    ("save_l31_long_iq_ch", {"preset": "l31_record", "duration_s": 1.5}, True),
 ]
 
 _JS_SAVE_DRIVER = """
@@ -216,8 +220,9 @@ const cases = JSON.parse(process.argv[2]);
 const out = {};
 for (const [name, params, iqCh] of cases) {
     const engine = createRadarEngine({ noiseSigma: 0 });
-    engine.handle('start_fmcw_radar', params);
-    const resp = engine.handle('save_fmcw_capture', { iq_ch: iqCh });
+    const { duration_s, ...start } = params;
+    engine.handle('start_fmcw_radar', start);
+    const resp = engine.handle('save_fmcw_capture', { iq_ch: iqCh, duration_s });
     if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
     out[name] = resp.data;
 }
@@ -260,11 +265,12 @@ def _python_save(params, iq_ch):
         h.c = 299792458
         h._do_init_hardware()
         h.mode, h.sweeping = "idle", False
-        h.cw_params, h.cw_saved_sdr, h.cw_lock = {}, {}, threading.Lock()
+        h.cw_params, h.cw_saved_sdr, h.cw_lock = {}, {}, threading.RLock()
         h.fmcw_params, h.fmcw_saved, h.fmcw_hw = {}, {}, None
         h.fmcw_cfg = h.fmcw_plan = h.cal_process = None
-        assert h.start_fmcw_radar(dict(params))["status"] == "ok"
-        resp = h.save_fmcw_capture({"iq_ch": iq_ch})
+        start = {k: v for k, v in params.items() if k != "duration_s"}
+        assert h.start_fmcw_radar(start)["status"] == "ok"
+        resp = h.save_fmcw_capture({"iq_ch": iq_ch, "duration_s": params.get("duration_s")})
         assert resp["status"] == "ok", resp
         return resp["data"]
     finally:
@@ -416,19 +422,27 @@ def test_playback_frame_matches_python_on_a_saved_capture(preset, settings, tmp_
 # wrong way, fails at the times where it differs.
 
 SCENE_CASES = [
-    (f"{scene}_{preset}_t{t}", scene, preset, t)
+    (f"{scene}_{preset}_t{t}", scene, preset, t, "clean")
     for scene in ("corners", "walker", "hand")
     for preset in ("range_doppler", "range")
     for t in (0.0, 0.8, 2.6)
+] + [
+    # Scene noise: the clutter, skirt and fading are deterministic, so they
+    # compare frame for frame like the targets (the floor is off here).
+    (f"{scene}_{preset}_t{t}_{noise}", scene, preset, t, noise)
+    for noise in ("typical", "noisy")
+    for scene in ("corners", "walker", "hand")
+    for preset in ("range_doppler", "range")
+    for t in (0.8, 2.6)
 ]
 
 _JS_SCENE_DRIVER = """
 import { createRadarEngine } from '%(sim)s/engine.js';
 const cases = JSON.parse(process.argv[2]);
 const out = {};
-for (const [name, scene, preset, t] of cases) {
+for (const [name, scene, preset, t, scene_noise] of cases) {
     const engine = createRadarEngine({ noiseSigma: 0, clock: () => t });
-    const resp = engine.handle('start_fmcw_radar', { preset, scene });
+    const resp = engine.handle('start_fmcw_radar', { preset, scene, scene_noise });
     if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
     out[name] = engine.frame().data;
 }
@@ -450,9 +464,9 @@ def js_scene_frames(tmp_path_factory):
     return json.loads(proc.stdout)
 
 
-@pytest.mark.parametrize("name,scene,preset,t", SCENE_CASES, ids=[c[0] for c in SCENE_CASES])
-def test_scene_frame_matches_python(name, scene, preset, t, js_scene_frames):
-    py = _python_frame("fmcw", {"preset": preset, "scene": scene}, clock=t)
+@pytest.mark.parametrize("name,scene,preset,t,noise", SCENE_CASES, ids=[c[0] for c in SCENE_CASES])
+def test_scene_frame_matches_python(name, scene, preset, t, noise, js_scene_frames):
+    py = _python_frame("fmcw", {"preset": preset, "scene": scene, "scene_noise": noise}, clock=t)
     js = js_scene_frames[name]
     # Corners hold still: with the noise off, the cells the moving-target peak
     # searches hold only rounding (~-300 dB), and which of two equal ones it

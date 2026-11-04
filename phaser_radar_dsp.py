@@ -662,6 +662,35 @@ def rounded(values, decimals):
 
 # Single-chirp captures per saved file: the course's L28 recordings are 32.
 CAPTURE_SINGLE_CHIRP_FRAMES = 32
+# A single-chirp save takes frames at the live frame interval (RADAR_MAX_FPS,
+# 50 ms -- the L28 recordings' PRI), for at most this long.
+CAPTURE_MAX_FRAMES_S = 60.0
+CAPTURE_FRAME_S = 0.05
+BYTES_PER_SAMPLE = 8        # complex64
+
+
+def capture_limits(plan):
+    """What a saved capture can be for this plan, for the UI's Duration box.
+
+    {"kind": "burst"|"frames", "default_s", "max_s", "chirp_s",
+     "bytes_per_s", "bytes_per_s_iq_ch"} -- the size is iq's alone, plus the
+    header bytes a file carries regardless; iq_ch triples it (iq + 2 halves).
+    A burst is continuous chirps a PRI apart, as long as the Pluto's burst
+    buffer holds (MAX_BURST_BUFFER samples); frames are single chirps at
+    the live frame interval.
+    """
+    good = int(plan["good_ramp_samples"])
+    if plan.get("synced") and plan["num_chirps"] > 1:
+        pri = float(plan["pri_ms"]) / 1e3
+        max_chirps = int(MAX_BURST_BUFFER // (float(plan["sample_rate"]) * pri))
+        per_s = good * BYTES_PER_SAMPLE / pri
+        return {"kind": "burst", "default_s": plan["num_chirps"] * pri,
+                "max_s": max_chirps * pri, "chirp_s": pri,
+                "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
+    per_s = good * BYTES_PER_SAMPLE / CAPTURE_FRAME_S
+    return {"kind": "frames", "default_s": CAPTURE_SINGLE_CHIRP_FRAMES * CAPTURE_FRAME_S,
+            "max_s": CAPTURE_MAX_FRAMES_S, "chirp_s": CAPTURE_FRAME_S,
+            "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
 
 
 def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None):
@@ -874,6 +903,22 @@ FMCW_PRESETS = {
         "tx_gain": 0,
         "range_max": 100.0,
     },
+    # The ECE 444 L31 classification records (ece444 radar-data/L31_*.npz):
+    # 300 us chirps every 0.5 ms at 0.3 MS/s. The low rate is what makes a
+    # long continuous record fit the Pluto's burst buffer -- ~14 s against
+    # ~2 s at range_doppler's 2 MS/s -- at the cost of range: the beat
+    # reaches Nyquist 4.5 m above the 0 m frequency, so the display stops at 4 m.
+    "l31_record": {
+        "sample_rate": 300_000,
+        "output_freq": 10e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 300e-6,
+        "num_chirps": 256,
+        "pri_guard_ms": 0.2,
+        "rx_gain": 60,
+        "tx_gain": 0,
+        "range_max": 4.0,
+    },
 }
 
 
@@ -902,6 +947,7 @@ FMCW_PRESET_UI = {
     "range": ("Range (Basic)", "FMCW lab: the 0 m calibration and kHz per metre."),
     "range_sync": ("Range (Fast)", "A steeper chirp, out to ~375 m."),
     "cfar": ("Range (CFAR)", "CFAR lab: tune the threshold, then Apply."),
+    "l31_record": ("Range + Vel (L31)", "L31 records: 0.3 MS/s, continuous captures up to ~14 s, out to 4 m."),
 }
 
 

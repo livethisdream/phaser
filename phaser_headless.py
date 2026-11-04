@@ -1036,7 +1036,7 @@ class PhaserHeadless:
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
         "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
-        "scene",
+        "scene", "scene_noise",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
     # Params written straight to the hardware while running, as CW does.
@@ -1135,6 +1135,7 @@ class PhaserHeadless:
                     True,
                     plan=self.fmcw_plan,
                     scene=cfg.get("scene"),
+                    scene_noise=cfg.get("scene_noise"),
                     chirp_bw=cfg["chirp_bw"],
                     signal_freq=cfg["signal_freq"],
                     output_freq=cfg["output_freq"],
@@ -1205,6 +1206,8 @@ class PhaserHeadless:
                 # A simulated scene changes on the next frame; a kit has no scene.
                 if "scene" in params and self.sim_mode and hasattr(self.sdr, "set_fmcw_scene"):
                     self.sdr.set_fmcw_scene(params["scene"])
+                if "scene_noise" in params and self.sim_mode and hasattr(self.sdr, "set_fmcw_scene_noise"):
+                    self.sdr.set_fmcw_scene_noise(params["scene_noise"])
             except Exception as e:
                 print(f"[FMCW] live param update failed: {e}")
                 return {"status": "error", "message": str(e)}
@@ -1253,24 +1256,67 @@ class PhaserHeadless:
             "plan": getattr(self, "fmcw_plan", None) if running else None,
             "capability": self.get_radar_capabilities()["data"]["fmcw"],
         }
+        # What Save Capture can do with this preset: the Duration box's
+        # default, maximum, and the size per second, for the UI's estimate.
+        try:
+            p = data["plan"]
+            if p is None and cfg is not None:
+                ramp = (self.get_radar_capabilities()["data"]["fmcw"].get("ramp")
+                        or phaser_radar_dsp.RAMP_SYNCED)
+                p = phaser_radar_dsp.chirp_plan(cfg, ramp, phaser_radar_dsp.ramp_time_us(cfg))
+            data["capture"] = phaser_radar_dsp.capture_limits(p) if p else None
+        except (ValueError, KeyError):
+            data["capture"] = None
         if self.sim_mode:
             # Simulation only: the live scenes the UI can pick from.
             import phaser_sim
             data["scenes"] = dict(phaser_sim.FMCW_SCENES)
             data["scene"] = (cfg or {}).get("scene") or phaser_sim.FMCW_DEFAULT_SCENE
+            data["scene_noise_levels"] = dict(phaser_sim.SCENE_NOISE_LEVELS)
+            data["scene_noise"] = (cfg or {}).get("scene_noise") or phaser_sim.FMCW_DEFAULT_SCENE_NOISE
         if error:
             data["error"] = error
         return {"status": "ok", "data": data}
 
+    def _capture_long_burst(self, chirps, want_ch):
+        """One burst of `chirps` chirps: re-enter FMCW for it, capture, put back.
+
+        The burst length is part of the plan (TDD burst count, Rx buffer), so
+        a longer one than the preset's means a re-entered mode, as a preset
+        change does. The caller holds mode_lock. The mode is put back however
+        the capture goes.
+        """
+        saved = dict(getattr(self, "fmcw_params", None) or {})
+        preset = getattr(self, "fmcw_preset", None)
+        try:
+            self.fmcw_params = {**saved, "num_chirps": int(chirps)}
+            if preset:
+                self.fmcw_params.setdefault("preset", preset)
+            self._set_mode("idle")
+            resp = self._set_mode("fmcw_radar")
+            if resp.get("status") != "ok":
+                raise RuntimeError(resp.get("message", "could not enter FMCW for the capture"))
+            return phaser_fmcw_radar.capture_fmcw_frame(
+                self.sdr, self.fmcw_hw, self.fmcw_plan, channels=want_ch)
+        finally:
+            self.fmcw_params = saved
+            self._set_mode("idle")
+            self._set_mode("fmcw_radar")
+
     def save_fmcw_capture(self, params=None):
         """Capture raw chirps into the course .npz and return it, base64.
 
-        Range-Doppler presets save one burst (num_chirps chirps, PRI apart);
-        single-chirp presets save CAPTURE_SINGLE_CHIRP_FRAMES consecutive
-        frames as rows, with PRI the measured frame interval, as the course's
-        L28 recordings do. `iq_ch` adds the two subarray channels (the L31
-        monopulse task), doubling the size. The browser names and downloads
-        the file.
+        `duration_s` sets the length (phaser_radar_dsp.capture_limits says
+        what this preset allows; None is its default):
+          * a range-Doppler preset saves one continuous burst, chirps a PRI
+            apart. Up to num_chirps it is the next burst, trimmed; longer,
+            the mode is re-entered for one burst of duration / PRI chirps --
+            what fits the Pluto's burst buffer -- and then put back.
+          * a single-chirp preset saves consecutive frames at the live frame
+            interval, PRI the measured interval, as the course's L28
+            recordings do.
+        `iq_ch` adds the two subarray channels (the L31 monopulse task),
+        tripling the size. The browser names and downloads the file.
 
         Holds mode_lock throughout, so frames pause while it captures.
         """
@@ -1282,22 +1328,52 @@ class PhaserHeadless:
             cfg, plan = self.fmcw_cfg, self.fmcw_plan
             if self.mode != "fmcw_radar" or cfg is None or plan is None:
                 return {"status": "error", "message": "Start FMCW to save a capture"}
-            frames = 1 if plan["num_chirps"] > 1 else phaser_radar_dsp.CAPTURE_SINGLE_CHIRP_FRAMES
-            rows, rows_ch, stamps = [], [[], []], []
-            for _ in range(frames):
-                stamps.append(time.perf_counter())
-                got = phaser_fmcw_radar.capture_fmcw_frame(
-                    self.sdr, self.fmcw_hw, plan, channels=want_ch)
+            limits = phaser_radar_dsp.capture_limits(plan)
+            duration = params.get("duration_s")
+            duration = limits["default_s"] if duration in (None, "") else float(duration)
+            if not (duration > 0) or duration > limits["max_s"] * (1 + 1e-9):
+                return {"status": "error",
+                        "message": f"Duration must be more than 0 and at most "
+                                   f"{limits['max_s']:.3g} s on this preset"}
+            if limits["kind"] == "burst":
+                chirps = max(2, int(round(duration / limits["chirp_s"])))
+                if chirps <= plan["num_chirps"]:
+                    grabs = [phaser_fmcw_radar.capture_fmcw_frame(
+                        self.sdr, self.fmcw_hw, plan, channels=want_ch)]
+                else:
+                    try:
+                        grabs = [self._capture_long_burst(chirps, want_ch)]
+                    except Exception as e:  # noqa: BLE001 -- report, the mode is restored
+                        return {"status": "error", "message": f"Long capture failed: {e}"}
+                    cfg, plan = self.fmcw_cfg, self.fmcw_plan
+                stamps = []
+            else:
+                frames = max(1, int(round(duration / limits["chirp_s"])))
+                grabs, stamps = [], []
+                t_start = time.perf_counter()
+                for k in range(frames):
+                    # Paced like the live frames, so PRI is the course's 50 ms.
+                    wait = t_start + k * limits["chirp_s"] - time.perf_counter()
+                    if wait > 0:
+                        time.sleep(wait)
+                    stamps.append(time.perf_counter())
+                    grabs.append(phaser_fmcw_radar.capture_fmcw_frame(
+                        self.sdr, self.fmcw_hw, plan, channels=want_ch))
+            rows, rows_ch = [], [[], []]
+            for got in grabs:
                 mats = got if want_ch else (got,)
                 mats = [np.asarray(m) for m in mats]
                 if mats[0].ndim == 1:      # free-running: one long "chirp"
                     mats = [m[:, None] for m in mats]
+                if limits["kind"] == "burst":
+                    mats = [m[:, :chirps] for m in mats]
                 if want_ch:
                     rows_ch[0].append(mats[0].T)
                     rows_ch[1].append(mats[1].T)
                     rows.append(mats[0].T + mats[1].T)
                 else:
                     rows.append(mats[0].T)
+            frames = len(grabs)
 
         iq = np.concatenate(rows, axis=0)
         iq_ch = (np.stack([np.concatenate(rows_ch[0]), np.concatenate(rows_ch[1])])
@@ -1325,6 +1401,7 @@ class PhaserHeadless:
             "preset": preset,
             "n_chirps": int(iq.shape[0]),
             "n_samples": int(iq.shape[1]),
+            "duration_s": float(iq.shape[0] * pri),
             "iq_ch": want_ch,
             "size": len(blob),
             "note": note,
