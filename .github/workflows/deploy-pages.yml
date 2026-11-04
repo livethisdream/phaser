@@ -214,7 +214,14 @@ jobs:
           // into an angle with Plotly-internal geometry
           // (_fullLayout.polar._subplot.cx/cy/radius); this is what catches a
           // Plotly upgrade that moves it, by doing the drag for real and
-          // checking the beam follows.
+          // checking the beam follows. Plot Options > Show HB100 starts off,
+          // so turn it on first, as a user would.
+          await page.evaluate(() => {
+            const t = document.getElementById('opt-show-hb100');
+            if (!t) throw new Error('Plot Options > Show HB100 (#opt-show-hb100) is gone');
+            t.checked = true;
+            t.dispatchEvent(new Event('change'));
+          });
           await page.click('.tab-btn[data-target="tab-polar"]');
           await page.waitForTimeout(1000);
           const geo = await page.evaluate(() => {
