@@ -145,6 +145,50 @@ FMCW_DEFAULT_SCENE = "static"
 # written out so the JS port carries the same numbers.
 SCENE_WALKER_PHASES = (3.2142, 5.9689, 0.9053, 5.9575, 1.9583)
 
+# How messy a live scene is. A kit sees more than fmcw_sim's clean targets:
+# a higher floor, a skirt of leakage past 0 m, a room full of things that
+# hold still (which MTI is for), and targets whose return fades as they turn.
+# These are estimates, to be tuned against kit captures. "clean" is the
+# course's simulator exactly. The static scene ignores all of this.
+SCENE_NOISE_LEVELS = {
+    "clean": "Clean: the course's simulator, targets and noise floor only",
+    "typical": "Typical: a room's clutter, leakage skirt, ~3 dB target fading, 10 dB more noise",
+    "noisy": "Noisy: stronger clutter, ~6 dB fading, 18 dB more noise",
+}
+FMCW_DEFAULT_SCENE_NOISE = "clean"
+# floor_dbfs: receiver noise per complex sample, summed array (replaces
+# SCENE_NOISE_DBFS for the floor only; echo levels stay referenced to it).
+# clutter_db: added to every clutter and skirt return, or None for none.
+# fluct_db: peak depth of the moving targets' fading, dB.
+SCENE_NOISE = {
+    "clean": {"floor_dbfs": -60.0, "clutter_db": None, "fluct_db": 0.0},
+    "typical": {"floor_dbfs": -50.0, "clutter_db": 0.0, "fluct_db": 3.0},
+    "noisy": {"floor_dbfs": -42.0, "clutter_db": 6.0, "fluct_db": 6.0},
+}
+# A lab room: (range m, rcs m^2, phase0, az deg). Desk, cabinet, the far
+# wall and a back corner. Stationary, so MTI cancels them.
+SCENE_CLUTTER = (
+    (1.6, 0.3, 0.4, -25.0),
+    (3.3, 0.8, 2.1, 30.0),
+    (5.0, 4.0, 4.4, 0.0),
+    (6.5, 2.0, 1.7, -15.0),
+)
+# The leakage's skirt: (range m, level dBFS, phase0), falling off past 0 m.
+SCENE_SKIRT = ((0.15, -34.0, 2.9), (0.3, -42.0, 5.1), (0.5, -48.0, 0.3))
+# Fading: three incommensurate tones, offset per scatterer. Deterministic in
+# time, so the Python and browser simulators still match frame for frame.
+SCENE_FLUCT_HZ = (1.7, 2.9, 4.3)
+SCENE_FLUCT_PHASE = (1.1, 2.3, 0.7)
+
+
+def scene_fluct_db(t, k, depth_db):
+    """Scatterer k's fading at time t: within +-depth_db, smooth, deterministic."""
+    if not depth_db:
+        return 0.0
+    tone = sum(np.sin(2 * np.pi * f * t + p * (k + 1))
+               for f, p in zip(SCENE_FLUCT_HZ, SCENE_FLUCT_PHASE))
+    return depth_db * tone / len(SCENE_FLUCT_HZ)
+
 
 def scene_echo_dbfs(r, rcs, fs, fc):
     """fmcw_sim.echo_dbfs: the radar-equation echo level, per sample, dBFS."""
@@ -156,12 +200,36 @@ def scene_echo_dbfs(r, rcs, fs, fc):
     return SCENE_NOISE_DBFS + pr_dbm - noise_dbm
 
 
-def scene_scatterers(name, t, fs, fc):
+def scene_scatterers(name, t, fs, fc, noise=FMCW_DEFAULT_SCENE_NOISE):
     """The scatterers of a scene at absolute times t (s, any shape).
 
     Returns [(range_m, level_dbfs, phase0, az_deg)], range and level arrays
     shaped like t. fmcw_sim's conventions: range falls as a target closes.
+    `noise` (SCENE_NOISE) adds the room's clutter and the leakage skirt
+    after the scene's own scatterers, and fades the moving ones.
     """
+    out = _scene_targets(name, t, fs, fc)
+    if name == "static":
+        return out
+    if noise not in SCENE_NOISE:
+        raise ValueError(f"unknown scene noise {noise!r}; expected one of {sorted(SCENE_NOISE)}")
+    level = SCENE_NOISE[noise]
+    depth = level["fluct_db"]
+    if depth and name != "corners":       # corner reflectors hold steady
+        out = [out[0]] + [(r, lv + scene_fluct_db(t, k, depth), p0, az)
+                          for k, (r, lv, p0, az) in enumerate(out[1:])]
+    if level["clutter_db"] is not None:
+        extra = level["clutter_db"]
+        for r0, lv, p0 in SCENE_SKIRT:
+            out.append((np.full_like(t, r0), np.full_like(t, lv + extra), p0, 0.0))
+        for r0, rcs, p0, az in SCENE_CLUTTER:
+            r = np.full_like(t, r0)
+            out.append((r, scene_echo_dbfs(r, rcs, fs, fc) + extra, p0, az))
+    return out
+
+
+def _scene_targets(name, t, fs, fc):
+    """A scene's own scatterers, as fmcw_sim places them: leakage first."""
     out = [(np.zeros_like(t), np.full_like(t, SCENE_LEAKAGE_DBFS), 0.7, 0.0)]
     if name == "corners":
         for r0, ph in ((1.0, 0.0), (2.0, 1.1), (3.0, 2.3)):
@@ -295,6 +363,7 @@ class SimSDR:
         # Live scenes (FMCW_SCENES). scene_clock returns the absolute time, s,
         # of the frame being synthesized; tests replace it with a fixed one.
         self._fmcw_scene = FMCW_DEFAULT_SCENE
+        self._fmcw_scene_noise = FMCW_DEFAULT_SCENE_NOISE
         self._scene_t0 = time.monotonic()
         self.scene_clock = lambda: time.monotonic() - self._scene_t0
         self._fmcw = {
@@ -371,6 +440,9 @@ class SimSDR:
         scene = params.pop("scene", None)
         if scene is not None:
             self.set_fmcw_scene(scene)
+        scene_noise = params.pop("scene_noise", None)
+        if scene_noise is not None:
+            self.set_fmcw_scene_noise(scene_noise)
         for key, value in params.items():
             if key in self._fmcw and value is not None:
                 self._fmcw[key] = float(value)
@@ -395,6 +467,13 @@ class SimSDR:
         if name not in FMCW_SCENES:
             raise ValueError(f"unknown FMCW scene {name!r}; expected one of {sorted(FMCW_SCENES)}")
         self._fmcw_scene = name
+
+    def set_fmcw_scene_noise(self, name):
+        """How messy a live scene is: a key of SCENE_NOISE ("clean" is the course's)."""
+        name = str(name or FMCW_DEFAULT_SCENE_NOISE)
+        if name not in SCENE_NOISE:
+            raise ValueError(f"unknown scene noise {name!r}; expected one of {sorted(SCENE_NOISE)}")
+        self._fmcw_scene_noise = name
 
     def set_fmcw_targets(self, targets):
         """Replace the simulated FMCW scene.
@@ -512,7 +591,8 @@ class SimSDR:
         t_fast = np.arange(ramp_n) / fs
         t = t0 + np.arange(num_chirps)[:, None] * pri + t_fast[None, :]
         f_if = float(cfg["signal_freq"])
-        for r, level, phase0, az in scene_scatterers(self._fmcw_scene, t, fs, f_c):
+        for r, level, phase0, az in scene_scatterers(self._fmcw_scene, t, fs, f_c,
+                                                     self._fmcw_scene_noise):
             amp = SCENE_FULL_SCALE * 10 ** (np.asarray(level) / 20) / self.AMP_SCALE
             phase = (2 * np.pi * (f_if + 2 * slope * r / SCENE_C) * t_fast[None, :]
                      - 4 * np.pi * r * f_c / SCENE_C + phase0)
@@ -671,9 +751,10 @@ class SimSDR:
         if noise_sigma <= 0:
             return chan0, chan1
         if self._fmcw_enable and self._fmcw_scene != "static":
-            # The course's floor: SCENE_NOISE_DBFS per complex sample of the
-            # summed array, half the power in each channel.
-            noise_sigma = SCENE_FULL_SCALE * 10 ** (SCENE_NOISE_DBFS / 20) / 2
+            # The scene's floor (the course's is SCENE_NOISE_DBFS) per complex
+            # sample of the summed array, half the power in each channel.
+            floor = SCENE_NOISE[self._fmcw_scene_noise]["floor_dbfs"]
+            noise_sigma = SCENE_FULL_SCALE * 10 ** (floor / 20) / 2
         chan0 = chan0 + (self._rng.normal(0, noise_sigma, N)
                          + 1j * self._rng.normal(0, noise_sigma, N)).astype(np.complex64)
         chan1 = chan1 + (self._rng.normal(0, noise_sigma, N)

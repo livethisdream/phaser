@@ -1036,7 +1036,7 @@ class PhaserHeadless:
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
         "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
-        "scene",
+        "scene", "scene_noise",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
     # Params written straight to the hardware while running, as CW does.
@@ -1135,6 +1135,7 @@ class PhaserHeadless:
                     True,
                     plan=self.fmcw_plan,
                     scene=cfg.get("scene"),
+                    scene_noise=cfg.get("scene_noise"),
                     chirp_bw=cfg["chirp_bw"],
                     signal_freq=cfg["signal_freq"],
                     output_freq=cfg["output_freq"],
@@ -1205,6 +1206,8 @@ class PhaserHeadless:
                 # A simulated scene changes on the next frame; a kit has no scene.
                 if "scene" in params and self.sim_mode and hasattr(self.sdr, "set_fmcw_scene"):
                     self.sdr.set_fmcw_scene(params["scene"])
+                if "scene_noise" in params and self.sim_mode and hasattr(self.sdr, "set_fmcw_scene_noise"):
+                    self.sdr.set_fmcw_scene_noise(params["scene_noise"])
             except Exception as e:
                 print(f"[FMCW] live param update failed: {e}")
                 return {"status": "error", "message": str(e)}
@@ -1269,6 +1272,8 @@ class PhaserHeadless:
             import phaser_sim
             data["scenes"] = dict(phaser_sim.FMCW_SCENES)
             data["scene"] = (cfg or {}).get("scene") or phaser_sim.FMCW_DEFAULT_SCENE
+            data["scene_noise_levels"] = dict(phaser_sim.SCENE_NOISE_LEVELS)
+            data["scene_noise"] = (cfg or {}).get("scene_noise") or phaser_sim.FMCW_DEFAULT_SCENE_NOISE
         if error:
             data["error"] = error
         return {"status": "ok", "data": data}

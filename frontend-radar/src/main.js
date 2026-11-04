@@ -852,6 +852,7 @@ function readFmcwParams() {
         preset: fmcwEl('fmcw-preset').value || undefined,
         // Simulation only; a kit has no scene to pick.
         scene: state.fmcw.scenes ? (fmcwEl('fmcw-scene')?.value || undefined) : undefined,
+        scene_noise: state.fmcw.sceneNoise ? (fmcwEl('fmcw-scene-noise')?.value || undefined) : undefined,
         // A switch plus a mode in the UI; one value on the backend.
         mti: fmcwEl('fmcw-mti-on').checked ? fmcwEl('fmcw-mti-mode').value : 'none',
         cfar: fmcwEl('fmcw-cfar').checked,
@@ -915,6 +916,22 @@ async function refreshFmcwState() {
                     : (FMCW_UI_DEFAULT_SCENE in state.fmcw.scenes ? FMCW_UI_DEFAULT_SCENE : d.scene);
             }
             sceneSel.title = state.fmcw.scenes?.[sceneSel.value] || '';
+        }
+        state.fmcw.sceneNoise = d.scene_noise_levels || null;
+        const noiseRow = fmcwEl('fmcw-scene-noise-row'), noiseSel = fmcwEl('fmcw-scene-noise');
+        if (noiseRow && noiseSel) {
+            const levels = state.fmcw.sceneNoise;
+            noiseRow.hidden = !levels;
+            if (levels && noiseSel.options.length !== Object.keys(levels).length) {
+                noiseSel.innerHTML = '';
+                for (const [name, label] of Object.entries(levels)) {
+                    const opt = new Option(name[0].toUpperCase() + name.slice(1), name);
+                    opt.title = label;
+                    noiseSel.add(opt);
+                }
+                noiseSel.value = d.running && d.scene_noise ? d.scene_noise
+                    : (FMCW_UI_DEFAULT_SCENE_NOISE in levels ? FMCW_UI_DEFAULT_SCENE_NOISE : d.scene_noise);
+            }
         }
         const sel = fmcwEl('fmcw-preset');
         if (sel && Array.isArray(d.presets) && sel.options.length !== d.presets.length) {
@@ -1002,6 +1019,12 @@ function updateFmcwControlGating() {
     const presetRow = fmcwEl('fmcw-preset')?.closest('.set-row');
     gateRow(presetRow, Boolean(state.playback), 'Playback: the recording sets the waveform.');
     gateRow(fmcwEl('fmcw-scene-row'), Boolean(state.playback), 'Playback: the recording is the scene.');
+    const staticScene = fmcwEl('fmcw-scene')?.value === 'static';
+    gateRow(fmcwEl('fmcw-scene-noise-row'), Boolean(state.playback) || staticScene,
+            state.playback ? 'Playback: the recording has its own noise.'
+                : 'The static scene has its own fixed noise: pick a live scene.');
+    const noiseSel = fmcwEl('fmcw-scene-noise');
+    if (noiseSel && !noiseSel.disabled) noiseSel.title = state.fmcw.sceneNoise?.[noiseSel.value] || '';
     if (!n) return;  // not known yet
     const multi = n > 1;
     const gate = gateRow;
@@ -1026,12 +1049,22 @@ function updateFmcwControlGating() {
 // The scene a simulator starts in: someone walking, so a first look shows
 // motion rather than a frozen picture.
 const FMCW_UI_DEFAULT_SCENE = 'walker';
+// And a room that looks like a room: clutter, fading and a kit-like floor.
+const FMCW_UI_DEFAULT_SCENE_NOISE = 'typical';
 
 fmcwEl('fmcw-scene')?.addEventListener('change', (e) => {
     e.target.title = state.fmcw.scenes?.[e.target.value] || '';
     state.fmcw.waterfall = null;
     state.fmcw.avg = null;
     pushFmcwParams({ scene: e.target.value });
+    updateFmcwControlGating();
+});
+
+fmcwEl('fmcw-scene-noise')?.addEventListener('change', (e) => {
+    e.target.title = state.fmcw.sceneNoise?.[e.target.value] || '';
+    state.fmcw.waterfall = null;
+    state.fmcw.avg = null;
+    pushFmcwParams({ scene_noise: e.target.value });
 });
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {

@@ -422,19 +422,27 @@ def test_playback_frame_matches_python_on_a_saved_capture(preset, settings, tmp_
 # wrong way, fails at the times where it differs.
 
 SCENE_CASES = [
-    (f"{scene}_{preset}_t{t}", scene, preset, t)
+    (f"{scene}_{preset}_t{t}", scene, preset, t, "clean")
     for scene in ("corners", "walker", "hand")
     for preset in ("range_doppler", "range")
     for t in (0.0, 0.8, 2.6)
+] + [
+    # Scene noise: the clutter, skirt and fading are deterministic, so they
+    # compare frame for frame like the targets (the floor is off here).
+    (f"{scene}_{preset}_t{t}_{noise}", scene, preset, t, noise)
+    for noise in ("typical", "noisy")
+    for scene in ("corners", "walker", "hand")
+    for preset in ("range_doppler", "range")
+    for t in (0.8, 2.6)
 ]
 
 _JS_SCENE_DRIVER = """
 import { createRadarEngine } from '%(sim)s/engine.js';
 const cases = JSON.parse(process.argv[2]);
 const out = {};
-for (const [name, scene, preset, t] of cases) {
+for (const [name, scene, preset, t, scene_noise] of cases) {
     const engine = createRadarEngine({ noiseSigma: 0, clock: () => t });
-    const resp = engine.handle('start_fmcw_radar', { preset, scene });
+    const resp = engine.handle('start_fmcw_radar', { preset, scene, scene_noise });
     if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
     out[name] = engine.frame().data;
 }
@@ -456,9 +464,9 @@ def js_scene_frames(tmp_path_factory):
     return json.loads(proc.stdout)
 
 
-@pytest.mark.parametrize("name,scene,preset,t", SCENE_CASES, ids=[c[0] for c in SCENE_CASES])
-def test_scene_frame_matches_python(name, scene, preset, t, js_scene_frames):
-    py = _python_frame("fmcw", {"preset": preset, "scene": scene}, clock=t)
+@pytest.mark.parametrize("name,scene,preset,t,noise", SCENE_CASES, ids=[c[0] for c in SCENE_CASES])
+def test_scene_frame_matches_python(name, scene, preset, t, noise, js_scene_frames):
+    py = _python_frame("fmcw", {"preset": preset, "scene": scene, "scene_noise": noise}, clock=t)
     js = js_scene_frames[name]
     # Corners hold still: with the noise off, the cells the moving-target peak
     # searches hold only rounding (~-300 dB), and which of two equal ones it
