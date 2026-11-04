@@ -51,7 +51,7 @@ def _sweep(h):
         return h.do_sweep()
 
 
-def test_defaults_to_boresight_at_one_metre():
+def test_defaults_to_boresight_at_one_meter():
     h = _headless()
     assert h.sim_target_angle_deg == 0.0
     assert h.sim_target_range_m == 1.0

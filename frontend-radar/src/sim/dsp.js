@@ -178,7 +178,7 @@ function rangeMask(ranges, rangeMin, rangeMax) {
 }
 
 export function rangeProfile(iq, fs, chirpBw, rampTime, {
-    zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0,
+    zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0, peakMin = 0,
 } = {}) {
     const n = iq.re.length;
     if (n < 2) throw new Error('need at least 2 samples for a range profile');
@@ -191,11 +191,25 @@ export function rangeProfile(iq, fs, chirpBw, rampTime, {
     const idx = rangeMask(ranges, Number(rangeMin), rangeMax == null ? null : Number(rangeMax));
     const rangeOut = idx.map(i => ranges[i]);
     const profile = idx.map(i => toDb(Math.hypot(X.re[i], X.im[i]), ws));
-    const peak = argmax(profile);
+    // The readout skips the leakage closer than peakMin; Calibrate reads the
+    // whole band, below 0 m and past the crop (phaser_radar_dsp.range_profile).
+    // Half a bin of slack: a target at the cutoff itself still counts.
+    const pm = Number(peakMin || 0) - (ranges.length > 1 ? 0.5 * Math.abs(ranges[1] - ranges[0]) : 0);
+    let peak = -1;
+    for (let k = 0; k < profile.length; k++) {
+        if (rangeOut[k] >= pm && (peak < 0 || profile[k] > profile[peak])) peak = k;
+    }
+    if (peak < 0) peak = argmax(profile);
+    let cal = 0, calMag = -1;
+    for (let i = 0; i < ranges.length; i++) {
+        const m = Math.hypot(X.re[i], X.im[i]);
+        if (m > calMag) { calMag = m; cal = i; }
+    }
     return {
         range_axis: rangeOut,
         profile_db: profile,
         peak_range: rangeOut[peak],
+        cal_peak_range: ranges[cal],
         peak_magnitude_db: profile[peak],
         range_resolution: rangeResolution(chirpBw),
         max_range: maxUnambiguousRange(fs, chirpBw, rampTime),
@@ -271,10 +285,13 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     const specRe = Array.from({ length: nr }, () => new Float64Array(nSlow));
     const specIm = Array.from({ length: nr }, () => new Float64Array(nSlow));
     const xr = new Float64Array(nFast), xi = new Float64Array(nFast);
+    // Calibrate: power summed over the chirps, every range bin in the band.
+    const calPow = new Float64Array(ranges.length);
     for (let c = 0; c < nSlow; c++) {
         const col = cols[c];
         for (let i = 0; i < nFast; i++) { xr[i] = col.re[i] * wFast[i]; xi[i] = col.im[i] * wFast[i]; }
         const X = fft(xr, xi, nFft);
+        for (let k = 0; k < calPow.length; k++) calPow[k] += X.re[k] * X.re[k] + X.im[k] * X.im[k];
         for (let r = 0; r < nr; r++) {
             specRe[r][c] = X.re[ridx[r]] * wSlow[c];
             specIm[r][c] = X.im[ridx[r]] * wSlow[c];
@@ -300,20 +317,20 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     }
     if (!search.some(Boolean)) search = search.map(() => true);
 
-    let pr = 0, pv = -1, cr = 0, cv = 0;
+    let pr = 0, pv = -1;
     for (let r = 0; r < nr; r++) {
         const row = mapDb[r];
         for (let v = 0; v < row.length; v++) {
             if (search[v] && (pv < 0 || row[v] > mapDb[pr][pv])) { pr = r; pv = v; }
-            if (row[v] > mapDb[cr][cv]) { cr = r; cv = v; }
         }
     }
+    const cr = argmax(calPow);
     return {
         map_db: mapDb,
         range_axis: rangeOut,
         velocity_axis: velOut,
         peak_range: rangeOut[pr],
-        cal_peak_range: rangeOut[cr],
+        cal_peak_range: ranges[cr],
         peak_velocity: velOut[pv],
         peak_magnitude_db: mapDb[pr][pv],
         range_resolution: rangeResolution(chirpBw),
@@ -520,13 +537,15 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
             velocity_axis: rounded(rd.velocity_axis, AXIS_DECIMALS),
         });
     } else {
+        const peakMin = cfg.peak_min == null ? FMCW_PROC_DEFAULTS.peak_min : Number(cfg.peak_min);
         const prof = rangeProfile(data[0], fs, cfg.chirp_bw, ramp, {
-            zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max,
+            zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max, peakMin,
         });
         Object.assign(out, {
             kind: 'range_profile',
             peak_range: prof.peak_range,
-            cal_peak_range: prof.peak_range,
+            cal_peak_range: prof.cal_peak_range,
+            peak_min: peakMin,
             peak_magnitude_db: prof.peak_magnitude_db,
             range_resolution: prof.range_resolution,
             max_range: prof.max_range,

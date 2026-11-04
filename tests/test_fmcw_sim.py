@@ -59,7 +59,7 @@ def capture(sdr):
     return c0 + c1
 
 
-def range_bin_metres():
+def range_bin_meters():
     return float(beat_freq_to_range(FS / SPC, CHIRP_BW, RAMP_TIME))
 
 
@@ -73,7 +73,7 @@ DSP_KW = dict(sample_rate=FS, chirp_bw=CHIRP_BW, ramp_time=RAMP_TIME,
 def test_sim_target_range_is_recovered(target_range):
     _, sdr = make_sdr([(target_range, 0.0, 0.0, 1.0)])
     out = range_profile(capture(sdr), **DSP_KW)
-    assert abs(out["peak_range"] - target_range) < 2 * range_bin_metres(), (
+    assert abs(out["peak_range"] - target_range) < 2 * range_bin_meters(), (
         f"recovered {out['peak_range']:.2f} m for a target at {target_range:.2f} m")
 
 
@@ -108,7 +108,7 @@ def test_sim_range_doppler_recovers_both_axes(velocity):
     out = range_doppler_map(matrix, pri=PRI, output_freq=OUTPUT_FREQ, **DSP_KW)
 
     dv = velocity_resolution(num_chirps, PRI, OUTPUT_FREQ)
-    assert abs(out["peak_range"] - 6.0) < 2 * range_bin_metres()
+    assert abs(out["peak_range"] - 6.0) < 2 * range_bin_meters()
     assert abs(out["peak_velocity"] - velocity) < 2 * dv, (
         f"recovered {out['peak_velocity']:+.2f} m/s for a {velocity:+.2f} m/s target")
 

@@ -76,10 +76,10 @@ def beat_signal(ranges_velocities, n_samples, num_chirps=1, fs=FS,
 
 # --- the range relation -------------------------------------------------
 
-def test_beat_frequency_matches_the_labs_3_3_khz_per_metre():
-    """The labs state 3.3 kHz of beat per metre at B=500 MHz, T=1 ms."""
-    per_metre = range_to_beat_freq(1.0, CHIRP_BW, RAMP_TIME)
-    assert 3300 < per_metre < 3400, f"{per_metre:.0f} Hz/m"
+def test_beat_frequency_matches_the_labs_3_3_khz_per_meter():
+    """The labs state 3.3 kHz of beat per meter at B=500 MHz, T=1 ms."""
+    per_meter = range_to_beat_freq(1.0, CHIRP_BW, RAMP_TIME)
+    assert 3300 < per_meter < 3400, f"{per_meter:.0f} Hz/m"
 
 
 def test_range_and_beat_frequency_round_trip():
@@ -116,7 +116,7 @@ def test_range_profile_finds_a_single_target(target_range):
     iq = beat_signal([(target_range, 0.0, 1.0)], SPC)
     out = range_profile(iq, FS, CHIRP_BW, RAMP_TIME,
                         zero_range_freq=SIGNAL_FREQ, range_max=20.0)
-    # One FFT bin is fs/n Hz, which converts to this many metres.
+    # One FFT bin is fs/n Hz, which converts to this many meters.
     bin_m = float(beat_freq_to_range(FS / SPC, CHIRP_BW, RAMP_TIME))
     assert abs(out["peak_range"] - target_range) < 2 * bin_m, (
         f"found {out['peak_range']:.2f} m, expected {target_range:.2f} m "
@@ -527,3 +527,52 @@ def test_range_doppler_peak_exclude_skips_the_zero_doppler_clutter():
     # The 0 m calibration reads the still reflector, exclusion or not.
     assert abs(moving["cal_peak_range"] - 3.0) < 1.0
     assert moving["cal_peak_range"] == plain["cal_peak_range"]
+
+
+
+# --- Peak Min and the whole-band Calibrate ------------------------------
+
+def _chirp(*targets, n=600, fs=2e6, B=500e6, T=300e-6, f0=100e3):
+    """Beat tones for (range m, amplitude counts) targets, 0 m at f0."""
+    t = np.arange(n) / fs
+    x = np.zeros(n, complex)
+    for r, a in targets:
+        x += a * np.exp(2j * np.pi * (f0 + 2 * B * r / (_dsp.C * T)) * t)
+    return x
+
+
+def test_peak_min_skips_the_leakage_but_keeps_a_target_at_the_cutoff():
+    leak_and_corner = _chirp((0.1, 1000.0), (3.0, 30.0))
+    prof = lambda x, pm: _dsp.range_profile(x, 2e6, 500e6, 300e-6, zero_range_freq=100e3,
+                                           range_max=20, peak_min=pm)
+    assert prof(leak_and_corner, 0.0)["peak_range"] == pytest.approx(0.1, abs=0.2)
+    assert prof(leak_and_corner, 1.0)["peak_range"] == pytest.approx(3.0, abs=0.2)
+    # A reflector at the cutoff itself (the range lab's 1 m) is not skipped.
+    at_cutoff = _chirp((0.1, 1000.0), (0.99, 30.0))
+    assert prof(at_cutoff, 1.0)["peak_range"] == pytest.approx(1.0, abs=0.2)
+    # Calibrate reads the strongest return, Peak Min or not.
+    assert prof(leak_and_corner, 1.0)["cal_peak_range"] == pytest.approx(0.1, abs=0.2)
+
+
+def test_calibrate_finds_a_reflector_below_0m_and_past_the_crop():
+    """0 m beat set above the plate's: the plate is at -1 m, outside the
+    displayed profile, and the old cropped search picked the next cell."""
+    plate = _chirp((0.0, 1000.0), (2.5, 10.0), f0=100e3)
+    slope_hz_per_m = 2 * 500e6 / (_dsp.C * 300e-6)
+    zero = 100e3 + 1.0 * slope_hz_per_m            # the plate now reads -1 m
+    prof = _dsp.range_profile(plate, 2e6, 500e6, 300e-6, zero_range_freq=zero, range_max=1.0)
+    assert min(prof["range_axis"]) >= 0
+    assert prof["cal_peak_range"] == pytest.approx(-1.0, abs=0.2)
+    # And past the crop: range_max 1 m, plate at 4 m.
+    far = _dsp.range_profile(_chirp((4.0, 1000.0)), 2e6, 500e6, 300e-6,
+                            zero_range_freq=100e3, range_max=1.0)
+    assert far["cal_peak_range"] == pytest.approx(4.0, abs=0.2)
+
+
+def test_range_doppler_calibrate_searches_the_whole_band():
+    cols = np.stack([_chirp((0.0, 1000.0)) for _ in range(16)], axis=1)
+    slope_hz_per_m = 2 * 500e6 / (_dsp.C * 300e-6)
+    rd = _dsp.range_doppler_map(cols, 2e6, 500e6, 300e-6, 5e-4, 10e9,
+                               zero_range_freq=100e3 + slope_hz_per_m, range_max=5.0)
+    assert min(rd["range_axis"]) >= 0
+    assert rd["cal_peak_range"] == pytest.approx(-1.0, abs=0.2)

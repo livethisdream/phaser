@@ -15,6 +15,7 @@ import {
     CW_DEFAULT_TARGETS, DEFAULTS, FMCW_DEFAULT_PRESET, FMCW_DEFAULT_TARGETS,
     FMCW_PRESETS, FMCW_PRESET_UI, NOISE_SIGMA,
     RAMP_SYNCED, RX_FREQ_HZ, CAPTURE_SINGLE_CHIRP_FRAMES, FMCW_SCENES, FMCW_DEFAULT_SCENE, SCENE_NOISE_LEVELS, FMCW_DEFAULT_SCENE_NOISE,
+    CAPTURE_FULL_SCALE,
 } from './constants.generated.js';
 import {
     captureLimits, chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
@@ -29,7 +30,7 @@ import { toBase64, writeNpz } from '../npz.js';
 // Params that only change processing (next frame), and those written straight
 // to the hardware; anything else re-enters FMCW. phaser_headless's sets.
 const FMCW_LIVE_KEYS = new Set([
-    'mti', 'fft_window', 'range_max', 'vel_max', 'zero_range_freq', 'peak_exclude',
+    'mti', 'fft_window', 'range_max', 'vel_max', 'zero_range_freq', 'peak_exclude', 'peak_min',
     'cfar', 'cfar_guard', 'cfar_ref', 'cfar_bias_db', 'scene', 'scene_noise',
 ]);
 const FMCW_WRITE_KEYS = new Set(['taper', 'rx_gain', 'tx_gain']);
@@ -226,13 +227,22 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
             });
         }
         const nChirps = rows[0].length, nSamples = rows[0][0].re.length;
+        // Counts in, full-scale units out (|iq| = 1 is 0 dBFS), as capture_npz.
         const flat = (list) => {
             const re = new Float32Array(list.length * nSamples), im = new Float32Array(list.length * nSamples);
-            list.forEach((r, k) => { re.set(r.re, k * nSamples); im.set(r.im, k * nSamples); });
+            list.forEach((r, k) => {
+                for (let i = 0; i < nSamples; i++) {
+                    re[k * nSamples + i] = r.re[i] / CAPTURE_FULL_SCALE;
+                    im[k * nSamples + i] = r.im[i] / CAPTURE_FULL_SCALE;
+                }
+            });
             return { re, im };
         };
+        // One single-chirp frame has no interval to measure: the next would
+        // have come a frame interval later, not the plan's PRI.
         const pri = frames > 1 ? (stamps[frames - 1] - stamps[0]) / 1e3 / (frames - 1)
-            : (plan.pri_ms ? plan.pri_ms / 1e3 : plan.ramp_time);
+            : limits.kind === 'frames' ? limits.chirp_s
+                : (plan.pri_ms ? plan.pri_ms / 1e3 : plan.ramp_time);
         const calibrated = cfg.zero_range_freq != null;
         const f0 = Number(calibrated ? cfg.zero_range_freq : cfg.signal_freq);
         const fs = plan.sample_rate, tRamp = plan.effective_ramp_time;
