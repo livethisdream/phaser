@@ -20,6 +20,7 @@
  */
 
 import { fmcwPayload } from './sim/dsp.js';
+import { CAPTURE_FULL_SCALE, CAPTURE_COUNTS_ABOVE } from './sim/constants.generated.js';
 
 const FRAME_MS = 50;          // the backend's 20 fps cap
 const BURST_PRI_MAX = 5e-3;   // s; closer chirps than this are a burst
@@ -72,6 +73,13 @@ export function playbackFrame(r, settings, start) {
     return out;
 }
 
+/** 'full_scale' (the course's units) or 'counts' (an older raw save), by the peak |iq|. */
+export function playbackUnits({ re, im }) {
+    let peak2 = 0;
+    for (let i = 0; i < re.length; i++) peak2 = Math.max(peak2, re[i] * re[i] + im[i] * im[i]);
+    return Math.sqrt(peak2) > CAPTURE_COUNTS_ABOVE ? 'counts' : 'full_scale';
+}
+
 /** {iq: {shape, data: {re, im}}, fs, ...} (readNpz's output, scalars as numbers) -> rec. */
 export function playbackRecording(arrays) {
     const iq = arrays.iq;
@@ -82,15 +90,22 @@ export function playbackRecording(arrays) {
     const missing = need.filter(k => typeof arrays[k]?.data !== 'number');
     if (missing.length) throw new Error(`not a course capture: missing ${missing.join(', ')}`);
     const [nChirps, nSamples] = iq.shape;
+    // A course file is in full-scale units (|iq| = 1 is 0 dBFS); the DSP
+    // reads ADC counts. A peak above CAPTURE_COUNTS_ABOVE cannot be full
+    // scale -- it is a save from before captures were -- so it plays as is.
+    const units = playbackUnits(iq.data);
+    const k = units === 'full_scale' ? CAPTURE_FULL_SCALE : 1;
     const cols = [];
     for (let c = 0; c < nChirps; c++) {
-        cols.push({
-            re: Float64Array.from(iq.data.re.subarray(c * nSamples, (c + 1) * nSamples)),
-            im: Float64Array.from(iq.data.im.subarray(c * nSamples, (c + 1) * nSamples)),
-        });
+        const re = new Float64Array(nSamples), im = new Float64Array(nSamples);
+        for (let i = 0; i < nSamples; i++) {
+            re[i] = iq.data.re[c * nSamples + i] * k;
+            im[i] = iq.data.im[c * nSamples + i] * k;
+        }
+        cols.push({ re, im });
     }
     const v = Object.fromEntries(need.map(k => [k, arrays[k].data]));
-    return { cols, nSamples, ...v, ...playbackLayout({ nChirps, PRI: v.PRI }) };
+    return { cols, nSamples, units, ...v, ...playbackLayout({ nChirps, PRI: v.PRI }) };
 }
 
 function step() {
@@ -125,7 +140,7 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typ
                 type: 'loaded',
                 info: {
                     mode: rec.mode, chirps: rec.cols.length, samples: rec.nSamples,
-                    window: rec.window, interval: rec.interval,
+                    window: rec.window, interval: rec.interval, units: rec.units,
                     fs: rec.fs, fc: rec.fc, B: rec.B, T_ramp: rec.T_ramp, PRI: rec.PRI, f0: rec.f0,
                 },
             });

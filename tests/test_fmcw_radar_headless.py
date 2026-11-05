@@ -679,6 +679,28 @@ def test_single_chirp_save_takes_frames_at_the_frame_interval():
     assert float(cap["PRI"]) == pytest.approx(dsp.CAPTURE_FRAME_S, rel=0.2)
 
 
+
+@pytest.mark.parametrize("preset", ["range", "range_sync"])
+def test_one_chirp_save_stores_the_frame_interval_as_pri(preset):
+    """One frame has no interval to measure; the next chirp would have come a
+    frame interval (50 ms) later, not the plan's 2 ms / 1.5 ms PRI."""
+    h = _headless()
+    _start(h, preset=preset)
+    _, cap = _saved(h, duration_s=dsp.CAPTURE_FRAME_S)
+    assert cap["iq"].shape[0] == 1
+    assert float(cap["PRI"]) == dsp.CAPTURE_FRAME_S
+
+
+def test_save_capture_is_in_full_scale_units():
+    """The course's units: |iq| = 1 is 0 dBFS. The sim's strongest return
+    sits well under full scale, so its peak is a fraction, not ~500 counts."""
+    h = _headless()
+    _start(h, preset="range")
+    _, cap = _saved(h)
+    peak = float(np.max(np.abs(cap["iq"])))
+    assert 1e-4 < peak < 1.0, peak
+
+
 # --- scene noise (simulation only) -------------------------------------
 
 def test_scene_noise_levels_are_offered_and_default_to_clean():

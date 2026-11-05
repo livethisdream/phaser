@@ -1035,7 +1035,7 @@ class PhaserHeadless:
 
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
-        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
+        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude", "peak_min",
         "scene", "scene_noise",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
@@ -1380,6 +1380,10 @@ class PhaserHeadless:
                  if want_ch else None)
         if frames > 1:
             pri = (stamps[-1] - stamps[0]) / (frames - 1)
+        elif limits["kind"] == "frames":
+            # One frame: there is no interval to measure, but the next chirp
+            # would have come a frame interval later, not the plan's PRI.
+            pri = limits["chirp_s"]
         else:
             pri = plan["pri_ms"] / 1e3 if plan.get("pri_ms") else plan["ramp_time"]
         zero = cfg.get("zero_range_freq")
@@ -1458,13 +1462,16 @@ class PhaserHeadless:
             })
         else:
             iq = data[:, 0] if np.ndim(data) == 2 else data
+            peak_min = cfg.get("peak_min")
+            peak_min = phaser_radar_dsp.FMCW_PROC_DEFAULTS["peak_min"] if peak_min is None else float(peak_min)
             prof = phaser_radar_dsp.range_profile(
                 iq, fs, cfg["chirp_bw"], ramp, zero_range_freq=zero,
-                fft_window=window, range_max=cfg.get("range_max"))
+                fft_window=window, range_max=cfg.get("range_max"), peak_min=peak_min)
             out.update({
                 "kind": "range_profile",
                 "peak_range": prof["peak_range"],
-                "cal_peak_range": prof["peak_range"],
+                "cal_peak_range": prof["cal_peak_range"],
+                "peak_min": peak_min,
                 "peak_magnitude_db": prof["peak_magnitude_db"],
                 "range_resolution": prof["range_resolution"],
                 "max_range": prof["max_range"],

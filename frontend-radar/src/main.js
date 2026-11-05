@@ -26,7 +26,7 @@ const state = {
         plan: null,
         waterfall: null,     // rows = frames, cols = range bins
         last: null,          // the last frame, for the 0 m calibration
-        span_db: 60,         // colour scale: the frame's peak down this far
+        span_db: 60,         // color scale: the frame's peak down this far
         avg: null,           // averaged single-chirp profile power, for the readout
         readout_t: 0,        // when the peak readouts last changed
         preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
@@ -834,14 +834,26 @@ function averageFmcwProfile(frame) {
    pop-up's strongest return, which on range-Doppler includes 0 m/s. */
 function fmcwPeak(frame, { cal = false } = {}) {
     if (!frame) return {};
+    // Calibrate: the backend's strongest return over the whole band, which
+    // the displayed (and averaged) profile may not even contain -- below
+    // 0 m, or past Range Max, when the current 0 m beat is off.
+    if (cal && typeof frame.cal_peak_range === 'number') {
+        return { range: frame.cal_peak_range, db: frame.peak_magnitude_db };
+    }
     const avg = state.fmcw.avg;
     if (frame.kind === 'range_profile' && avg && avg.power.length === frame.range_axis.length) {
-        let best = 0;
-        for (let i = 1; i < avg.power.length; i++) if (avg.power[i] > avg.power[best]) best = i;
-        return { range: frame.range_axis[best], db: 10 * Math.log10(avg.power[best]) };
+        // As the backend's readout: skip the leakage closer than Peak Min.
+        // Half a bin of slack, as range_profile: a target at the cutoff counts.
+        const axis = frame.range_axis;
+        const min = (Number(frame.peak_min) || 0) - (axis.length > 1 ? 0.5 * Math.abs(axis[1] - axis[0]) : 0);
+        let best = -1;
+        for (let i = 0; i < avg.power.length; i++) {
+            if (axis[i] >= min && (best < 0 || avg.power[i] > avg.power[best])) best = i;
+        }
+        if (best < 0) best = avg.power.indexOf(Math.max(...avg.power));
+        return { range: axis[best], db: 10 * Math.log10(avg.power[best]) };
     }
-    const range = cal && typeof frame.cal_peak_range === 'number' ? frame.cal_peak_range : frame.peak_range;
-    return { range, db: frame.peak_magnitude_db };
+    return { range: frame.peak_range, db: frame.peak_magnitude_db };
 }
 
 /* --- FMCW controls --- */
@@ -865,6 +877,8 @@ function readFmcwParams() {
     // sent on an earlier Start does not linger on the backend.
     const rmax = parseFloat(fmcwEl('fmcw-range-max').value);
     params.range_max = Number.isFinite(rmax) && rmax > 0 ? rmax : null;
+    const pmin = parseFloat(fmcwEl('fmcw-peak-min')?.value);
+    params.peak_min = Number.isFinite(pmin) && pmin >= 0 ? pmin : null;
     const zero = parseFloat(fmcwEl('fmcw-zero-khz').value);
     params.zero_range_freq = Number.isFinite(zero) ? zero * 1e3 : null;
     const center = parseFloat(document.getElementById('center-freq').value);
@@ -1035,6 +1049,8 @@ function updateFmcwControlGating() {
     gate(fmcwEl('fmcw-mti-on')?.closest('.set-row'), !multi, noMti);
     gate(fmcwEl('fmcw-mti-mode')?.closest('.set-row'), !multi || !mtiOn,
          !multi ? noMti : 'Turn MTI on to choose its mode.');
+    gate(fmcwEl('fmcw-peak-min-row'), multi,
+         'Range-Doppler skips the 0 m leakage by velocity (it sits at 0 m/s): Peak Min is for the Range presets.');
     const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
     const cfarOn = fmcwEl('fmcw-cfar')?.checked;
     ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias']
@@ -1085,6 +1101,9 @@ fmcwEl('fmcw-cfar-mode')?.addEventListener('change', () => { state.fmcw.waterfal
 fmcwEl('fmcw-range-max')?.addEventListener('change', () => {
     state.fmcw.waterfall = null;
     pushFmcwParams({ range_max: readFmcwParams().range_max });
+});
+fmcwEl('fmcw-peak-min')?.addEventListener('change', () => {
+    pushFmcwParams({ peak_min: readFmcwParams().peak_min });
 });
 ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias'].forEach(id => {
     fmcwEl(id)?.addEventListener('change', () => {
@@ -1313,7 +1332,7 @@ function playbackSettings() {
     const p = readFmcwParams();
     return {
         mti: p.mti, cfar: p.cfar, cfar_guard: p.cfar_guard, cfar_ref: p.cfar_ref,
-        cfar_bias_db: p.cfar_bias_db, range_max: p.range_max,
+        cfar_bias_db: p.cfar_bias_db, range_max: p.range_max, peak_min: p.peak_min,
         zero_range_freq: p.zero_range_freq,
         fft_window: document.getElementById('fft-window').value,
     };
@@ -1358,6 +1377,10 @@ async function startPlayback(file) {
                 + `${i.mode === 'burst' ? 'range-Doppler' : 'range profiles'}, `
                 + `fs ${i.fs / 1e6} MHz, B ${i.B / 1e6} MHz, T_ramp ${+(i.T_ramp * 1e6).toFixed(1)} us, PRI ${+(i.PRI * 1e3).toPrecision(4)} ms, f0 ${i.f0} Hz`);
             if (note) log('info', 'PLAYBACK', note);
+            if (i.units === 'counts') {
+                log('warn', 'PLAYBACK', `${file.name}: peak |iq| is above full scale, so it holds raw ADC counts `
+                    + '(a save from before captures were stored in full-scale units); played as counts.');
+            }
             return;
         }
         if (msg.type === 'error') {
