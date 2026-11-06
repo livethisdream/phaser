@@ -27,7 +27,8 @@ const state = {
         plan: null,
         waterfall: null,     // rows = frames, cols = range bins
         last: null,          // the last frame, for the 0 m calibration
-        span_db: 60,         // color scale: the frame's peak down this far
+        span_db: 60,         // color scale: the top down this far
+        scales: {},          // per chart: the fixed color scale {top, bottom} (colorScale)
         avg: null,           // averaged single-chirp profile power, for the readout
         readout_t: 0,        // when the peak readouts last changed
         preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
@@ -420,6 +421,9 @@ Plotly.newPlot('chart-fmcw-rd', [{
     yaxis: { title: 'Range (m)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
 }), { displayModeBar: false, responsive: true });
 
+enableColorbarDrag('chart-fmcw-wf', 'wf');
+enableColorbarDrag('chart-fmcw-rd', 'rd');
+
 function refreshWaterfallScale() {
     if (state.autoscale) {
         Plotly.relayout('chart-waterfall', { 'zauto': true });
@@ -729,6 +733,68 @@ function decodeDbU8(enc) {
     return z;
 }
 
+/* A chart's color scale, {top, bottom} in dB: fixed, not rescaled to every
+   frame (phaser-01, 2026-11-06: "the scale moves around like crazy"). Set
+   once from the first frame after a Start, a new preset or a loaded
+   recording -- that frame's peak rounded up to 5 dB, plus 5 dB of headroom,
+   down Color Span -- then held. Drag the color bar's ends to move it; a
+   double-click on the bar sets it afresh from the next frame. */
+const SCALE_STEP_DB = 5;
+function colorScale(key, peak) {
+    let sc = state.fmcw.scales[key];
+    if (!sc && Number.isFinite(peak)) {
+        const top = Math.ceil(peak / SCALE_STEP_DB) * SCALE_STEP_DB + SCALE_STEP_DB;
+        sc = state.fmcw.scales[key] = { top, bottom: top - state.fmcw.span_db };
+    }
+    return sc || { top: 0, bottom: -state.fmcw.span_db };
+}
+
+/* Drag a heatmap's color bar: the upper half moves the top, the lower half
+   the bottom, 1 dB steps, at least 5 dB apart. Double-click: re-fit. */
+function enableColorbarDrag(chartId, key) {
+    const gd = document.getElementById(chartId);
+    if (!gd) return;
+    const barRect = () => (gd.querySelector('.colorbar .cbfills') || gd.querySelector('.colorbar'))?.getBoundingClientRect();
+    const onBar = (e) => {
+        const r = barRect();
+        return r && e.clientX >= r.left - 12 && e.clientX <= r.right + 40 && e.clientY >= r.top && e.clientY <= r.bottom ? r : null;
+    };
+    gd.addEventListener('pointermove', (e) => {
+        if (!gd._cbDrag) gd.style.cursor = onBar(e) ? 'ns-resize' : '';
+    });
+    gd.addEventListener('pointerdown', (e) => {
+        const r = onBar(e);
+        const sc = state.fmcw.scales[key];
+        if (!r || !sc) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const end = e.clientY < r.top + r.height / 2 ? 'top' : 'bottom';
+        const perPx = (sc.top - sc.bottom) / Math.max(r.height, 1);
+        const y0 = e.clientY, v0 = sc[end];
+        gd._cbDrag = true;
+        const move = (ev) => {
+            let v = Math.round(v0 - (ev.clientY - y0) * perPx);
+            v = end === 'top' ? Math.max(v, sc.bottom + 5) : Math.min(v, sc.top - 5);
+            if (v === sc[end]) return;
+            sc[end] = v;
+            Plotly.restyle(chartId, { zmin: [sc.bottom], zmax: [sc.top] });
+        };
+        const up = () => {
+            gd._cbDrag = false;
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+    }, true);
+    gd.addEventListener('dblclick', (e) => {
+        if (onBar(e)) delete state.fmcw.scales[key];
+    }, true);
+}
+
+/* A new view: every chart sets its scale afresh from its next frame. */
+function resetColorScales() { state.fmcw.scales = {}; }
+
 function pushRangeWaterfall(rangeAxis, trace) {
     const depth = state.waterfall_depth;
     let wf = state.fmcw.waterfall;
@@ -740,10 +806,10 @@ function pushRangeWaterfall(rangeAxis, trace) {
     wf.pop();
     wf.unshift(trace);
     state.fmcw.waterfall = wf;
-    const zmax = Math.max(...trace);
+    const sc = colorScale('wf', Math.max(...trace));
     Plotly.restyle('chart-fmcw-wf', {
         z: [wf], x: [rangeAxis], y: [Array.from({ length: depth }, (_, i) => i)],
-        zauto: false, zmin: zmax - state.fmcw.span_db, zmax,
+        zauto: false, zmin: sc.bottom, zmax: sc.top,
     });
 }
 
@@ -775,10 +841,10 @@ function renderFmcwFrame(frame) {
 
     if (frame.kind === 'range_doppler' && frame.map) {
         const z = decodeDbU8(frame.map);
-        const zmax = frame.map.db_max;
+        const sc = colorScale('rd', frame.map.db_max);
         Plotly.restyle('chart-fmcw-rd', {
             z: [z], x: [frame.velocity_axis], y: [range],
-            zauto: false, zmin: zmax - state.fmcw.span_db, zmax,
+            zauto: false, zmin: sc.bottom, zmax: sc.top,
         });
         // The range plot shows the strongest return per range bin twice: over
         // every velocity, and over the moving ones only. The waterfall gets
@@ -1109,6 +1175,7 @@ fmcwEl('fmcw-scene-noise')?.addEventListener('change', (e) => {
 });
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
+    resetColorScales();
     updateFmcwControlGating();
     showFmcwDefaultTab();
     // The lab's own frequency and gains, sent along: an override from an
@@ -1141,7 +1208,10 @@ fmcwEl('fmcw-peak-min')?.addEventListener('change', () => {
 });
 fmcwEl('fmcw-span')?.addEventListener('change', (e) => {
     const v = parseFloat(e.target.value);
-    if (Number.isFinite(v) && v > 0) state.fmcw.span_db = v;
+    if (!(Number.isFinite(v) && v > 0)) return;
+    state.fmcw.span_db = v;
+    // Keep each chart's top; move its bottom to the new span.
+    for (const sc of Object.values(state.fmcw.scales)) sc.bottom = sc.top - v;
 });
 fmcwEl('fmcw-zero-khz')?.addEventListener('change', () => {
     pushFmcwParams({ zero_range_freq: readFmcwParams().zero_range_freq });
@@ -1369,6 +1439,7 @@ function playbackSettings() {
 }
 
 async function startPlayback(file) {
+    resetColorScales();
     let arrays;
     try {
         arrays = await readNpz(await file.arrayBuffer());
@@ -1552,6 +1623,7 @@ const transport = createTransport({
 });
 
 async function startRadar() {
+    resetColorScales();
     const mode = state.uiMode;
     try {
         const resp = mode === 'fmcw'
