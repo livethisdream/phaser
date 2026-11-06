@@ -9,6 +9,8 @@
  * fmcwPayload(), the backend's own, ported and parity-tested.
  *
  * How a recording becomes frames:
+ *   bursts   a run of bursts (burst_len, burst_t): one burst a frame, at the
+ *            recorded pace.
  *   burst    chirps a PRI of at most 5 ms apart (a range-Doppler burst, or a
  *            continuous record): range-Doppler frames of up to 256 chirps.
  *            A record longer than that is walked through in real time, a
@@ -34,8 +36,17 @@ let timer = null;
 let paused = false;
 let shown = 0;                // start chirp of the frame last posted
 
-/** The playback plan and frame layout for a capture. */
-export function playbackLayout({ nChirps, PRI }) {
+/** The playback plan and frame layout for a capture. A run of bursts (the
+    file's burst_len, burst_t) plays a burst a frame, at the recorded pace. */
+export function playbackLayout({ nChirps, PRI, burstLen = null, burstT = null }) {
+    if (burstLen && burstLen >= 2 && nChirps >= burstLen) {
+        const gaps = [];
+        for (let i = 1; i < (burstT?.length || 0); i++) gaps.push(burstT[i] - burstT[i - 1]);
+        gaps.sort((a, b) => a - b);
+        const gap = gaps.length ? gaps[gaps.length >> 1] : BURST_REPEAT_MS / 1e3;
+        return { mode: 'burst', window: burstLen, hop: burstLen, interval: Math.max(FRAME_MS, gap * 1e3),
+                 bursts: Math.floor(nChirps / burstLen) };
+    }
     const burst = nChirps >= 2 && PRI <= BURST_PRI_MAX;
     if (burst) {
         const window = Math.min(nChirps, RD_WINDOW);
@@ -107,7 +118,9 @@ export function playbackRecording(arrays) {
         cols.push({ re, im });
     }
     const v = Object.fromEntries(need.map(k => [k, arrays[k].data]));
-    return { cols, nSamples, units, ...v, ...playbackLayout({ nChirps, PRI: v.PRI }) };
+    const burstLen = typeof arrays.burst_len?.data === 'number' ? Math.trunc(arrays.burst_len.data) : null;
+    const burstT = arrays.burst_t?.data ? Array.from(arrays.burst_t.data) : null;
+    return { cols, nSamples, units, ...v, ...playbackLayout({ nChirps, PRI: v.PRI, burstLen, burstT }) };
 }
 
 /* The frame on screen, again: a setting changed while paused. */
@@ -153,7 +166,7 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typ
                 type: 'loaded',
                 info: {
                     mode: rec.mode, chirps: rec.cols.length, samples: rec.nSamples,
-                    window: rec.window, interval: rec.interval, units: rec.units,
+                    window: rec.window, interval: rec.interval, units: rec.units, bursts: rec.bursts || 0,
                     fs: rec.fs, fc: rec.fc, B: rec.B, T_ramp: rec.T_ramp, PRI: rec.PRI, f0: rec.f0,
                 },
             });

@@ -696,33 +696,68 @@ CAPTURE_SINGLE_CHIRP_FRAMES = 32
 CAPTURE_MAX_FRAMES_S = 60.0
 CAPTURE_FRAME_S = 0.05
 BYTES_PER_SAMPLE = 8        # complex64
+# A range-Doppler save longer than one burst is a run of ordinary bursts, one
+# every CAPTURE_BURST_INTERVAL_S (or a burst's own length, if longer) -- what
+# the live view captures, so no mode re-entry and no giant buffer (a 1.6 s
+# continuous burst froze phaser-01, 2026-11-06). The file says where each
+# burst starts: burst_len chirps each, burst_t seconds from the first. Runs
+# stop at CAPTURE_MAX_BYTES of iq, so a save stays a download, not a crash.
+CAPTURE_BURST_INTERVAL_S = 0.25
+CAPTURE_MAX_BYTES = 64e6
 
 
-def capture_limits(plan):
+def capture_limits(plan, continuous=False):
     """What a saved capture can be for this plan, for the UI's Duration box.
 
-    {"kind": "burst"|"frames", "default_s", "max_s", "chirp_s",
-     "bytes_per_s", "bytes_per_s_iq_ch"} -- the size is iq's alone, plus the
-    header bytes a file carries regardless; iq_ch triples it (iq + 2 halves).
-    A burst is continuous chirps a PRI apart, as long as the Pluto's burst
-    buffer holds (MAX_BURST_BUFFER samples); frames are single chirps at
-    the live frame interval.
+    {"kind": "burst"|"bursts"|"frames", "default_s", "max_s", "chirp_s",
+     "bytes_per_s", "bytes_per_s_iq_ch", ...} -- the size is iq's alone, plus
+    the header bytes a file carries regardless; iq_ch triples it (iq + 2
+    halves). capture_bytes() turns a duration into bytes.
+      burst   (continuous=True) continuous chirps a PRI apart, as long as the
+              Pluto's burst buffer holds (MAX_BURST_BUFFER samples)
+      bursts  up to one burst, the next burst trimmed; longer, a run of
+              whole bursts every run_s (burst_s, bytes_per_burst)
+      frames  single chirps at the live frame interval
     """
     good = int(plan["good_ramp_samples"])
     if plan.get("synced") and plan["num_chirps"] > 1:
         pri = float(plan["pri_ms"]) / 1e3
-        max_chirps = int(MAX_BURST_BUFFER // (float(plan["sample_rate"]) * pri))
+        n = int(plan["num_chirps"])
         per_s = good * BYTES_PER_SAMPLE / pri
-        return {"kind": "burst", "default_s": plan["num_chirps"] * pri,
-                "max_s": max_chirps * pri, "chirp_s": pri,
-                "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
+        out = {"default_s": n * pri, "chirp_s": pri, "burst_s": n * pri,
+               "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
+        if continuous:
+            max_chirps = int(MAX_BURST_BUFFER // (float(plan["sample_rate"]) * pri))
+            return {"kind": "burst", "max_s": max_chirps * pri, **out}
+        run_s = max(CAPTURE_BURST_INTERVAL_S, n * pri)
+        per_burst = n * good * BYTES_PER_SAMPLE
+        max_bursts = max(2, int(CAPTURE_MAX_BYTES // per_burst))
+        return {"kind": "bursts", "max_s": min(CAPTURE_MAX_FRAMES_S, max_bursts * run_s),
+                "run_s": run_s, "bytes_per_burst": per_burst, **out}
     per_s = good * BYTES_PER_SAMPLE / CAPTURE_FRAME_S
     return {"kind": "frames", "default_s": CAPTURE_SINGLE_CHIRP_FRAMES * CAPTURE_FRAME_S,
             "max_s": CAPTURE_MAX_FRAMES_S, "chirp_s": CAPTURE_FRAME_S,
             "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
 
 
-def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None):
+def capture_bursts(limits, duration):
+    """How many whole bursts a "bursts" save of `duration` s takes; 0 when it
+    is a single (trimmed) burst."""
+    if limits["kind"] != "bursts" or duration <= limits["burst_s"] * (1 + 1e-9):
+        return 0
+    return max(2, int(round(duration / limits["run_s"])))
+
+
+def capture_bytes(limits, duration, iq_ch=False):
+    """The iq bytes a save of `duration` s writes (x3 with iq_ch)."""
+    k = 3 if iq_ch else 1
+    n = capture_bursts(limits, duration)
+    if n:
+        return k * n * limits["bytes_per_burst"]
+    return k * limits["bytes_per_s"] * duration
+
+
+def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None, extra=None):
     """The course .npz, as bytes. `iq` is n_chirps x n_samples, in ADC counts;
     the file holds it in full-scale units (CAPTURE_FULL_SCALE)."""
     import io
@@ -739,6 +774,8 @@ def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None):
         if iq_ch.shape != (2,) + arrays["iq"].shape:
             raise ValueError(f"iq_ch must be 2 x {arrays['iq'].shape}, not {iq_ch.shape}")
         arrays["iq_ch"] = iq_ch
+    for key, value in (extra or {}).items():
+        arrays[key] = np.asarray(value, dtype=np.float64)
     buf = io.BytesIO()
     # Uncompressed, like the course's own files: complex IQ barely deflates.
     np.savez(buf, **arrays)

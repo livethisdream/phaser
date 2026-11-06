@@ -216,7 +216,8 @@ SAVE_CASES = [
     ("save_range", {"preset": "range"}, False),
     # Duration: a burst trimmed, a long continuous burst, L31's long record.
     ("save_rd_short", {"duration_s": 0.05}, False),
-    ("save_rd_long", {"duration_s": 0.5}, False),
+    ("save_rd_run", {"duration_s": 0.5}, False),             # a run of 2 bursts
+    ("save_rd_run_iq_ch", {"duration_s": 1.0}, True),        # 4 bursts, both halves
     ("save_l31_long_iq_ch", {"preset": "l31_record", "duration_s": 1.5}, True),
     # One single chirp: PRI is the frame interval, not the plan's.
     ("save_range_one_chirp", {"preset": "range_sync", "duration_s": 0.05}, False),
@@ -296,6 +297,9 @@ def test_saved_capture_matches_python(name, params, iq_ch, js_saves):
         assert other.dtype.kind == value.dtype.kind and other.shape == value.shape, (
             f"{name}.{key}: {other.dtype}{other.shape} vs Python {value.dtype}{value.shape}")
         if key == "note" or (key == "PRI" and single_chirp):
+            continue
+        if key == "burst_t":       # Python measures the run's pacing; JS steps it
+            np.testing.assert_allclose(other, value, atol=0.1)
             continue
         if value.dtype.kind == "c":
             scale = float(np.max(np.abs(value)))
@@ -456,6 +460,42 @@ def test_playback_reads_course_levels_in_dbfs(scale, units, tmp_path):
     # is divided out: the same scale as the live frames.
     assert f["peak_magnitude_db"] == pytest.approx(-20.0, abs=1.5)
 
+
+
+_JS_RUN_DRIVER = """
+import { readNpz } from '%(src)s/npz.js';
+import { playbackRecording, playbackFrame } from '%(src)s/playback-worker.js';
+import { readFileSync } from 'node:fs';
+const [path] = JSON.parse(process.argv[2]);
+const rec = playbackRecording(await readNpz(readFileSync(path)));
+const second = playbackFrame(rec, {}, rec.hop);
+process.stdout.write(JSON.stringify({ mode: rec.mode, window: rec.window, hop: rec.hop,
+    interval: rec.interval, bursts: rec.bursts, second }));
+"""
+
+
+def test_a_run_of_bursts_plays_a_burst_a_frame(tmp_path):
+    """A Range + Velocity save longer than one burst plays back burst by
+    burst, at the recorded pace, each frame what Python makes of that burst."""
+    import phaser_radar_dsp as dsp
+
+    data = _python_save({"preset": "range_doppler", "duration_s": 1.0}, False)
+    path = tmp_path / "run.npz"
+    path.write_bytes(base64.b64decode(data))
+    cap = _load_npz(data)
+    n = int(cap["burst_len"])
+    src = (ROOT / "frontend-radar" / "src").as_posix()
+    got = _node(_JS_RUN_DRIVER % {"src": src}, [str(path)], tmp_path)
+    assert got["mode"] == "burst" and got["window"] == got["hop"] == n
+    assert got["bursts"] == cap["iq"].shape[0] // n == 4
+    assert got["interval"] == pytest.approx(dsp.CAPTURE_BURST_INTERVAL_S * 1e3, rel=0.3)
+    burst = cap["iq"][n:2 * n] * dsp.CAPTURE_FULL_SCALE
+    rd = dsp.range_doppler_map(burst.T, float(cap["fs"]), float(cap["B"]), float(cap["T_ramp"]),
+                               float(cap["PRI"]), float(cap["fc"]), zero_range_freq=float(cap["f0"]),
+                               range_max=20.0, peak_exclude=0.3)
+    assert got["second"]["peak_range"] == pytest.approx(rd["peak_range"], abs=1e-6)
+    steps = np.abs(_decode(got["second"]["map"]) - _decode(dsp.encode_db_u8(rd["map_db"])))
+    assert steps.max() <= 1
 
 
 L28_CORNER = Path("/home/user/livethisdream/ece444/book/extras/radar-data/L28_corner_3m.npz")
