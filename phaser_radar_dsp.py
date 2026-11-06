@@ -304,7 +304,7 @@ def fmcw_slope(chirp_bw, ramp_time):
 def beat_freq_to_range(f_beat, chirp_bw, ramp_time):
     """R = c * f_b / (2 * S).
 
-    The labs quote 3.3 kHz of beat per metre at B = 500 MHz and T_s = 1 ms,
+    The labs quote 3.3 kHz of beat per meter at B = 500 MHz and T_s = 1 ms,
     which is this relation read the other way round: 2*S/c = 3336 Hz/m.
 
     (Step 22 of the same lab asks whether 1 m moved the peak by "about 6.7kHz",
@@ -426,12 +426,19 @@ def _to_db(mag, win_sum):
 
 
 def range_profile(iq, sample_rate, chirp_bw, ramp_time, zero_range_freq=0.0,
-                  fft_window="blackman", range_max=None, range_min=0.0):
+                  fft_window="blackman", range_max=None, range_min=0.0, peak_min=0.0):
     """One chirp -> one range profile. The FMCW range lab's main plot.
 
-    Returns the range axis in metres alongside the magnitude in dB, cropped to
+    Returns the range axis in meters alongside the magnitude in dB, cropped to
     [range_min, range_max] so the frontend gets a few hundred bins rather than
     the whole positive half.
+
+    `peak_range` is the strongest displayed bin at or beyond `peak_min`
+    meters (to within half a bin): the Tx->Rx leakage near 0 m is otherwise stronger than a corner
+    at 3 m (L28_corner_3m.npz read 0.25 m). `cal_peak_range` is the strongest
+    bin anywhere in the band, below 0 m and past the crop included: the 0 m
+    calibration looks for a reflector at the array wherever the current 0 m
+    beat puts it.
     """
     iq = np.asarray(iq)
     n = int(len(iq))
@@ -453,11 +460,19 @@ def range_profile(iq, sample_rate, chirp_bw, ramp_time, zero_range_freq=0.0,
     ranges_out = ranges[mask]
     profile_out = profile_db[mask]
 
-    peak_idx = int(np.argmax(profile_out))
+    # Half a bin of slack, so a target at the cutoff itself still counts: the
+    # 1 m reflector of the range lab reads 0.999 m.
+    half_bin = 0.5 * abs(float(ranges[1] - ranges[0])) if len(ranges) > 1 else 0.0
+    search = ranges_out >= float(peak_min or 0.0) - half_bin
+    if not np.any(search):
+        search[:] = True
+    peak_idx = int(np.argmax(np.where(search, profile_out, -np.inf)))
+    cal_idx = int(np.argmax(profile_db))
     return {
         "range_axis": ranges_out.astype(np.float32).tolist(),
         "profile_db": profile_out.astype(np.float32).tolist(),
         "peak_range": float(ranges_out[peak_idx]),
+        "cal_peak_range": float(ranges[cal_idx]),
         "peak_magnitude_db": float(profile_out[peak_idx]),
         "range_resolution": float(range_resolution(chirp_bw)),
         "max_range": float(max_unambiguous_range(sample_rate, chirp_bw, ramp_time)),
@@ -552,7 +567,16 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     velocity_out = velocity[vmask]
 
     x = np.asarray(matrix, dtype=cplx) * w_fast.astype(real)[:, None]
-    spec = _fft(x, axis=0, n=n_fft)[: n_fft // 2][rmask]
+    full = _fft(x, axis=0, n=n_fft)[: n_fft // 2]
+    # The 0 m calibration wants a reflector held still at the array, wherever
+    # the current 0 m beat puts it -- below 0 m or past the crop too -- so it
+    # reads the strongest range over the whole band, power summed over the
+    # chirps (a still reflector is all zero-Doppler; any velocity counts).
+    # On the fast-time spectrum, so the crop below still saves the slow-time
+    # FFT its ~500 undisplayed bins.
+    cal_r = int(np.argmax(np.sum(full.real.astype(np.float64) ** 2
+                                 + full.imag.astype(np.float64) ** 2, axis=1)))
+    spec = full[rmask]
     spec = np.fft.fftshift(_fft(spec * w_slow.astype(real)[None, :], axis=1), axes=1)
     map_out = _to_db(np.abs(spec[:, vmask]), win_sum)
 
@@ -575,16 +599,12 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
         search[:] = True
     masked = np.where(search[None, :], map_out, -np.inf)
     peak_r, peak_v = np.unravel_index(int(np.argmax(masked)), map_out.shape)
-    # The 0 m calibration wants the opposite: a reflector held still at the
-    # array, which is all zero-Doppler. So it reads the strongest cell over
-    # every velocity, exclusion or not.
-    cal_r = np.unravel_index(int(np.argmax(map_out)), map_out.shape)[0]
     return {
         "map_db": map_out.astype(np.float32).tolist(),
         "range_axis": ranges_out.astype(np.float32).tolist(),
         "velocity_axis": velocity_out.astype(np.float32).tolist(),
         "peak_range": float(ranges_out[peak_r]),
-        "cal_peak_range": float(ranges_out[cal_r]),
+        "cal_peak_range": float(ranges[cal_r]),
         "peak_velocity": float(velocity_out[peak_v]),
         "peak_magnitude_db": float(map_out[peak_r, peak_v]),
         "range_resolution": float(range_resolution(chirp_bw)),
@@ -599,7 +619,7 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
 # What the backend sends the browser each frame. A range_doppler map is ~60 x
 # 256 cells; as a JSON list of floats that is ~300 KB a frame, as one byte a
 # cell in base64 ~20 KB. One byte is 0.4 dB a step over MAP_SPAN_DB, far finer
-# than a heatmap's colour scale resolves.
+# than a heatmap's color scale resolves.
 
 MAP_SPAN_DB = 100.0   # quantize from the frame's peak down to this far below
 AXIS_DECIMALS = 4     # m and m/s: 0.1 mm, far under any bin
@@ -659,6 +679,15 @@ def rounded(values, decimals):
 #             frequency, from the L28 calibration
 #     note    a one-line description, as the course's recorded files carry
 # Range is then R = c T_ramp (f - f0) / (2 B), the relation range_profile uses.
+#
+# iq is in full-scale units, as the course's own files are (fmcw_sim.py):
+# |iq| = 1 is 0 dBFS. The Pluto hands back ADC counts, 2**11 at full scale,
+# so capture_npz divides by CAPTURE_FULL_SCALE and playback multiplies back.
+# Two summed channels reach at most about 2.83 full scale, so a file whose
+# peak |iq| is above CAPTURE_COUNTS_ABOVE holds counts (a save from before
+# this change) and plays as it is.
+CAPTURE_FULL_SCALE = 2 ** 11
+CAPTURE_COUNTS_ABOVE = 4.0
 
 # Single-chirp captures per saved file: the course's L28 recordings are 32.
 CAPTURE_SINGLE_CHIRP_FRAMES = 32
@@ -667,37 +696,73 @@ CAPTURE_SINGLE_CHIRP_FRAMES = 32
 CAPTURE_MAX_FRAMES_S = 60.0
 CAPTURE_FRAME_S = 0.05
 BYTES_PER_SAMPLE = 8        # complex64
+# A range-Doppler save longer than one burst is a run of ordinary bursts, one
+# every CAPTURE_BURST_INTERVAL_S (or a burst's own length, if longer) -- what
+# the live view captures, so no mode re-entry and no giant buffer (a 1.6 s
+# continuous burst froze phaser-01, 2026-11-06). The file says where each
+# burst starts: burst_len chirps each, burst_t seconds from the first. Runs
+# stop at CAPTURE_MAX_BYTES of iq, so a save stays a download, not a crash.
+CAPTURE_BURST_INTERVAL_S = 0.25
+CAPTURE_MAX_BYTES = 64e6
 
 
-def capture_limits(plan):
+def capture_limits(plan, continuous=False):
     """What a saved capture can be for this plan, for the UI's Duration box.
 
-    {"kind": "burst"|"frames", "default_s", "max_s", "chirp_s",
-     "bytes_per_s", "bytes_per_s_iq_ch"} -- the size is iq's alone, plus the
-    header bytes a file carries regardless; iq_ch triples it (iq + 2 halves).
-    A burst is continuous chirps a PRI apart, as long as the Pluto's burst
-    buffer holds (MAX_BURST_BUFFER samples); frames are single chirps at
-    the live frame interval.
+    {"kind": "burst"|"bursts"|"frames", "default_s", "max_s", "chirp_s",
+     "bytes_per_s", "bytes_per_s_iq_ch", ...} -- the size is iq's alone, plus
+    the header bytes a file carries regardless; iq_ch triples it (iq + 2
+    halves). capture_bytes() turns a duration into bytes.
+      burst   (continuous=True) continuous chirps a PRI apart, as long as the
+              Pluto's burst buffer holds (MAX_BURST_BUFFER samples)
+      bursts  up to one burst, the next burst trimmed; longer, a run of
+              whole bursts every run_s (burst_s, bytes_per_burst)
+      frames  single chirps at the live frame interval
     """
     good = int(plan["good_ramp_samples"])
     if plan.get("synced") and plan["num_chirps"] > 1:
         pri = float(plan["pri_ms"]) / 1e3
-        max_chirps = int(MAX_BURST_BUFFER // (float(plan["sample_rate"]) * pri))
+        n = int(plan["num_chirps"])
         per_s = good * BYTES_PER_SAMPLE / pri
-        return {"kind": "burst", "default_s": plan["num_chirps"] * pri,
-                "max_s": max_chirps * pri, "chirp_s": pri,
-                "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
+        out = {"default_s": n * pri, "chirp_s": pri, "burst_s": n * pri,
+               "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
+        if continuous:
+            max_chirps = int(MAX_BURST_BUFFER // (float(plan["sample_rate"]) * pri))
+            return {"kind": "burst", "max_s": max_chirps * pri, **out}
+        run_s = max(CAPTURE_BURST_INTERVAL_S, n * pri)
+        per_burst = n * good * BYTES_PER_SAMPLE
+        max_bursts = max(2, int(CAPTURE_MAX_BYTES // per_burst))
+        return {"kind": "bursts", "max_s": min(CAPTURE_MAX_FRAMES_S, max_bursts * run_s),
+                "run_s": run_s, "bytes_per_burst": per_burst, **out}
     per_s = good * BYTES_PER_SAMPLE / CAPTURE_FRAME_S
     return {"kind": "frames", "default_s": CAPTURE_SINGLE_CHIRP_FRAMES * CAPTURE_FRAME_S,
             "max_s": CAPTURE_MAX_FRAMES_S, "chirp_s": CAPTURE_FRAME_S,
             "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
 
 
-def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None):
-    """The course .npz, as bytes. `iq` is n_chirps x n_samples."""
+def capture_bursts(limits, duration):
+    """How many whole bursts a "bursts" save of `duration` s takes; 0 when it
+    is a single (trimmed) burst."""
+    if limits["kind"] != "bursts" or duration <= limits["burst_s"] * (1 + 1e-9):
+        return 0
+    return max(2, int(round(duration / limits["run_s"])))
+
+
+def capture_bytes(limits, duration, iq_ch=False):
+    """The iq bytes a save of `duration` s writes (x3 with iq_ch)."""
+    k = 3 if iq_ch else 1
+    n = capture_bursts(limits, duration)
+    if n:
+        return k * n * limits["bytes_per_burst"]
+    return k * limits["bytes_per_s"] * duration
+
+
+def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None, extra=None):
+    """The course .npz, as bytes. `iq` is n_chirps x n_samples, in ADC counts;
+    the file holds it in full-scale units (CAPTURE_FULL_SCALE)."""
     import io
     arrays = {
-        "iq": np.asarray(iq, dtype=np.complex64),
+        "iq": (np.asarray(iq) / CAPTURE_FULL_SCALE).astype(np.complex64),
         "fs": np.float64(fs), "fc": np.float64(fc), "B": np.float64(chirp_bw),
         "T_ramp": np.float64(t_ramp), "PRI": np.float64(pri), "f0": np.float64(f0),
         "note": np.str_(note),
@@ -705,10 +770,12 @@ def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None):
     if arrays["iq"].ndim != 2:
         raise ValueError("iq must be n_chirps x n_samples")
     if iq_ch is not None:
-        iq_ch = np.asarray(iq_ch, dtype=np.complex64)
+        iq_ch = (np.asarray(iq_ch) / CAPTURE_FULL_SCALE).astype(np.complex64)
         if iq_ch.shape != (2,) + arrays["iq"].shape:
             raise ValueError(f"iq_ch must be 2 x {arrays['iq'].shape}, not {iq_ch.shape}")
         arrays["iq_ch"] = iq_ch
+    for key, value in (extra or {}).items():
+        arrays[key] = np.asarray(value, dtype=np.float64)
     buf = io.BytesIO()
     # Uncompressed, like the course's own files: complex IQ barely deflates.
     np.savez(buf, **arrays)
@@ -803,7 +870,7 @@ RAMP_MODES = (RAMP_SYNCED, RAMP_FREE_RUNNING)
 # ADF4159's freq_dev_time. RADAR_FFT_Waterfall.py ranges its triangle with
 # c/(4*S) and the sawtooth scripts use c/(2*S); the reading here is that the
 # triangle sweeps the full B in each half of freq_dev_time, which also makes
-# the lab's "about 6.7 kHz per metre" right for that ramp. Unverified until
+# the lab's "about 6.7 kHz per meter" right for that ramp. Unverified until
 # bench step C5.3 -- if it is wrong, this table is the one number to change.
 RANGE_TIME_SCALE = {RAMP_SYNCED: 1.0, RAMP_FREE_RUNNING: 0.5}
 
@@ -837,9 +904,14 @@ FMCW_HW_DEFAULTS = {
 FMCW_PRESETS = {
     # Lab pp. 29-31, RADAR_FFT_Waterfall.py. The script ramps for 1.2 ms; the
     # lab states T_s = 1 ms and derives its 3.3 kHz/m from that, so 1 ms.
+    # The script transmits at 12.145 GHz; this one at 10 GHz, as the other
+    # presets do. 12.1 GHz is above the array's 10-10.5 GHz band: on phaser-01
+    # (2026-11-06) a corner's echo came back too weak to beat the internal
+    # leakage, so Calibrate locked onto the leakage's 100 kHz and Peak Range
+    # wandered. At 10 GHz it calibrated. kHz/m depends only on B and T.
     "range": {
         "sample_rate": 600_000,
-        "output_freq": 12.145e9,
+        "output_freq": 10e9,
         "chirp_bw": 500e6,
         "ramp_time": 1e-3,
         "num_chirps": 1,
@@ -903,12 +975,14 @@ FMCW_PRESETS = {
         "tx_gain": 0,
         "range_max": 100.0,
     },
-    # The ECE 444 L31 classification records (ece444 radar-data/L31_*.npz):
-    # 300 us chirps every 0.5 ms at 0.3 MS/s. The low rate is what makes a
+    # Micro-Doppler: long continuous records of moving targets (a walker, a
+    # fan, a spinner) to classify by their micro-Doppler signatures. 300 us
+    # chirps every 0.5 ms at 0.3 MS/s, as the ECE 444 classification
+    # recordings (ece444 radar-data/L31_*.npz) were made. The low rate is what makes a
     # long continuous record fit the Pluto's burst buffer -- ~14 s against
     # ~2 s at range_doppler's 2 MS/s -- at the cost of range: the beat
     # reaches Nyquist 4.5 m above the 0 m frequency, so the display stops at 4 m.
-    "l31_record": {
+    "micro_doppler": {
         "sample_rate": 300_000,
         "output_freq": 10e9,
         "chirp_bw": 500e6,
@@ -930,6 +1004,10 @@ FMCW_PROC_DEFAULTS = {
     "cfar_ref": 16,
     "cfar_bias_db": 6.0,
     "peak_exclude": 0.3,    # m/s; range-Doppler peak readout skips |v| below this
+    # m; the range-profile peak readout skips returns closer than this, where
+    # the Tx->Rx leakage sits. Its Blackman main lobe is about 0.9 m wide at
+    # B = 500 MHz, so 1 m clears it; 0 turns it off. Calibrate ignores it.
+    "peak_min": 1.0,
 }
 
 # What start_fmcw_radar runs when no preset is named: range and velocity
@@ -944,10 +1022,10 @@ FMCW_FALLBACK_PRESET = "range"
 FMCW_PRESET_UI = {
     "range_doppler": ("Range + Velocity", "Indoor, ~5 fps. Hand wave, fidget spinner, MTI."),
     "range_doppler_far": ("Range + Vel (Far)", "Outdoor, out to ~180 m, ~2.4 fps."),
-    "range": ("Range (Basic)", "FMCW lab: the 0 m calibration and kHz per metre."),
+    "range": ("Range (Basic)", "FMCW lab: the 0 m calibration and kHz per meter."),
     "range_sync": ("Range (Fast)", "A steeper chirp, out to ~375 m."),
     "cfar": ("Range (CFAR)", "CFAR lab: tune the threshold, then Apply."),
-    "l31_record": ("Range + Vel (L31)", "L31 records: 0.3 MS/s, continuous captures up to ~14 s, out to 4 m."),
+    "micro_doppler": ("Micro-Doppler", "Long continuous records of moving targets for micro-Doppler: 0.3 MS/s, up to ~14 s, out to 4 m."),
 }
 
 

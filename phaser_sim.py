@@ -270,7 +270,7 @@ class SimSDR:
     # Scene tab drags it via set_state's sim_target_angle_deg.
     TARGET_ANGLE_DEG = 0.0
 
-    # Range to the simulated HB100, metres. It is a one-way beacon, so the
+    # Range to the simulated HB100, meters. It is a one-way beacon, so the
     # received amplitude goes as 1/r (power as 1/r^2), referenced to
     # TARGET_RANGE_M: the default range reproduces the level AMP_SCALE sets,
     # and 2 m reads 6 dB lower. The wavefront stays planar at every range --
@@ -381,7 +381,7 @@ class SimSDR:
 
         self._rng = np.random.default_rng(0)
 
-        # Where the simulated HB100 sits: degrees from boresight, metres away.
+        # Where the simulated HB100 sits: degrees from boresight, meters away.
         self.target_angle_deg = self.TARGET_ANGLE_DEG
         self.target_range_m = self.TARGET_RANGE_M
 

@@ -1,5 +1,6 @@
 import { createTransport, resolveTransportMode } from './transport.js';
 import { fromBase64, readNpz } from './npz.js';
+import { captureBytes } from './sim/dsp.js';
 
 /* --- State --- */
 const state = {
@@ -26,7 +27,7 @@ const state = {
         plan: null,
         waterfall: null,     // rows = frames, cols = range bins
         last: null,          // the last frame, for the 0 m calibration
-        span_db: 60,         // colour scale: the frame's peak down this far
+        span_db: 60,         // color scale: the frame's peak down this far
         avg: null,           // averaged single-chirp profile power, for the readout
         readout_t: 0,        // when the peak readouts last changed
         preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
@@ -230,6 +231,26 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
         }, 50);
     });
 });
+
+/* The FMCW plot a preset opens on: Range-Doppler for a multi-chirp preset
+   (or a burst recording), Range Waterfall for a single-chirp one. The
+   single-chirp Range profile is a tab to pick, not the first view: on its
+   own it is the hardest of the three to read. */
+function fmcwDefaultTab() {
+    const multi = state.playback
+        ? state.playback.info?.mode === 'burst'
+        : (state.fmcw.preset_info?.[document.getElementById('fmcw-preset')?.value]?.num_chirps ?? 256) > 1;
+    return multi ? 'tab-fmcw-rd' : 'tab-fmcw-wf';
+}
+
+/* Go to fmcwDefaultTab() -- on entering FMCW, a new preset or a loaded
+   recording -- unless the user is reading the Logs. */
+function showFmcwDefaultTab({ force = false } = {}) {
+    const active = document.querySelector('.tab-btn.active')?.dataset.target;
+    if (active === 'tab-logs' && !force) return;
+    const want = fmcwDefaultTab();
+    if (active !== want) document.querySelector(`.tab-btn[data-target="${want}"]`)?.click();
+}
 
 /* --- Slider/Input combo linking --- */
 function linkComboSlider(rangeId, numId, onChange) {
@@ -608,14 +629,16 @@ function setUiMode(mode) {
     document.getElementById('mode-fmcw')?.classList.toggle('active', state.uiMode === 'fmcw');
     const modeTabs = document.querySelector('.mode-tabs');
     if (modeTabs) modeTabs.dataset.mode = state.uiMode;
-    // Show the mode's tabs (and Logs), and land on its first one.
+    // Show the mode's tabs (and Logs), and land on its first one -- in FMCW,
+    // the plot that suits the preset (fmcwDefaultTab).
     let first = null;
     document.querySelectorAll('.tab-btn').forEach(b => {
         const m = b.dataset.mode;
         b.hidden = Boolean(m) && m !== state.uiMode;
         if (!first && m === state.uiMode) first = b;
     });
-    first?.click();
+    if (state.uiMode === 'fmcw') showFmcwDefaultTab({ force: true });
+    else first?.click();
     // Always shown, greyed in CW, so the stats row does not shift.
     const rangeBox = document.getElementById('box-peak-range');
     rangeBox.classList.toggle('set-disabled', state.uiMode !== 'fmcw');
@@ -834,14 +857,26 @@ function averageFmcwProfile(frame) {
    pop-up's strongest return, which on range-Doppler includes 0 m/s. */
 function fmcwPeak(frame, { cal = false } = {}) {
     if (!frame) return {};
+    // Calibrate: the backend's strongest return over the whole band, which
+    // the displayed (and averaged) profile may not even contain -- below
+    // 0 m, or past Range Max, when the current 0 m beat is off.
+    if (cal && typeof frame.cal_peak_range === 'number') {
+        return { range: frame.cal_peak_range, db: frame.peak_magnitude_db };
+    }
     const avg = state.fmcw.avg;
     if (frame.kind === 'range_profile' && avg && avg.power.length === frame.range_axis.length) {
-        let best = 0;
-        for (let i = 1; i < avg.power.length; i++) if (avg.power[i] > avg.power[best]) best = i;
-        return { range: frame.range_axis[best], db: 10 * Math.log10(avg.power[best]) };
+        // As the backend's readout: skip the leakage closer than Peak Min.
+        // Half a bin of slack, as range_profile: a target at the cutoff counts.
+        const axis = frame.range_axis;
+        const min = (Number(frame.peak_min) || 0) - (axis.length > 1 ? 0.5 * Math.abs(axis[1] - axis[0]) : 0);
+        let best = -1;
+        for (let i = 0; i < avg.power.length; i++) {
+            if (axis[i] >= min && (best < 0 || avg.power[i] > avg.power[best])) best = i;
+        }
+        if (best < 0) best = avg.power.indexOf(Math.max(...avg.power));
+        return { range: axis[best], db: 10 * Math.log10(avg.power[best]) };
     }
-    const range = cal && typeof frame.cal_peak_range === 'number' ? frame.cal_peak_range : frame.peak_range;
-    return { range, db: frame.peak_magnitude_db };
+    return { range: frame.peak_range, db: frame.peak_magnitude_db };
 }
 
 /* --- FMCW controls --- */
@@ -865,6 +900,8 @@ function readFmcwParams() {
     // sent on an earlier Start does not linger on the backend.
     const rmax = parseFloat(fmcwEl('fmcw-range-max').value);
     params.range_max = Number.isFinite(rmax) && rmax > 0 ? rmax : null;
+    const pmin = parseFloat(fmcwEl('fmcw-peak-min')?.value);
+    params.peak_min = Number.isFinite(pmin) && pmin >= 0 ? pmin : null;
     const zero = parseFloat(fmcwEl('fmcw-zero-khz').value);
     params.zero_range_freq = Number.isFinite(zero) ? zero * 1e3 : null;
     const center = parseFloat(document.getElementById('center-freq').value);
@@ -940,6 +977,8 @@ async function refreshFmcwState() {
             // Short label in the box; the internal name stays the value.
             d.presets.forEach(p => sel.add(new Option(d.preset_info?.[p]?.label || p, p)));
             sel.value = d.presets.includes(keep) ? keep : d.presets[0];
+            // The preset is known only now: land on its plot.
+            if (state.uiMode === 'fmcw') showFmcwDefaultTab();
         }
         updateFmcwControlGating();
         setRunningUi(state.running, state.runningMode || state.uiMode);
@@ -1035,6 +1074,8 @@ function updateFmcwControlGating() {
     gate(fmcwEl('fmcw-mti-on')?.closest('.set-row'), !multi, noMti);
     gate(fmcwEl('fmcw-mti-mode')?.closest('.set-row'), !multi || !mtiOn,
          !multi ? noMti : 'Turn MTI on to choose its mode.');
+    gate(fmcwEl('fmcw-peak-min-row'), multi,
+         'Range-Doppler skips the 0 m leakage by velocity (it sits at 0 m/s): Peak Min is for the Range presets.');
     const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
     const cfarOn = fmcwEl('fmcw-cfar')?.checked;
     ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias']
@@ -1069,6 +1110,7 @@ fmcwEl('fmcw-scene-noise')?.addEventListener('change', (e) => {
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
     updateFmcwControlGating();
+    showFmcwDefaultTab();
     // The lab's own frequency and gains, sent along: an override from an
     // earlier preset would otherwise outlive the switch in the stored params.
     const hw = presetHw(false);
@@ -1085,6 +1127,9 @@ fmcwEl('fmcw-cfar-mode')?.addEventListener('change', () => { state.fmcw.waterfal
 fmcwEl('fmcw-range-max')?.addEventListener('change', () => {
     state.fmcw.waterfall = null;
     pushFmcwParams({ range_max: readFmcwParams().range_max });
+});
+fmcwEl('fmcw-peak-min')?.addEventListener('change', () => {
+    pushFmcwParams({ peak_min: readFmcwParams().peak_min });
 });
 ['fmcw-cfar', 'fmcw-cfar-guard', 'fmcw-cfar-ref', 'fmcw-cfar-bias'].forEach(id => {
     fmcwEl(id)?.addEventListener('change', () => {
@@ -1241,14 +1286,18 @@ function updateCaptureEstimate() {
     input.placeholder = String(+cap.default_s.toPrecision(3));
     input.max = String(cap.max_s);
     input.classList.toggle('set-invalid', !ok);
+    const ms = (t) => +(t * 1e3).toPrecision(3);
     const what = cap.kind === 'burst'
-        ? `One continuous burst, chirps ${+(cap.chirp_s * 1e3).toPrecision(3)} ms apart, up to ${+cap.max_s.toPrecision(3)} s on this preset (the Pluto's burst buffer).`
-        : `Single chirps every ${+(cap.chirp_s * 1e3).toPrecision(3)} ms, up to ${cap.max_s} s.`;
+        ? `One continuous burst, chirps ${ms(cap.chirp_s)} ms apart, up to ${+cap.max_s.toPrecision(3)} s on this preset (the Pluto's burst buffer).`
+        : cap.kind === 'bursts'
+            ? `Up to ${ms(cap.burst_s)} ms: one continuous burst. Longer: a run of bursts, one every ${ms(cap.run_s)} ms, `
+              + `each played back as a Range-Doppler frame; up to ${+cap.max_s.toPrecision(3)} s on this preset.`
+            : `Single chirps every ${ms(cap.chirp_s)} ms, up to ${cap.max_s} s.`;
     const withCh = document.getElementById('fmcw-save-ch')?.checked;
-    const size = ok ? `About ${formatBytes(cap.bytes_per_s * d)}, or ${formatBytes(cap.bytes_per_s_iq_ch * d)} with Subarray Channels${withCh ? ' (on)' : ''}.`
+    const size = ok ? `About ${formatBytes(captureBytes(cap, d))}, or ${formatBytes(captureBytes(cap, d, true))} with Subarray Channels${withCh ? ' (on)' : ''}.`
         : `${+d.toPrecision(3)} s is too long: at most ${+cap.max_s.toPrecision(3)} s here.`;
     row.title = `${what} Empty: ${+cap.default_s.toPrecision(3)} s. ${size}`;
-    return ok ? `${+d.toPrecision(3)} s, about ${formatBytes((withCh ? cap.bytes_per_s_iq_ch : cap.bytes_per_s) * d)}` : size;
+    return ok ? `${+d.toPrecision(3)} s, about ${formatBytes(captureBytes(cap, d, withCh))}` : size;
 }
 
 function updateFmcwSaveButton() {
@@ -1313,7 +1362,7 @@ function playbackSettings() {
     const p = readFmcwParams();
     return {
         mti: p.mti, cfar: p.cfar, cfar_guard: p.cfar_guard, cfar_ref: p.cfar_ref,
-        cfar_bias_db: p.cfar_bias_db, range_max: p.range_max,
+        cfar_bias_db: p.cfar_bias_db, range_max: p.range_max, peak_min: p.peak_min,
         zero_range_freq: p.zero_range_freq,
         fft_window: document.getElementById('fft-window').value,
     };
@@ -1347,6 +1396,7 @@ async function startPlayback(file) {
         if (msg.type === 'fmcw_radar_frame') { handleFmcwFrame(msg.data); return; }
         if (msg.type === 'loaded') {
             pb.info = msg.info;
+            if (state.uiMode === 'fmcw') showFmcwDefaultTab();
             const i = msg.info;
             state.fmcw.cfg = {
                 chirp_bw: i.B, signal_freq: i.f0, output_freq: i.fc,
@@ -1355,9 +1405,13 @@ async function startPlayback(file) {
             state.fmcw.plan = { effective_ramp_time: i.T_ramp, ramp_time: i.T_ramp, num_chirps: i.window };
             updateFmcwControlGating();
             log('info', 'PLAYBACK', `${file.name}: ${i.chirps} chirps x ${i.samples} samples, `
-                + `${i.mode === 'burst' ? 'range-Doppler' : 'range profiles'}, `
+                + `${i.bursts ? `${i.bursts} bursts, one every ${Math.round(i.interval)} ms` : i.mode === 'burst' ? 'range-Doppler' : 'range profiles'}, `
                 + `fs ${i.fs / 1e6} MHz, B ${i.B / 1e6} MHz, T_ramp ${+(i.T_ramp * 1e6).toFixed(1)} us, PRI ${+(i.PRI * 1e3).toPrecision(4)} ms, f0 ${i.f0} Hz`);
             if (note) log('info', 'PLAYBACK', note);
+            if (i.units === 'counts') {
+                log('warn', 'PLAYBACK', `${file.name}: peak |iq| is above full scale, so it holds raw ADC counts `
+                    + '(a save from before captures were stored in full-scale units); played as counts.');
+            }
             return;
         }
         if (msg.type === 'error') {
@@ -1371,8 +1425,33 @@ async function startPlayback(file) {
     state.fmcw.avg = null;
     setRunningUi(true, 'fmcw');
     setConnectionStatus(true);
+    setPlaybackPaused(false);
     worker.postMessage({ cmd: 'load', arrays, settings: playbackSettings() });
 }
+
+/* Play/Pause beside Stop, shown only while a recording plays. Paused, the
+   frame stays on screen and the processing controls still redraw it. */
+function setPlaybackPaused(paused) {
+    const btn = document.getElementById('btn-playback-pause');
+    if (state.playback) state.playback.paused = paused;
+    if (!btn) return;
+    btn.hidden = !state.playback;
+    btn.textContent = paused ? 'Play' : 'Pause';
+    // No frames arrive while paused: say so rather than show the last rate.
+    if (paused) {
+        frameTimes.length = 0;
+        const rate = document.getElementById('stat-rate');
+        if (rate) rate.textContent = 'paused';
+    }
+    btn.title = paused ? 'Play the recording on from this frame' : 'Pause the recording on this frame';
+}
+document.getElementById('btn-playback-pause')?.addEventListener('click', () => {
+    const pb = state.playback;
+    if (!pb) return;
+    const paused = !pb.paused;
+    pb.worker.postMessage({ cmd: paused ? 'pause' : 'resume' });
+    setPlaybackPaused(paused);
+});
 
 function stopPlayback({ quiet = false } = {}) {
     const pb = state.playback;
@@ -1380,6 +1459,7 @@ function stopPlayback({ quiet = false } = {}) {
     pb.worker.postMessage({ cmd: 'stop' });
     pb.worker.terminate();
     state.playback = null;
+    setPlaybackPaused(false);
     setRunningUi(false);
     setConnectionStatus(transport.isConnected);
     updateFmcwControlGating();

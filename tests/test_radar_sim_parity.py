@@ -56,6 +56,12 @@ CASES = [
     ("cfar_tuned", "fmcw",
      {"preset": "cfar", "cfar": True, "cfar_guard": 2, "cfar_ref": 8, "cfar_bias_db": 3.0}),
     ("range_rect_window", "fmcw", {"preset": "range", "fft_window": "rect", "taper": "hann"}),
+    # Peak Min off, and a 0 m beat set above the reflector's (Calibrate has
+    # to find it below 0 m, outside the displayed profile).
+    ("range_peak_min_off", "fmcw", {"preset": "range", "peak_min": 0}),
+    ("range_peak_min_far", "fmcw", {"preset": "range", "peak_min": 5.0}),
+    ("range_cal_below_zero", "fmcw", {"preset": "range", "zero_range_freq": 107_000.0}),
+    ("rd_cal_below_zero", "fmcw", {"zero_range_freq": 130_000.0}),
     ("cw_default", "cw", {}),
     ("cw_hann_rect_taper", "cw", {"fft_window": "hann", "taper": "rect", "vel_max": 10.0}),
     ("cw_capture", "cw",
@@ -208,10 +214,13 @@ SAVE_CASES = [
     ("save_rd", {}, False),
     ("save_rd_iq_ch_calibrated", {"zero_range_freq": 103_000.0}, True),
     ("save_range", {"preset": "range"}, False),
-    # Duration: a burst trimmed, a long continuous burst, L31's long record.
+    # Duration: a burst trimmed, a long continuous burst, Micro-Doppler's long record.
     ("save_rd_short", {"duration_s": 0.05}, False),
-    ("save_rd_long", {"duration_s": 0.5}, False),
-    ("save_l31_long_iq_ch", {"preset": "l31_record", "duration_s": 1.5}, True),
+    ("save_rd_run", {"duration_s": 0.5}, False),             # a run of 2 bursts
+    ("save_rd_run_iq_ch", {"duration_s": 1.0}, True),        # 4 bursts, both halves
+    ("save_micro_doppler_long_iq_ch", {"preset": "micro_doppler", "duration_s": 1.5}, True),
+    # One single chirp: PRI is the frame interval, not the plan's.
+    ("save_range_one_chirp", {"preset": "range_sync", "duration_s": 0.05}, False),
 ]
 
 _JS_SAVE_DRIVER = """
@@ -289,6 +298,9 @@ def test_saved_capture_matches_python(name, params, iq_ch, js_saves):
             f"{name}.{key}: {other.dtype}{other.shape} vs Python {value.dtype}{value.shape}")
         if key == "note" or (key == "PRI" and single_chirp):
             continue
+        if key == "burst_t":       # Python measures the run's pacing; JS steps it
+            np.testing.assert_allclose(other, value, atol=0.1)
+            continue
         if value.dtype.kind == "c":
             scale = float(np.max(np.abs(value)))
             worst = float(np.max(np.abs(value - other)))
@@ -359,7 +371,7 @@ import { readFileSync } from 'node:fs';
 const [path, settings] = JSON.parse(process.argv[2]);
 const rec = playbackRecording(await readNpz(readFileSync(path)));
 const f = playbackFrame(rec, settings, 0);
-process.stdout.write(JSON.stringify({ mode: rec.mode, window: rec.window, frame: f }));
+process.stdout.write(JSON.stringify({ mode: rec.mode, window: rec.window, units: rec.units, frame: f }));
 """
 
 
@@ -381,7 +393,10 @@ def test_playback_frame_matches_python_on_a_saved_capture(preset, settings, tmp_
     got = _node(_JS_PLAY_DRIVER % {"src": src}, [str(path), settings], tmp_path)
     f = got["frame"]
 
-    iq = cap["iq"]
+    # Saved in full-scale units; playback scales back to the counts the DSP reads.
+    assert got["units"] == "full_scale"
+    assert np.max(np.abs(cap["iq"])) < dsp.CAPTURE_COUNTS_ABOVE
+    iq = cap["iq"] * dsp.CAPTURE_FULL_SCALE
     fs, B, T, PRI, fc, f0 = (float(cap[k]) for k in ("fs", "B", "T_ramp", "PRI", "fc", "f0"))
     window = settings.get("fft_window", "blackman")
     if iq.shape[0] > 1 and PRI <= 5e-3:
@@ -412,6 +427,92 @@ def test_playback_frame_matches_python_on_a_saved_capture(preset, settings, tmp_
     if settings.get("mti", "none") == "none":
         assert f["cal_peak_range"] == pytest.approx(1.0, abs=0.35)
 
+
+
+
+def _course_file(path, iq, **extra):
+    """A file as the course writes them: full-scale units, f0 at the IF."""
+    np.savez(path, iq=iq.astype(np.complex64), fs=np.float64(2e6), fc=np.float64(10e9),
+             B=np.float64(500e6), T_ramp=np.float64(300e-6), PRI=np.float64(50e-3),
+             f0=np.float64(100e3), **extra)
+
+
+def _tone(r, level_dbfs, n=600, fs=2e6, B=500e6, T=300e-6, f0=100e3):
+    """One chirp: a target at r meters, level_dbfs per sample (|x| = 1 is 0 dBFS)."""
+    f = f0 + 2 * B * r / (299792458.0 * T)
+    return 10 ** (level_dbfs / 20) * np.exp(2j * np.pi * f * np.arange(n) / fs)
+
+
+@pytest.mark.parametrize("scale,units", [(1.0, "full_scale"), (2.0 ** 11, "counts")],
+                         ids=["full_scale", "old_counts"])
+def test_playback_reads_course_levels_in_dbfs(scale, units, tmp_path):
+    """A course file's levels play at their dBFS, not 66 dB low; an older
+    save in raw counts is recognized and plays at the same level."""
+    iq = np.stack([_tone(2.0, -20.0)] * 4) * scale
+    path = tmp_path / "course.npz"
+    _course_file(path, iq)
+    src = (ROOT / "frontend-radar" / "src").as_posix()
+    got = _node(_JS_PLAY_DRIVER % {"src": src}, [str(path), {"peak_min": 0}], tmp_path)
+    assert got["units"] == units
+    f = got["frame"]
+    assert f["peak_range"] == pytest.approx(2.0, abs=0.35)
+    # A coherent tone of -20 dBFS a sample reads -20 dB once the window's sum
+    # is divided out: the same scale as the live frames.
+    assert f["peak_magnitude_db"] == pytest.approx(-20.0, abs=1.5)
+
+
+
+_JS_RUN_DRIVER = """
+import { readNpz } from '%(src)s/npz.js';
+import { playbackRecording, playbackFrame } from '%(src)s/playback-worker.js';
+import { readFileSync } from 'node:fs';
+const [path] = JSON.parse(process.argv[2]);
+const rec = playbackRecording(await readNpz(readFileSync(path)));
+const second = playbackFrame(rec, {}, rec.hop);
+process.stdout.write(JSON.stringify({ mode: rec.mode, window: rec.window, hop: rec.hop,
+    interval: rec.interval, bursts: rec.bursts, second }));
+"""
+
+
+def test_a_run_of_bursts_plays_a_burst_a_frame(tmp_path):
+    """A Range + Velocity save longer than one burst plays back burst by
+    burst, at the recorded pace, each frame what Python makes of that burst."""
+    import phaser_radar_dsp as dsp
+
+    data = _python_save({"preset": "range_doppler", "duration_s": 1.0}, False)
+    path = tmp_path / "run.npz"
+    path.write_bytes(base64.b64decode(data))
+    cap = _load_npz(data)
+    n = int(cap["burst_len"])
+    src = (ROOT / "frontend-radar" / "src").as_posix()
+    got = _node(_JS_RUN_DRIVER % {"src": src}, [str(path)], tmp_path)
+    assert got["mode"] == "burst" and got["window"] == got["hop"] == n
+    assert got["bursts"] == cap["iq"].shape[0] // n == 4
+    assert got["interval"] == pytest.approx(dsp.CAPTURE_BURST_INTERVAL_S * 1e3, rel=0.3)
+    burst = cap["iq"][n:2 * n] * dsp.CAPTURE_FULL_SCALE
+    rd = dsp.range_doppler_map(burst.T, float(cap["fs"]), float(cap["B"]), float(cap["T_ramp"]),
+                               float(cap["PRI"]), float(cap["fc"]), zero_range_freq=float(cap["f0"]),
+                               range_max=20.0, peak_exclude=0.3)
+    assert got["second"]["peak_range"] == pytest.approx(rd["peak_range"], abs=1e-6)
+    steps = np.abs(_decode(got["second"]["map"]) - _decode(dsp.encode_db_u8(rd["map_db"])))
+    assert steps.max() <= 1
+
+
+L28_CORNER = Path("/home/user/livethisdream/ece444/book/extras/radar-data/L28_corner_3m.npz")
+
+
+@pytest.mark.skipif(not L28_CORNER.exists(), reason="the ece444 recordings are not checked out")
+@pytest.mark.parametrize("peak_min,expect", [(None, 3.09), (0, 0.09)], ids=["default_1m", "off"])
+def test_l28_corner_reads_the_corner_not_the_leakage(peak_min, expect, tmp_path):
+    """The L28 thread's file: the 3 m corner is weaker than the leakage, so
+    with Peak Min off the readout said 0.09 m. The 1 m default finds it."""
+    src = (ROOT / "frontend-radar" / "src").as_posix()
+    settings = {} if peak_min is None else {"peak_min": peak_min}
+    got = _node(_JS_PLAY_DRIVER % {"src": src}, [str(L28_CORNER), settings], tmp_path)
+    assert got["units"] == "full_scale"
+    assert got["frame"]["peak_range"] == pytest.approx(expect, abs=0.05)
+    # Calibrate reads the strongest return wherever it is: the leakage.
+    assert got["frame"]["cal_peak_range"] == pytest.approx(0.09, abs=0.05)
 
 
 # --- Live scenes ---------------------------------------------------------------

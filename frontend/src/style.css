@@ -853,7 +853,7 @@ input[type=number]::-webkit-outer-spin-button {
    held and the action fires only when it reaches full width. Releasing early
    aborts, so the gesture is its own confirmation dialog.
 
-   Duration and colour come from custom properties so a caller can tune the
+   Duration and color come from custom properties so a caller can tune the
    dwell without a new rule. .btn-freeze above is the older, hard-coded version
    of the same idea; it is left alone deliberately rather than refactored
    underneath a working control. */
@@ -1675,7 +1675,7 @@ input[type=number]::-webkit-outer-spin-button {
     /* --bg-surface is translucent by design, which is fine for a panel sitting
        on the page and wrong for a bar the content scrolls under: sliders and
        button labels showed straight through it. Compositing that same surface
-       over the opaque page colour keeps the panel's exact tone while stopping
+       over the opaque page color keeps the panel's exact tone while stopping
        anything bleeding through. */
     background-color: var(--bg-dark);
     background-image: linear-gradient(var(--bg-surface), var(--bg-surface));

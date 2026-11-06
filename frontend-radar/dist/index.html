@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CeTm0H7M.js"></script>
+  <script type="module" crossorigin src="./assets/index-C34pyf08.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-De-p9im4.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -183,7 +183,7 @@
                   <input type="number" id="val-waterfall-depth" min="20" max="200" step="10" value="50" class="set-ctrl">
                   <input type="range" id="waterfall-depth" min="20" max="200" step="10" value="50" class="modern-slider set-slider" aria-label="Waterfall Depth">
                 </div>
-                <div class="set-row" title="Fit the CW waterfall's colour scale to each frame">
+                <div class="set-row" title="Fit the CW waterfall's color scale to each frame">
                   <label for="opt-autoscale">Auto-Scale dB</label>
                   <label class="toggle-container set-switch"><input type="checkbox" id="opt-autoscale"><span class="checkmark"></span></label>
                 </div>
@@ -212,7 +212,11 @@
                   <label for="fmcw-range-max">Range Max (m)</label>
                   <input type="number" id="fmcw-range-max" class="set-ctrl" step="1" min="1" placeholder="preset">
                 </div>
-                <div class="set-row" title="Colour scale of the range waterfall and range-Doppler map: from each frame's peak down this many dB">
+                <div class="set-row" id="fmcw-peak-min-row" title="Ignores returns closer than this when reading Peak Range, so the 0 m leakage does not hide a weaker target. 0 = off. Calibrate still reads the strongest return anywhere.">
+                  <label for="fmcw-peak-min">Peak Min (m)</label>
+                  <input type="number" id="fmcw-peak-min" class="set-ctrl" step="0.1" min="0" value="1">
+                </div>
+                <div class="set-row" title="Color scale of the range waterfall and range-Doppler map: from each frame's peak down this many dB">
                   <label for="fmcw-span">Color Span (dB)</label>
                   <input type="number" id="fmcw-span" class="set-ctrl" min="10" max="100" step="5" value="60">
                 </div>
@@ -267,7 +271,7 @@
                   <label for="fmcw-save-dur">Duration (s)</label>
                   <input type="number" id="fmcw-save-dur" class="set-ctrl" min="0" step="0.1" placeholder="default">
                 </div>
-                <div class="set-row" title="Also save the two subarray channels (iq_ch), for the L31 monopulse task. Triples the file size.">
+                <div class="set-row" title="Also save the two subarray channels (iq_ch), for monopulse (angle) work. Triples the file size.">
                   <label for="fmcw-save-ch">Subarray Channels</label>
                   <label class="toggle-container set-switch"><input type="checkbox" id="fmcw-save-ch"><span class="checkmark"></span></label>
                 </div>
@@ -302,13 +306,15 @@
               <button class="tab-btn active" data-target="tab-waterfall" data-mode="cw">Waterfall</button>
               <button class="tab-btn" data-target="tab-spectrum" data-mode="cw">Spectrum</button>
               <button class="tab-btn" data-target="tab-time" data-mode="cw">Time-Domain</button>
-              <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw" hidden>Range</button>
               <button class="tab-btn" data-target="tab-fmcw-wf" data-mode="fmcw" hidden>Range Waterfall</button>
               <button class="tab-btn" data-target="tab-fmcw-rd" data-mode="fmcw" hidden>Range-Doppler</button>
+              <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw" hidden>Range</button>
               <button class="tab-btn" data-target="tab-logs">Logs</button>
             </div>
           </div>
           <div class="header-actions">
+            <!-- Playback only: pause on a frame, then play on from it. -->
+            <button class="btn btn-outline btn-header-sweep" id="btn-playback-pause" hidden title="Pause the recording on this frame">Pause</button>
             <button class="btn btn-primary btn-header-sweep" id="btn-radar">Start</button>
           </div>
         </div>

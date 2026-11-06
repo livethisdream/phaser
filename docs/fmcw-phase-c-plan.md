@@ -408,7 +408,7 @@ settings section. FMCW tabs: **Range** (the profile, or the strongest cell
 per range bin for range-Doppler, with the CFAR threshold and detection
 markers), **Range Waterfall**, and **Range-Doppler** (the decoded map). The
 FMCW section has the preset, Range Max (empty = the preset's), MTI, Dynamic
-Range (the maps' colour scale runs from each frame's peak down this far --
+Range (the maps' color scale runs from each frame's peak down this far --
 FMCW levels sit tens of dB above CW's, so the CW floor/ceiling saturated
 them), CFAR with guard/ref/bias, and the 0 m calibration: a 0 m Beat field
 plus "Set 0 m Here", which turns the current peak into 0 m (lab step 21),
@@ -431,7 +431,7 @@ Found while testing it, and fixed:
 1. Probe reports FMCW available; an older Pluto firmware reports the reason.
 2. Corner reflector at ~0 m: read the 0 m frequency (lab step 21) and store it
    as `zero_range_freq`.
-3. At 1, 2 and 3 m: measure Hz per metre and compare with 3.34 kHz/m (see open
+3. At 1, 2 and 3 m: measure Hz per meter and compare with 3.34 kHz/m (see open
    question 3).
 4. Steer off target: amplitude drops (lab step 23).
 5. Hand wave toward/away: the Doppler sign matches the motion; MTI suppresses
@@ -591,14 +591,14 @@ Scope, to be planned in phases and reviewed before any code:
 5. Publish the radar UI on Pages beside the beamforming demo, with the same
    three guards that keep the sim default off hardware builds.
 
-## Capture and playback fixes (planned 2026-11-04, not started)
+## Capture and playback fixes (planned 2026-11-04; items 2-6 built, in a PR into `radar-dev`; not yet run on a kit)
 
 Reported by the ECE 444 L28 thread. Findings below are from `radar-dev` at
 `f38633a`: the simulator, the Python and JS code, and saves replayed through
 `playback-worker.js` under Windows Node. No kit was involved.
 
-Open decisions: the 1 m default in item 4, and merging #85 first (item 1).
-Neither has been approved yet.
+Decided 2026-11-04: Peak Min defaults to 1 m (item 4, with half a bin of slack so the
+range lab's 1 m reflector still counts), and #85 was merged first (item 1).
 
 ### Findings
 
@@ -664,3 +664,26 @@ simulator models neither.
 | 9 | Save Capture: empty room, static reflector, walker | Real noise floor, clutter and fading, to replace #84's estimates |
 
 Add the results to this doc.
+
+### phaser-01 bench, 2026-11-06 (radar-dev after #89)
+
+- **Range (Basic) could not calibrate at 12.145 GHz.** With a baking sheet
+  and then a 4 in corner, Calibrate stayed at the 100 kHz IF tone and Peak
+  Range jumped between 1.67 m and the 20 m edge. Range (Fast), at 10 GHz,
+  calibrated with Peak Min 0 and 1. Changing Range (Basic) to 10 GHz in
+  the Hardware pane made it calibrate too: 12.1 GHz is above the array's
+  band, so the echo was weaker than the internal leakage. The preset is now
+  10 GHz; a test keeps every preset inside 9.5-10.6 GHz.
+- With a corner and the preset at 10 GHz, distances read about right. The
+  1, 2 and 3 m readings and the Save/Load and Range + Velocity steps are still
+  to record.
+- **A 1.6 s Range + Velocity save froze phaser-01.** It was one continuous
+  3,200-chirp burst: a re-entered mode with a 2^22-sample buffer. The backend
+  finished it and put the mode back in about 15 s, all of it on the
+  WebSocket event loop. It then logged nothing until a reboot about 2.5 min
+  later, and by then the Pluto and the Phaser board's links returned Broken
+  pipe; ssh was unresponsive meanwhile. The cause is not established. Since
+  then, a save longer than one burst on a range-Doppler preset is a run of
+  ordinary bursts (`burst_len`, `burst_t` in the file), and only Micro-Doppler (the L31 recordings' settings) keeps
+  the continuous burst, on a kit only with `PHASER_LONG_BURST=1`. Saves run
+  off the event loop, and `[SAVE]` / `[WS]` lines log each stage.

@@ -9,6 +9,8 @@
  * fmcwPayload(), the backend's own, ported and parity-tested.
  *
  * How a recording becomes frames:
+ *   bursts   a run of bursts (burst_len, burst_t): one burst a frame, at the
+ *            recorded pace.
  *   burst    chirps a PRI of at most 5 ms apart (a range-Doppler burst, or a
  *            continuous record): range-Doppler frames of up to 256 chirps.
  *            A record longer than that is walked through in real time, a
@@ -20,6 +22,7 @@
  */
 
 import { fmcwPayload } from './sim/dsp.js';
+import { CAPTURE_FULL_SCALE, CAPTURE_COUNTS_ABOVE } from './sim/constants.generated.js';
 
 const FRAME_MS = 50;          // the backend's 20 fps cap
 const BURST_PRI_MAX = 5e-3;   // s; closer chirps than this are a burst
@@ -30,9 +33,20 @@ let rec = null;               // {cols, fs, fc, B, T_ramp, PRI, f0, mode, window
 let cfg = {};
 let pos = 0;
 let timer = null;
+let paused = false;
+let shown = 0;                // start chirp of the frame last posted
 
-/** The playback plan and frame layout for a capture. */
-export function playbackLayout({ nChirps, PRI }) {
+/** The playback plan and frame layout for a capture. A run of bursts (the
+    file's burst_len, burst_t) plays a burst a frame, at the recorded pace. */
+export function playbackLayout({ nChirps, PRI, burstLen = null, burstT = null }) {
+    if (burstLen && burstLen >= 2 && nChirps >= burstLen) {
+        const gaps = [];
+        for (let i = 1; i < (burstT?.length || 0); i++) gaps.push(burstT[i] - burstT[i - 1]);
+        gaps.sort((a, b) => a - b);
+        const gap = gaps.length ? gaps[gaps.length >> 1] : BURST_REPEAT_MS / 1e3;
+        return { mode: 'burst', window: burstLen, hop: burstLen, interval: Math.max(FRAME_MS, gap * 1e3),
+                 bursts: Math.floor(nChirps / burstLen) };
+    }
     const burst = nChirps >= 2 && PRI <= BURST_PRI_MAX;
     if (burst) {
         const window = Math.min(nChirps, RD_WINDOW);
@@ -72,6 +86,13 @@ export function playbackFrame(r, settings, start) {
     return out;
 }
 
+/** 'full_scale' (the course's units) or 'counts' (an older raw save), by the peak |iq|. */
+export function playbackUnits({ re, im }) {
+    let peak2 = 0;
+    for (let i = 0; i < re.length; i++) peak2 = Math.max(peak2, re[i] * re[i] + im[i] * im[i]);
+    return Math.sqrt(peak2) > CAPTURE_COUNTS_ABOVE ? 'counts' : 'full_scale';
+}
+
 /** {iq: {shape, data: {re, im}}, fs, ...} (readNpz's output, scalars as numbers) -> rec. */
 export function playbackRecording(arrays) {
     const iq = arrays.iq;
@@ -82,21 +103,40 @@ export function playbackRecording(arrays) {
     const missing = need.filter(k => typeof arrays[k]?.data !== 'number');
     if (missing.length) throw new Error(`not a course capture: missing ${missing.join(', ')}`);
     const [nChirps, nSamples] = iq.shape;
+    // A course file is in full-scale units (|iq| = 1 is 0 dBFS); the DSP
+    // reads ADC counts. A peak above CAPTURE_COUNTS_ABOVE cannot be full
+    // scale -- it is a save from before captures were -- so it plays as is.
+    const units = playbackUnits(iq.data);
+    const k = units === 'full_scale' ? CAPTURE_FULL_SCALE : 1;
     const cols = [];
     for (let c = 0; c < nChirps; c++) {
-        cols.push({
-            re: Float64Array.from(iq.data.re.subarray(c * nSamples, (c + 1) * nSamples)),
-            im: Float64Array.from(iq.data.im.subarray(c * nSamples, (c + 1) * nSamples)),
-        });
+        const re = new Float64Array(nSamples), im = new Float64Array(nSamples);
+        for (let i = 0; i < nSamples; i++) {
+            re[i] = iq.data.re[c * nSamples + i] * k;
+            im[i] = iq.data.im[c * nSamples + i] * k;
+        }
+        cols.push({ re, im });
     }
     const v = Object.fromEntries(need.map(k => [k, arrays[k].data]));
-    return { cols, nSamples, ...v, ...playbackLayout({ nChirps, PRI: v.PRI }) };
+    const burstLen = typeof arrays.burst_len?.data === 'number' ? Math.trunc(arrays.burst_len.data) : null;
+    const burstT = arrays.burst_t?.data ? Array.from(arrays.burst_t.data) : null;
+    return { cols, nSamples, units, ...v, ...playbackLayout({ nChirps, PRI: v.PRI, burstLen, burstT }) };
+}
+
+/* The frame on screen, again: a setting changed while paused. */
+function redraw() {
+    try {
+        self.postMessage({ type: 'fmcw_radar_frame', data: playbackFrame(rec, cfg, shown) });
+    } catch (err) {
+        self.postMessage({ type: 'error', message: String(err?.message || err) });
+    }
 }
 
 function step() {
     timer = null;
     if (!rec) return;
     try {
+        shown = pos;
         self.postMessage({ type: 'fmcw_radar_frame', data: playbackFrame(rec, cfg, pos) });
     } catch (err) {
         self.postMessage({ type: 'error', message: String(err?.message || err) });
@@ -105,7 +145,7 @@ function step() {
         pos += rec.hop;
         if (pos + rec.window > rec.cols.length) pos = 0;   // loop
     }
-    timer = setTimeout(step, rec.interval);
+    if (!paused) timer = setTimeout(step, rec.interval);
 }
 
 if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typeof window === 'undefined') {
@@ -121,17 +161,26 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typ
             }
             cfg = { ...(msg.settings || {}) };
             pos = 0;
+            paused = false;
             self.postMessage({
                 type: 'loaded',
                 info: {
                     mode: rec.mode, chirps: rec.cols.length, samples: rec.nSamples,
-                    window: rec.window, interval: rec.interval,
+                    window: rec.window, interval: rec.interval, units: rec.units, bursts: rec.bursts || 0,
                     fs: rec.fs, fc: rec.fc, B: rec.B, T_ramp: rec.T_ramp, PRI: rec.PRI, f0: rec.f0,
                 },
             });
             step();
         } else if (msg.cmd === 'settings') {
             Object.assign(cfg, msg.settings || {});
+            // Paused, the frame on screen is redrawn with the new settings.
+            if (paused && rec) redraw();
+        } else if (msg.cmd === 'pause') {
+            paused = true;
+            if (timer) clearTimeout(timer);
+            timer = null;
+        } else if (msg.cmd === 'resume') {
+            if (paused && rec) { paused = false; if (!timer) step(); }
         } else if (msg.cmd === 'stop') {
             if (timer) clearTimeout(timer);
             timer = null;

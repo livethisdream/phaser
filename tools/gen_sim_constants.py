@@ -299,6 +299,10 @@ export const CAPTURE_SINGLE_CHIRP_FRAMES = {dsp.CAPTURE_SINGLE_CHIRP_FRAMES!r};
 export const CAPTURE_MAX_FRAMES_S = {dsp.CAPTURE_MAX_FRAMES_S!r};
 export const CAPTURE_FRAME_S = {dsp.CAPTURE_FRAME_S!r};
 export const BYTES_PER_SAMPLE = {dsp.BYTES_PER_SAMPLE!r};
+export const CAPTURE_FULL_SCALE = {dsp.CAPTURE_FULL_SCALE!r};
+export const CAPTURE_BURST_INTERVAL_S = {dsp.CAPTURE_BURST_INTERVAL_S!r};
+export const CAPTURE_MAX_BYTES = {dsp.CAPTURE_MAX_BYTES!r};
+export const CAPTURE_COUNTS_ABOVE = {dsp.CAPTURE_COUNTS_ABOVE!r};
 
 // --- phaser_headless ---------------------------------------------------------
 // The frame-rate cap the main loop applies to radar frames.

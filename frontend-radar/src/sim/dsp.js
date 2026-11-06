@@ -13,7 +13,7 @@ import {
     C, DEFAULTS, TAPER_PRESETS, TAPER_MAX, FMCW_DEFAULTS, FMCW_HW_DEFAULTS,
     FMCW_PRESETS, FMCW_PROC_DEFAULTS, MAINLOBE_HALF_BINS, MAP_SPAN_DB, DB_DECIMALS,
     AXIS_DECIMALS, CAPTURE_SINGLE_CHIRP_FRAMES, CAPTURE_MAX_FRAMES_S, CAPTURE_FRAME_S,
-    BYTES_PER_SAMPLE,
+    BYTES_PER_SAMPLE, CAPTURE_BURST_INTERVAL_S, CAPTURE_MAX_BYTES,
     RAMP_SYNCED, RAMP_FREE_RUNNING, RANGE_TIME_SCALE, MAX_BURST_BUFFER,
     RAMP_SETTLE_FRACTION,
 } from './constants.generated.js';
@@ -178,7 +178,7 @@ function rangeMask(ranges, rangeMin, rangeMax) {
 }
 
 export function rangeProfile(iq, fs, chirpBw, rampTime, {
-    zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0,
+    zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0, peakMin = 0,
 } = {}) {
     const n = iq.re.length;
     if (n < 2) throw new Error('need at least 2 samples for a range profile');
@@ -191,11 +191,25 @@ export function rangeProfile(iq, fs, chirpBw, rampTime, {
     const idx = rangeMask(ranges, Number(rangeMin), rangeMax == null ? null : Number(rangeMax));
     const rangeOut = idx.map(i => ranges[i]);
     const profile = idx.map(i => toDb(Math.hypot(X.re[i], X.im[i]), ws));
-    const peak = argmax(profile);
+    // The readout skips the leakage closer than peakMin; Calibrate reads the
+    // whole band, below 0 m and past the crop (phaser_radar_dsp.range_profile).
+    // Half a bin of slack: a target at the cutoff itself still counts.
+    const pm = Number(peakMin || 0) - (ranges.length > 1 ? 0.5 * Math.abs(ranges[1] - ranges[0]) : 0);
+    let peak = -1;
+    for (let k = 0; k < profile.length; k++) {
+        if (rangeOut[k] >= pm && (peak < 0 || profile[k] > profile[peak])) peak = k;
+    }
+    if (peak < 0) peak = argmax(profile);
+    let cal = 0, calMag = -1;
+    for (let i = 0; i < ranges.length; i++) {
+        const m = Math.hypot(X.re[i], X.im[i]);
+        if (m > calMag) { calMag = m; cal = i; }
+    }
     return {
         range_axis: rangeOut,
         profile_db: profile,
         peak_range: rangeOut[peak],
+        cal_peak_range: ranges[cal],
         peak_magnitude_db: profile[peak],
         range_resolution: rangeResolution(chirpBw),
         max_range: maxUnambiguousRange(fs, chirpBw, rampTime),
@@ -271,10 +285,13 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     const specRe = Array.from({ length: nr }, () => new Float64Array(nSlow));
     const specIm = Array.from({ length: nr }, () => new Float64Array(nSlow));
     const xr = new Float64Array(nFast), xi = new Float64Array(nFast);
+    // Calibrate: power summed over the chirps, every range bin in the band.
+    const calPow = new Float64Array(ranges.length);
     for (let c = 0; c < nSlow; c++) {
         const col = cols[c];
         for (let i = 0; i < nFast; i++) { xr[i] = col.re[i] * wFast[i]; xi[i] = col.im[i] * wFast[i]; }
         const X = fft(xr, xi, nFft);
+        for (let k = 0; k < calPow.length; k++) calPow[k] += X.re[k] * X.re[k] + X.im[k] * X.im[k];
         for (let r = 0; r < nr; r++) {
             specRe[r][c] = X.re[ridx[r]] * wSlow[c];
             specIm[r][c] = X.im[ridx[r]] * wSlow[c];
@@ -300,20 +317,20 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     }
     if (!search.some(Boolean)) search = search.map(() => true);
 
-    let pr = 0, pv = -1, cr = 0, cv = 0;
+    let pr = 0, pv = -1;
     for (let r = 0; r < nr; r++) {
         const row = mapDb[r];
         for (let v = 0; v < row.length; v++) {
             if (search[v] && (pv < 0 || row[v] > mapDb[pr][pv])) { pr = r; pv = v; }
-            if (row[v] > mapDb[cr][cv]) { cr = r; cv = v; }
         }
     }
+    const cr = argmax(calPow);
     return {
         map_db: mapDb,
         range_axis: rangeOut,
         velocity_axis: velOut,
         peak_range: rangeOut[pr],
-        cal_peak_range: rangeOut[cr],
+        cal_peak_range: ranges[cr],
         peak_velocity: velOut[pv],
         peak_magnitude_db: mapDb[pr][pv],
         range_resolution: rangeResolution(chirpBw),
@@ -520,13 +537,15 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
             velocity_axis: rounded(rd.velocity_axis, AXIS_DECIMALS),
         });
     } else {
+        const peakMin = cfg.peak_min == null ? FMCW_PROC_DEFAULTS.peak_min : Number(cfg.peak_min);
         const prof = rangeProfile(data[0], fs, cfg.chirp_bw, ramp, {
-            zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max,
+            zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max, peakMin,
         });
         Object.assign(out, {
             kind: 'range_profile',
             peak_range: prof.peak_range,
-            cal_peak_range: prof.peak_range,
+            cal_peak_range: prof.cal_peak_range,
+            peak_min: peakMin,
             peak_magnitude_db: prof.peak_magnitude_db,
             range_resolution: prof.range_resolution,
             max_range: prof.max_range,
@@ -546,17 +565,39 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
 }
 
 /** phaser_radar_dsp.capture_limits: what Save Capture can do for this plan. */
-export function captureLimits(plan) {
+export function captureLimits(plan, continuous = false) {
     const good = Math.trunc(plan.good_ramp_samples);
     if (plan.synced && plan.num_chirps > 1) {
         const pri = plan.pri_ms / 1e3;
-        const maxChirps = Math.floor(MAX_BURST_BUFFER / (plan.sample_rate * pri));
+        const n = Math.trunc(plan.num_chirps);
         const perS = (good * BYTES_PER_SAMPLE) / pri;
-        return { kind: 'burst', default_s: plan.num_chirps * pri, max_s: maxChirps * pri,
-                 chirp_s: pri, bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
+        const out = { default_s: n * pri, chirp_s: pri, burst_s: n * pri,
+                      bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
+        if (continuous) {
+            const maxChirps = Math.floor(MAX_BURST_BUFFER / (plan.sample_rate * pri));
+            return { kind: 'burst', max_s: maxChirps * pri, ...out };
+        }
+        const runS = Math.max(CAPTURE_BURST_INTERVAL_S, n * pri);
+        const perBurst = n * good * BYTES_PER_SAMPLE;
+        const maxBursts = Math.max(2, Math.floor(CAPTURE_MAX_BYTES / perBurst));
+        return { kind: 'bursts', max_s: Math.min(CAPTURE_MAX_FRAMES_S, maxBursts * runS),
+                 run_s: runS, bytes_per_burst: perBurst, ...out };
     }
     const perS = (good * BYTES_PER_SAMPLE) / CAPTURE_FRAME_S;
     return { kind: 'frames', default_s: CAPTURE_SINGLE_CHIRP_FRAMES * CAPTURE_FRAME_S,
              max_s: CAPTURE_MAX_FRAMES_S, chirp_s: CAPTURE_FRAME_S,
              bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
+}
+
+/** phaser_radar_dsp.capture_bursts: whole bursts in a "bursts" save; 0 for one trimmed burst. */
+export function captureBursts(limits, duration) {
+    if (limits.kind !== 'bursts' || duration <= limits.burst_s * (1 + 1e-9)) return 0;
+    return Math.max(2, roundHalfEven(duration / limits.run_s));
+}
+
+/** phaser_radar_dsp.capture_bytes: the iq bytes a save of `duration` s writes. */
+export function captureBytes(limits, duration, iqCh = false) {
+    const k = iqCh ? 3 : 1;
+    const n = captureBursts(limits, duration);
+    return n ? k * n * limits.bytes_per_burst : k * limits.bytes_per_s * duration;
 }

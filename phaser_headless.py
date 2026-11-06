@@ -1035,7 +1035,7 @@ class PhaserHeadless:
 
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
-        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude",
+        "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude", "peak_min",
         "scene", "scene_noise",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
@@ -1264,7 +1264,8 @@ class PhaserHeadless:
                 ramp = (self.get_radar_capabilities()["data"]["fmcw"].get("ramp")
                         or phaser_radar_dsp.RAMP_SYNCED)
                 p = phaser_radar_dsp.chirp_plan(cfg, ramp, phaser_radar_dsp.ramp_time_us(cfg))
-            data["capture"] = phaser_radar_dsp.capture_limits(p) if p else None
+            data["capture"] = (phaser_radar_dsp.capture_limits(p, self._capture_continuous(preset))
+                               if p else None)
         except (ValueError, KeyError):
             data["capture"] = None
         if self.sim_mode:
@@ -1293,29 +1294,50 @@ class PhaserHeadless:
             if preset:
                 self.fmcw_params.setdefault("preset", preset)
             self._set_mode("idle")
+            t0 = time.perf_counter()
             resp = self._set_mode("fmcw_radar")
             if resp.get("status") != "ok":
                 raise RuntimeError(resp.get("message", "could not enter FMCW for the capture"))
-            return phaser_fmcw_radar.capture_fmcw_frame(
+            # Stage by stage, flushed: phaser-01 froze somewhere in here.
+            print(f"[SAVE] long burst: {chirps} chirps, buffer {self.fmcw_plan['rx_buffer_size']}, "
+                  f"entered in {time.perf_counter() - t0:.2f} s", flush=True)
+            t1 = time.perf_counter()
+            got = phaser_fmcw_radar.capture_fmcw_frame(
                 self.sdr, self.fmcw_hw, self.fmcw_plan, channels=want_ch)
+            print(f"[SAVE] long burst read in {time.perf_counter() - t1:.2f} s", flush=True)
+            return got
         finally:
             self.fmcw_params = saved
             self._set_mode("idle")
             self._set_mode("fmcw_radar")
+            print("[SAVE] long burst: mode put back", flush=True)
+
+    def _capture_continuous(self, preset):
+        """Whether a save longer than one burst may be one continuous burst
+        (a re-entered mode, up to the Pluto's buffer) rather than a run of
+        bursts. Only Micro-Doppler's records need it, and on a kit it stays off unless
+        PHASER_LONG_BURST=1: a 1.6 s continuous burst froze phaser-01
+        (2026-11-06) and the cause is not yet known."""
+        if preset != "micro_doppler":
+            return False
+        return bool(self.sim_mode) or os.environ.get("PHASER_LONG_BURST") == "1"
 
     def save_fmcw_capture(self, params=None):
         """Capture raw chirps into the course .npz and return it, base64.
 
         `duration_s` sets the length (phaser_radar_dsp.capture_limits says
         what this preset allows; None is its default):
-          * a range-Doppler preset saves one continuous burst, chirps a PRI
+          * a range-Doppler preset longer than one burst saves a run of
+            ordinary bursts, run_s apart, with burst_len and burst_t in the
+            file -- unless _capture_continuous allows one continuous burst:
+          * a continuous burst is chirps a PRI
             apart. Up to num_chirps it is the next burst, trimmed; longer,
             the mode is re-entered for one burst of duration / PRI chirps --
             what fits the Pluto's burst buffer -- and then put back.
           * a single-chirp preset saves consecutive frames at the live frame
             interval, PRI the measured interval, as the course's L28
             recordings do.
-        `iq_ch` adds the two subarray channels (the L31 monopulse task),
+        `iq_ch` adds the two subarray channels (for monopulse angle work),
         tripling the size. The browser names and downloads the file.
 
         Holds mode_lock throughout, so frames pause while it captures.
@@ -1328,14 +1350,29 @@ class PhaserHeadless:
             cfg, plan = self.fmcw_cfg, self.fmcw_plan
             if self.mode != "fmcw_radar" or cfg is None or plan is None:
                 return {"status": "error", "message": "Start FMCW to save a capture"}
-            limits = phaser_radar_dsp.capture_limits(plan)
+            preset = getattr(self, "fmcw_preset", None)
+            limits = phaser_radar_dsp.capture_limits(plan, self._capture_continuous(preset))
             duration = params.get("duration_s")
             duration = limits["default_s"] if duration in (None, "") else float(duration)
             if not (duration > 0) or duration > limits["max_s"] * (1 + 1e-9):
                 return {"status": "error",
                         "message": f"Duration must be more than 0 and at most "
                                    f"{limits['max_s']:.3g} s on this preset"}
-            if limits["kind"] == "burst":
+            n_bursts = phaser_radar_dsp.capture_bursts(limits, duration)
+            t_save = time.perf_counter()
+            if n_bursts:
+                # A run of ordinary bursts, paced at run_s: what the live
+                # view captures, so no re-entry and no giant buffer.
+                chirps = int(plan["num_chirps"])
+                grabs, stamps = [], []
+                for k in range(n_bursts):
+                    wait = t_save + k * limits["run_s"] - time.perf_counter()
+                    if wait > 0:
+                        time.sleep(wait)
+                    stamps.append(time.perf_counter())
+                    grabs.append(phaser_fmcw_radar.capture_fmcw_frame(
+                        self.sdr, self.fmcw_hw, plan, channels=want_ch))
+            elif limits["kind"] in ("burst", "bursts"):
                 chirps = max(2, int(round(duration / limits["chirp_s"])))
                 if chirps <= plan["num_chirps"]:
                     grabs = [phaser_fmcw_radar.capture_fmcw_frame(
@@ -1365,7 +1402,7 @@ class PhaserHeadless:
                 mats = [np.asarray(m) for m in mats]
                 if mats[0].ndim == 1:      # free-running: one long "chirp"
                     mats = [m[:, None] for m in mats]
-                if limits["kind"] == "burst":
+                if limits["kind"] in ("burst", "bursts"):
                     mats = [m[:, :chirps] for m in mats]
                 if want_ch:
                     rows_ch[0].append(mats[0].T)
@@ -1374,20 +1411,31 @@ class PhaserHeadless:
                 else:
                     rows.append(mats[0].T)
             frames = len(grabs)
+            t_captured = time.perf_counter()
 
         iq = np.concatenate(rows, axis=0)
         iq_ch = (np.stack([np.concatenate(rows_ch[0]), np.concatenate(rows_ch[1])])
                  if want_ch else None)
-        if frames > 1:
+        extra = None
+        if n_bursts:
+            pri = limits["chirp_s"]
+            extra = {"burst_len": chirps, "burst_t": np.asarray(stamps) - stamps[0]}
+        elif frames > 1:
             pri = (stamps[-1] - stamps[0]) / (frames - 1)
+        elif limits["kind"] == "frames":
+            # One frame: there is no interval to measure, but the next chirp
+            # would have come a frame interval later, not the plan's PRI.
+            pri = limits["chirp_s"]
         else:
             pri = plan["pri_ms"] / 1e3 if plan.get("pri_ms") else plan["ramp_time"]
         zero = cfg.get("zero_range_freq")
         calibrated = zero is not None
         f0 = float(zero if calibrated else cfg["signal_freq"])
         fs, t_ramp = float(plan["sample_rate"]), float(plan["effective_ramp_time"])
-        preset = getattr(self, "fmcw_preset", None)
-        note = (f"Phaser radar GUI capture: preset {preset}, {iq.shape[0]} chirps of "
+        run = (f"{n_bursts} bursts of {chirps} chirps, one every "
+               f"{(stamps[-1] - stamps[0]) / (n_bursts - 1) * 1e3:.0f} ms (burst_len, burst_t: "
+               f"take Doppler within a burst); " if n_bursts else "")
+        note = (f"Phaser radar GUI capture: preset {preset}, {run}{iq.shape[0]} chirps of "
                 f"{t_ramp * 1e6:g} us every {pri * 1e3:.4g} ms, {fs / 1e6:g} MSPS, "
                 f"B {float(cfg['chirp_bw']) / 1e6:g} MHz, fc {float(cfg['output_freq']) / 1e9:g} GHz, "
                 f"f0 {f0:.0f} Hz ({'0 m calibration' if calibrated else 'IF tone, not calibrated'}); "
@@ -1395,7 +1443,11 @@ class PhaserHeadless:
                 f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
         blob = phaser_radar_dsp.capture_npz(
             iq, fs=fs, fc=cfg["output_freq"], chirp_bw=cfg["chirp_bw"], t_ramp=t_ramp,
-            pri=pri, f0=f0, note=note, iq_ch=iq_ch)
+            pri=pri, f0=f0, note=note, iq_ch=iq_ch, extra=extra)
+        print(f"[SAVE] {preset}: {iq.shape[0]} chirps x {iq.shape[1]}"
+              f"{f' ({n_bursts} bursts)' if n_bursts else ''}, {len(blob) / 1e6:.1f} MB; "
+              f"capture {t_captured - t_save:.2f} s, file {time.perf_counter() - t_captured:.2f} s",
+              flush=True)
         return {
             "status": "ok",
             "preset": preset,
@@ -1458,13 +1510,16 @@ class PhaserHeadless:
             })
         else:
             iq = data[:, 0] if np.ndim(data) == 2 else data
+            peak_min = cfg.get("peak_min")
+            peak_min = phaser_radar_dsp.FMCW_PROC_DEFAULTS["peak_min"] if peak_min is None else float(peak_min)
             prof = phaser_radar_dsp.range_profile(
                 iq, fs, cfg["chirp_bw"], ramp, zero_range_freq=zero,
-                fft_window=window, range_max=cfg.get("range_max"))
+                fft_window=window, range_max=cfg.get("range_max"), peak_min=peak_min)
             out.update({
                 "kind": "range_profile",
                 "peak_range": prof["peak_range"],
-                "cal_peak_range": prof["peak_range"],
+                "cal_peak_range": prof["cal_peak_range"],
+                "peak_min": peak_min,
                 "peak_magnitude_db": prof["peak_magnitude_db"],
                 "range_resolution": prof["range_resolution"],
                 "max_range": prof["max_range"],
@@ -2371,6 +2426,11 @@ class PhaserHeadless:
                     print(f"Command error: {e}")
                     self.rep_socket.send_json({"status": "error", "message": str(e)})
 
+    # Commands that take seconds: run in a worker thread, not on the event
+    # loop (a 1.6 s save held it ~15 s on phaser-01, 2026-11-06). They take
+    # mode_lock themselves, as the frame loop does.
+    _SLOW_COMMANDS = frozenset({"save_fmcw_capture"})
+
     def _websocket_server(self):
         """Run WebSocket server for browser clients"""
         async def handler(websocket):
@@ -2391,11 +2451,22 @@ class PhaserHeadless:
                     try:
                         msg = json.loads(message)
                         request_id = msg.get("id")
-                        response = self.handle_command(msg)
+                        if msg.get("cmd") in self._SLOW_COMMANDS:
+                            # Seconds long: off the event loop, so frames,
+                            # pings and other clients carry on meanwhile.
+                            response = await asyncio.get_running_loop().run_in_executor(
+                                None, self.handle_command, msg)
+                        else:
+                            response = self.handle_command(msg)
                         reply = {"type": "response", **response}
                         if request_id:
                             reply["id"] = request_id
-                        await websocket.send(json.dumps(reply))
+                        text = json.dumps(reply)
+                        t_send = time.perf_counter()
+                        await websocket.send(text)
+                        if len(text) > 1_000_000:
+                            print(f"[WS] sent {msg.get('cmd')} reply, {len(text) / 1e6:.1f} MB, "
+                                  f"in {time.perf_counter() - t_send:.2f} s", flush=True)
                     except json.JSONDecodeError:
                         await websocket.send(json.dumps({"type": "error", "message": "Invalid JSON"}))
                     except Exception as e:
