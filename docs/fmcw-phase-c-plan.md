@@ -664,3 +664,16 @@ simulator models neither.
 | 9 | Save Capture: empty room, static reflector, walker | Real noise floor, clutter and fading, to replace #84's estimates |
 
 Add the results to this doc.
+
+### phaser-01 bench, 2026-11-06 (radar-dev after #89)
+
+- **Range (Basic) could not calibrate at 12.145 GHz.** With a baking sheet
+  and then a 4 in corner, Calibrate stayed at the 100 kHz IF tone and Peak
+  Range jumped between 1.67 m and the 20 m edge. Range (Fast), at 10 GHz,
+  calibrated with Peak Min 0 and 1. Changing Range (Basic) to 10 GHz in
+  the Hardware pane made it calibrate too: 12.1 GHz is above the array's
+  band, so the echo was weaker than the internal leakage. The preset is now
+  10 GHz; a test keeps every preset inside 9.5-10.6 GHz.
+- With a corner and the preset at 10 GHz, distances read about right. The
+  1, 2 and 3 m readings and the Save/Load and Range + Velocity steps are still
+  to record.

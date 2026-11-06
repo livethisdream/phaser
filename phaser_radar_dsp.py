@@ -867,9 +867,14 @@ FMCW_HW_DEFAULTS = {
 FMCW_PRESETS = {
     # Lab pp. 29-31, RADAR_FFT_Waterfall.py. The script ramps for 1.2 ms; the
     # lab states T_s = 1 ms and derives its 3.3 kHz/m from that, so 1 ms.
+    # The script transmits at 12.145 GHz; this one at 10 GHz, as the other
+    # presets do. 12.1 GHz is above the array's 10-10.5 GHz band: on phaser-01
+    # (2026-11-06) a corner's echo came back too weak to beat the internal
+    # leakage, so Calibrate locked onto the leakage's 100 kHz and Peak Range
+    # wandered. At 10 GHz it calibrated. kHz/m depends only on B and T.
     "range": {
         "sample_rate": 600_000,
-        "output_freq": 12.145e9,
+        "output_freq": 10e9,
         "chirp_bw": 500e6,
         "ramp_time": 1e-3,
         "num_chirps": 1,
