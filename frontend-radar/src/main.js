@@ -1420,8 +1420,33 @@ async function startPlayback(file) {
     state.fmcw.avg = null;
     setRunningUi(true, 'fmcw');
     setConnectionStatus(true);
+    setPlaybackPaused(false);
     worker.postMessage({ cmd: 'load', arrays, settings: playbackSettings() });
 }
+
+/* Play/Pause beside Stop, shown only while a recording plays. Paused, the
+   frame stays on screen and the processing controls still redraw it. */
+function setPlaybackPaused(paused) {
+    const btn = document.getElementById('btn-playback-pause');
+    if (state.playback) state.playback.paused = paused;
+    if (!btn) return;
+    btn.hidden = !state.playback;
+    btn.textContent = paused ? 'Play' : 'Pause';
+    // No frames arrive while paused: say so rather than show the last rate.
+    if (paused) {
+        frameTimes.length = 0;
+        const rate = document.getElementById('stat-rate');
+        if (rate) rate.textContent = 'paused';
+    }
+    btn.title = paused ? 'Play the recording on from this frame' : 'Pause the recording on this frame';
+}
+document.getElementById('btn-playback-pause')?.addEventListener('click', () => {
+    const pb = state.playback;
+    if (!pb) return;
+    const paused = !pb.paused;
+    pb.worker.postMessage({ cmd: paused ? 'pause' : 'resume' });
+    setPlaybackPaused(paused);
+});
 
 function stopPlayback({ quiet = false } = {}) {
     const pb = state.playback;
@@ -1429,6 +1454,7 @@ function stopPlayback({ quiet = false } = {}) {
     pb.worker.postMessage({ cmd: 'stop' });
     pb.worker.terminate();
     state.playback = null;
+    setPlaybackPaused(false);
     setRunningUi(false);
     setConnectionStatus(transport.isConnected);
     updateFmcwControlGating();
