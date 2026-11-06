@@ -613,19 +613,19 @@ def test_save_capture_needs_fmcw_running():
 
 def test_capture_limits_per_preset():
     """What the Duration box offers. Range-Doppler presets save runs of
-    ordinary bursts, bounded by CAPTURE_MAX_BYTES; L31 alone may save one
+    ordinary bursts, bounded by CAPTURE_MAX_BYTES; Micro-Doppler alone may save one
     continuous burst (in sim; on a kit only with PHASER_LONG_BURST=1), bounded
     by the Pluto's buffer; a single-chirp preset by CAPTURE_MAX_FRAMES_S."""
     h = _headless()
     caps = {}
-    for preset in ("range_doppler", "range_doppler_far", "l31_record", "range"):
+    for preset in ("range_doppler", "range_doppler_far", "micro_doppler", "range"):
         h.fmcw_params = {"preset": preset}
         caps[preset] = h.get_fmcw_radar_state()["data"]["capture"]
     rd = caps["range_doppler"]
     assert rd["kind"] == "bursts" and rd["run_s"] == dsp.CAPTURE_BURST_INTERVAL_S
     assert dsp.capture_bytes(rd, rd["max_s"]) <= dsp.CAPTURE_MAX_BYTES
     assert caps["range_doppler_far"]["max_s"] < rd["max_s"]      # twice the samples
-    assert caps["l31_record"]["kind"] == "burst" and caps["l31_record"]["max_s"] > 10
+    assert caps["micro_doppler"]["kind"] == "burst" and caps["micro_doppler"]["max_s"] > 10
     assert caps["range"]["kind"] == "frames" and caps["range"]["max_s"] == dsp.CAPTURE_MAX_FRAMES_S
     for c in caps.values():
         assert c["bytes_per_s_iq_ch"] == pytest.approx(3 * c["bytes_per_s"])
@@ -660,15 +660,15 @@ def test_save_capture_longer_than_a_burst_is_a_run_of_bursts():
 
 
 def test_long_save_on_a_kit_is_never_one_continuous_burst(monkeypatch):
-    """Off a sim, even L31 saves a run of bursts unless PHASER_LONG_BURST=1."""
+    """Off a sim, even Micro-Doppler saves a run of bursts unless PHASER_LONG_BURST=1."""
     h = _headless()
     monkeypatch.delenv("PHASER_LONG_BURST", raising=False)
-    assert h._capture_continuous("l31_record") is True        # sim
+    assert h._capture_continuous("micro_doppler") is True        # sim
     assert h._capture_continuous("range_doppler") is False
     h.sim_mode = False
-    assert h._capture_continuous("l31_record") is False
+    assert h._capture_continuous("micro_doppler") is False
     monkeypatch.setenv("PHASER_LONG_BURST", "1")
-    assert h._capture_continuous("l31_record") is True
+    assert h._capture_continuous("micro_doppler") is True
     assert h._capture_continuous("range_doppler") is False
 
 
@@ -681,21 +681,21 @@ def test_save_capture_refuses_more_than_its_limit():
     assert h.mode == "fmcw_radar" and h.fmcw_plan["num_chirps"] == 256
 
 
-def test_l31_continuous_burst_is_re_entered_and_put_back():
-    """L31's one continuous burst (sim): re-entered for it, then put back."""
+def test_micro_doppler_continuous_burst_is_re_entered_and_put_back():
+    """Micro-Doppler's one continuous burst (sim): re-entered for it, then put back."""
     h = _headless()
-    _start(h, preset="l31_record", scene="walker")
+    _start(h, preset="micro_doppler", scene="walker")
     before = dict(h.fmcw_plan)
     resp, cap = _saved(h, duration_s=1.0)
     assert cap["iq"].shape == (2000, before["good_ramp_samples"]) and "burst_len" not in cap
     assert h.mode == "fmcw_radar" and h.fmcw_plan["num_chirps"] == before["num_chirps"]
-    assert h.fmcw_preset == "l31_record" and h.fmcw_cfg.get("scene") == "walker"
+    assert h.fmcw_preset == "micro_doppler" and h.fmcw_cfg.get("scene") == "walker"
     assert "num_chirps" not in h.fmcw_params
 
 
-def test_l31_record_preset_saves_seconds_with_iq_ch():
+def test_micro_doppler_preset_saves_seconds_with_iq_ch():
     h = _headless()
-    _start(h, preset="l31_record")
+    _start(h, preset="micro_doppler")
     resp, cap = _saved(h, duration_s=3.0, iq_ch=True)
     assert cap["iq"].shape[0] == 6000 and float(cap["fs"]) == 300_000.0
     assert cap["iq_ch"].shape == (2,) + cap["iq"].shape

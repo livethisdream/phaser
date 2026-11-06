@@ -191,8 +191,8 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         const cfg = s.fmcwCfg;
         let plan = s.fmcwPlan;
         const wantCh = Boolean(params.iq_ch);
-        // Only L31 saves one continuous long burst; the browser is a simulator.
-        const limits = captureLimits(plan, s.fmcwPreset === 'l31_record');
+        // Only Micro-Doppler saves one continuous long burst; the browser is a simulator.
+        const limits = captureLimits(plan, s.fmcwPreset === 'micro_doppler');
         const duration = params.duration_s == null || params.duration_s === '' ? limits.default_s : Number(params.duration_s);
         if (!(duration > 0) || duration > limits.max_s * (1 + 1e-9)) {
             return { status: 'error', message: `Duration must be more than 0 and at most ${+limits.max_s.toPrecision(3)} s on this preset` };
@@ -362,7 +362,7 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
             capture: (() => {
                 try {
                     return captureLimits(running ? s.fmcwPlan
-                        : chirpPlan(cfg, RAMP_SYNCED, rampTimeUs(cfg), 0), preset === 'l31_record');
+                        : chirpPlan(cfg, RAMP_SYNCED, rampTimeUs(cfg), 0), preset === 'micro_doppler');
                 } catch (e) { return null; }
             })(),
             // Simulation only: the live scenes the UI can pick from.

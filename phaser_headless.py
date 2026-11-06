@@ -1315,10 +1315,10 @@ class PhaserHeadless:
     def _capture_continuous(self, preset):
         """Whether a save longer than one burst may be one continuous burst
         (a re-entered mode, up to the Pluto's buffer) rather than a run of
-        bursts. Only L31's records need it, and on a kit it stays off unless
+        bursts. Only Micro-Doppler's records need it, and on a kit it stays off unless
         PHASER_LONG_BURST=1: a 1.6 s continuous burst froze phaser-01
         (2026-11-06) and the cause is not yet known."""
-        if preset != "l31_record":
+        if preset != "micro_doppler":
             return False
         return bool(self.sim_mode) or os.environ.get("PHASER_LONG_BURST") == "1"
 
@@ -1337,7 +1337,7 @@ class PhaserHeadless:
           * a single-chirp preset saves consecutive frames at the live frame
             interval, PRI the measured interval, as the course's L28
             recordings do.
-        `iq_ch` adds the two subarray channels (the L31 monopulse task),
+        `iq_ch` adds the two subarray channels (for monopulse angle work),
         tripling the size. The browser names and downloads the file.
 
         Holds mode_lock throughout, so frames pause while it captures.
