@@ -22,7 +22,7 @@
  */
 
 import { fmcwPayload } from './sim/dsp.js';
-import { CAPTURE_FULL_SCALE, CAPTURE_COUNTS_ABOVE } from './sim/constants.generated.js';
+import { CAPTURE_FULL_SCALE, CAPTURE_COUNTS_ABOVE, FMCW_PROC_DEFAULTS } from './sim/constants.generated.js';
 
 const FRAME_MS = 50;          // the backend's 20 fps cap
 const BURST_PRI_MAX = 5e-3;   // s; closer chirps than this are a burst
@@ -77,6 +77,7 @@ export function playbackFrame(r, settings, start) {
         zero_range_freq: null,    // ...unless the pane's 0 m calibration overrides it
         range_max: 20,
         peak_exclude: 0.3,
+        peak_snr_db: FMCW_PROC_DEFAULTS.peak_snr_db,
         cfar_guard: 4, cfar_ref: 16, cfar_bias_db: 6,
         // An empty field (null) means "the default", not "off".
         ...Object.fromEntries(Object.entries(settings).filter(([, v]) => v != null)),

@@ -512,10 +512,22 @@ def _fft(x, axis, n=None):
 MAINLOBE_HALF_BINS = {"blackman": 3, "hann": 2, "hamming": 2, "rect": 1}
 
 
+def mti_gain_db(doppler_hz, pri, mode):
+    """The pulse canceller's gain at each Doppler frequency, dB: 2-pulse
+    |1 - z^-1| = 2|sin(pi f T)|, 3-pulse its square. 0 dB with no MTI."""
+    mode = (mode or "none").lower()
+    if mode in ("none", "off", ""):
+        return np.zeros(len(doppler_hz))
+    h = 2.0 * np.abs(np.sin(np.pi * np.asarray(doppler_hz, dtype=float) * float(pri)))
+    if mode == "3pulse":
+        h = h ** 2
+    return 20.0 * np.log10(np.maximum(h, 1e-12))
+
+
 def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq,
                       zero_range_freq=0.0, fft_window="blackman",
                       range_max=None, range_min=0.0, vel_max=None,
-                      peak_exclude=0.0):
+                      peak_exclude=0.0, mti="none", peak_snr_db=0.0):
     """2D FFT of the chirp matrix -> range vs velocity.
 
     Range comes from the fast-time FFT down each column, velocity from the
@@ -579,6 +591,14 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     spec = full[rmask]
     spec = np.fft.fftshift(_fft(spec * w_slow.astype(real)[None, :], axis=1), axes=1)
     map_out = _to_db(np.abs(spec[:, vmask]), win_sum)
+    # MTI's canceller lifts the fast Doppler bins above unity gain -- +6 dB
+    # at the edges for 2-pulse, +12 dB for 3-pulse -- so with only a hand
+    # moving, the edge noise outshone it and the peak velocity jumped between
+    # +-14 m/s (phaser-01, 2026-11-06). Take that lift back out, so the noise
+    # floor is flat; keep the notch below unity, which is the point of MTI.
+    lift = np.maximum(mti_gain_db(doppler_hz[vmask], pri, mti), 0.0)
+    if np.any(lift):
+        map_out = map_out - lift[None, :].astype(map_out.dtype)
 
     # The peak readout skips the zero-Doppler cells. The strongest cell in a
     # room is the Tx->Rx leakage and stationary clutter at 0 m/s -- after the
@@ -599,13 +619,19 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
         search[:] = True
     masked = np.where(search[None, :], map_out, -np.inf)
     peak_r, peak_v = np.unravel_index(int(np.argmax(masked)), map_out.shape)
+    # A peak only counts if it stands out: at least peak_snr_db above the
+    # map's median, its noise floor. Otherwise -- nothing moving, MTI on --
+    # the readout is None rather than whichever noise cell won this frame.
+    noise_db = float(np.median(map_out))
+    clear = not peak_snr_db or float(map_out[peak_r, peak_v]) - noise_db >= float(peak_snr_db)
     return {
         "map_db": map_out.astype(np.float32).tolist(),
         "range_axis": ranges_out.astype(np.float32).tolist(),
         "velocity_axis": velocity_out.astype(np.float32).tolist(),
-        "peak_range": float(ranges_out[peak_r]),
+        "peak_range": float(ranges_out[peak_r]) if clear else None,
         "cal_peak_range": float(ranges[cal_r]),
-        "peak_velocity": float(velocity_out[peak_v]),
+        "peak_velocity": float(velocity_out[peak_v]) if clear else None,
+        "noise_db": noise_db,
         "peak_magnitude_db": float(map_out[peak_r, peak_v]),
         "range_resolution": float(range_resolution(chirp_bw)),
         "velocity_resolution": float(velocity_resolution(n_slow, pri, output_freq)),
@@ -1008,6 +1034,12 @@ FMCW_PROC_DEFAULTS = {
     # the Tx->Rx leakage sits. Its Blackman main lobe is about 0.9 m wide at
     # B = 500 MHz, so 1 m clears it; 0 turns it off. Calibrate ignores it.
     "peak_min": 1.0,
+    # dB; a range-Doppler peak is reported only this far above the map's
+    # median (its noise floor), else the readout shows "--". 0 turns it off.
+    # The strongest of ~15,000 noise cells sits ~11-13 dB over the median, so
+    # 15 dB keeps noise out (~1 frame in 10^5) while a moving hand, summed
+    # over 256 chirps, clears it by tens of dB.
+    "peak_snr_db": 15.0,
 }
 
 # What start_fmcw_radar runs when no preset is named: range and velocity

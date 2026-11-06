@@ -30,7 +30,7 @@ import { toBase64, writeNpz } from '../npz.js';
 // Params that only change processing (next frame), and those written straight
 // to the hardware; anything else re-enters FMCW. phaser_headless's sets.
 const FMCW_LIVE_KEYS = new Set([
-    'mti', 'fft_window', 'range_max', 'vel_max', 'zero_range_freq', 'peak_exclude', 'peak_min',
+    'mti', 'fft_window', 'range_max', 'vel_max', 'zero_range_freq', 'peak_exclude', 'peak_min', 'peak_snr_db',
     'cfar', 'cfar_guard', 'cfar_ref', 'cfar_bias_db', 'scene', 'scene_noise',
 ]);
 const FMCW_WRITE_KEYS = new Set(['taper', 'rx_gain', 'tx_gain']);
