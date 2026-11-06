@@ -214,11 +214,11 @@ SAVE_CASES = [
     ("save_rd", {}, False),
     ("save_rd_iq_ch_calibrated", {"zero_range_freq": 103_000.0}, True),
     ("save_range", {"preset": "range"}, False),
-    # Duration: a burst trimmed, a long continuous burst, L31's long record.
+    # Duration: a burst trimmed, a long continuous burst, Micro-Doppler's long record.
     ("save_rd_short", {"duration_s": 0.05}, False),
     ("save_rd_run", {"duration_s": 0.5}, False),             # a run of 2 bursts
     ("save_rd_run_iq_ch", {"duration_s": 1.0}, True),        # 4 bursts, both halves
-    ("save_l31_long_iq_ch", {"preset": "l31_record", "duration_s": 1.5}, True),
+    ("save_micro_doppler_long_iq_ch", {"preset": "micro_doppler", "duration_s": 1.5}, True),
     # One single chirp: PRI is the frame interval, not the plan's.
     ("save_range_one_chirp", {"preset": "range_sync", "duration_s": 0.05}, False),
 ]

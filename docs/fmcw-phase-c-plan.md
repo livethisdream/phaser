@@ -684,6 +684,6 @@ Add the results to this doc.
   later, and by then the Pluto and the Phaser board's links returned Broken
   pipe; ssh was unresponsive meanwhile. The cause is not established. Since
   then, a save longer than one burst on a range-Doppler preset is a run of
-  ordinary bursts (`burst_len`, `burst_t` in the file), and only L31 keeps
+  ordinary bursts (`burst_len`, `burst_t` in the file), and only Micro-Doppler (the L31 recordings' settings) keeps
   the continuous burst, on a kit only with `PHASER_LONG_BURST=1`. Saves run
   off the event loop, and `[SAVE]` / `[WS]` lines log each stage.

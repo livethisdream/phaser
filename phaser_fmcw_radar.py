@@ -563,7 +563,7 @@ def read_channels(sdr, raw=False, after_refill=None):
     """One Rx buffer, the two subarray channels kept apart: (chan0, chan1).
 
     read_summed's twin, for a capture that saves both halves of the array
-    (the course .npz's iq_ch, which the L31 monopulse task needs). Their sum
+    (the course .npz's iq_ch, for monopulse angle work). Their sum
     is exactly what read_summed returns.
     """
     if raw and getattr(sdr, "_rxbuf", None) is not None:

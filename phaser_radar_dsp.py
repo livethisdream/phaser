@@ -975,12 +975,14 @@ FMCW_PRESETS = {
         "tx_gain": 0,
         "range_max": 100.0,
     },
-    # The ECE 444 L31 classification records (ece444 radar-data/L31_*.npz):
-    # 300 us chirps every 0.5 ms at 0.3 MS/s. The low rate is what makes a
+    # Micro-Doppler: long continuous records of moving targets (a walker, a
+    # fan, a spinner) to classify by their micro-Doppler signatures. 300 us
+    # chirps every 0.5 ms at 0.3 MS/s, as the ECE 444 classification
+    # recordings (ece444 radar-data/L31_*.npz) were made. The low rate is what makes a
     # long continuous record fit the Pluto's burst buffer -- ~14 s against
     # ~2 s at range_doppler's 2 MS/s -- at the cost of range: the beat
     # reaches Nyquist 4.5 m above the 0 m frequency, so the display stops at 4 m.
-    "l31_record": {
+    "micro_doppler": {
         "sample_rate": 300_000,
         "output_freq": 10e9,
         "chirp_bw": 500e6,
@@ -1023,7 +1025,7 @@ FMCW_PRESET_UI = {
     "range": ("Range (Basic)", "FMCW lab: the 0 m calibration and kHz per meter."),
     "range_sync": ("Range (Fast)", "A steeper chirp, out to ~375 m."),
     "cfar": ("Range (CFAR)", "CFAR lab: tune the threshold, then Apply."),
-    "l31_record": ("Range + Vel (L31)", "L31 records: 0.3 MS/s, continuous captures up to ~14 s, out to 4 m."),
+    "micro_doppler": ("Micro-Doppler", "Long continuous records of moving targets for micro-Doppler: 0.3 MS/s, up to ~14 s, out to 4 m."),
 }
 
 
