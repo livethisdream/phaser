@@ -18,7 +18,7 @@ import {
     CAPTURE_FULL_SCALE,
 } from './constants.generated.js';
 import {
-    captureLimits, chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
+    captureBursts, captureLimits, chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
     resolveTaper, sliceChirps,
 } from './dsp.js';
 import {
@@ -191,7 +191,8 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         const cfg = s.fmcwCfg;
         let plan = s.fmcwPlan;
         const wantCh = Boolean(params.iq_ch);
-        const limits = captureLimits(plan);
+        // Only L31 saves one continuous long burst; the browser is a simulator.
+        const limits = captureLimits(plan, s.fmcwPreset === 'l31_record');
         const duration = params.duration_s == null || params.duration_s === '' ? limits.default_s : Number(params.duration_s);
         if (!(duration > 0) || duration > limits.max_s * (1 + 1e-9)) {
             return { status: 'error', message: `Duration must be more than 0 and at most ${+limits.max_s.toPrecision(3)} s on this preset` };
@@ -201,7 +202,11 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         // the live frame interval -- here stepped on the scene clock, since
         // the simulator does not wait.
         let frames = 1, keep = Infinity;
-        if (limits.kind === 'burst') {
+        const nBursts = captureBursts(limits, duration);
+        if (nBursts) {
+            // A run of whole bursts, run_s apart on the scene clock.
+            frames = nBursts;
+        } else if (limits.kind === 'burst' || limits.kind === 'bursts') {
             const chirps = Math.max(2, roundHalfEvenNum(duration / limits.chirp_s));
             if (chirps > plan.num_chirps) {
                 plan = chirpPlan({ ...cfg, num_chirps: chirps }, RAMP_SYNCED, rampTimeUs(cfg), 0);
@@ -214,8 +219,9 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         const stamps = [];
         const tBase = sceneClock();
         for (let f = 0; f < frames; f++) {
-            stamps.push(f * limits.chirp_s * 1e3);
-            const t0 = limits.kind === 'frames' ? tBase + f * limits.chirp_s : null;
+            const step = nBursts ? limits.run_s : limits.chirp_s;
+            stamps.push(f * step * 1e3);
+            const t0 = limits.kind === 'frames' || nBursts ? tBase + f * step : null;
             const [c0, c1] = finishChannels(synthesizeFmcwChannels(plan, t0), { noiseSigma: fmcwNoiseSigma(), gauss });
             const s0 = sliceChirps(c0, plan).slice(0, keep), s1 = sliceChirps(c1, plan).slice(0, keep);
             s0.forEach((col, k) => {
@@ -240,13 +246,17 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         };
         // One single-chirp frame has no interval to measure: the next would
         // have come a frame interval later, not the plan's PRI.
-        const pri = frames > 1 ? (stamps[frames - 1] - stamps[0]) / 1e3 / (frames - 1)
+        const pri = nBursts ? limits.chirp_s
+            : frames > 1 ? (stamps[frames - 1] - stamps[0]) / 1e3 / (frames - 1)
             : limits.kind === 'frames' ? limits.chirp_s
                 : (plan.pri_ms ? plan.pri_ms / 1e3 : plan.ramp_time);
         const calibrated = cfg.zero_range_freq != null;
         const f0 = Number(calibrated ? cfg.zero_range_freq : cfg.signal_freq);
         const fs = plan.sample_rate, tRamp = plan.effective_ramp_time;
-        const note = `Phaser radar GUI capture: preset ${s.fmcwPreset}, ${nChirps} chirps of `
+        const run = nBursts ? `${nBursts} bursts of ${plan.num_chirps} chirps, one every `
+            + `${((stamps[nBursts - 1] - stamps[0]) / (nBursts - 1)).toFixed(0)} ms (burst_len, burst_t: `
+            + 'take Doppler within a burst); ' : '';
+        const note = `Phaser radar GUI capture: preset ${s.fmcwPreset}, ${run}${nChirps} chirps of `
             + `${+(tRamp * 1e6).toPrecision(6)} us every ${+(pri * 1e3).toPrecision(4)} ms, `
             + `${fs / 1e6} MSPS, B ${Number(cfg.chirp_bw) / 1e6} MHz, fc ${Number(cfg.output_freq) / 1e9} GHz, `
             + `f0 ${f0.toFixed(0)} Hz (${calibrated ? '0 m calibration' : 'IF tone, not calibrated'}); `
@@ -261,6 +271,11 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
             f0: { dtype: '<f8', data: f0 },
             note: { dtype: '<U', data: note },
         };
+        if (nBursts) {
+            arrays.burst_len = { dtype: '<f8', data: Number(plan.num_chirps) };
+            arrays.burst_t = { dtype: '<f8', shape: [nBursts],
+                               data: Float64Array.from(stamps, (t) => (t - stamps[0]) / 1e3) };
+        }
         if (wantCh) {
             const a = flat(rows[1]), b = flat(rows[2]);
             const re = new Float32Array(2 * a.re.length), im = new Float32Array(2 * a.im.length);
@@ -347,7 +362,7 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
             capture: (() => {
                 try {
                     return captureLimits(running ? s.fmcwPlan
-                        : chirpPlan(cfg, RAMP_SYNCED, rampTimeUs(cfg), 0));
+                        : chirpPlan(cfg, RAMP_SYNCED, rampTimeUs(cfg), 0), preset === 'l31_record');
                 } catch (e) { return null; }
             })(),
             // Simulation only: the live scenes the UI can pick from.

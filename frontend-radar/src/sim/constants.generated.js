@@ -69,6 +69,8 @@ export const CAPTURE_MAX_FRAMES_S = 60.0;
 export const CAPTURE_FRAME_S = 0.05;
 export const BYTES_PER_SAMPLE = 8;
 export const CAPTURE_FULL_SCALE = 2048;
+export const CAPTURE_BURST_INTERVAL_S = 0.25;
+export const CAPTURE_MAX_BYTES = 64000000.0;
 export const CAPTURE_COUNTS_ABOVE = 4.0;
 
 // --- phaser_headless ---------------------------------------------------------

@@ -1,5 +1,6 @@
 import { createTransport, resolveTransportMode } from './transport.js';
 import { fromBase64, readNpz } from './npz.js';
+import { captureBytes } from './sim/dsp.js';
 
 /* --- State --- */
 const state = {
@@ -1285,14 +1286,18 @@ function updateCaptureEstimate() {
     input.placeholder = String(+cap.default_s.toPrecision(3));
     input.max = String(cap.max_s);
     input.classList.toggle('set-invalid', !ok);
+    const ms = (t) => +(t * 1e3).toPrecision(3);
     const what = cap.kind === 'burst'
-        ? `One continuous burst, chirps ${+(cap.chirp_s * 1e3).toPrecision(3)} ms apart, up to ${+cap.max_s.toPrecision(3)} s on this preset (the Pluto's burst buffer).`
-        : `Single chirps every ${+(cap.chirp_s * 1e3).toPrecision(3)} ms, up to ${cap.max_s} s.`;
+        ? `One continuous burst, chirps ${ms(cap.chirp_s)} ms apart, up to ${+cap.max_s.toPrecision(3)} s on this preset (the Pluto's burst buffer).`
+        : cap.kind === 'bursts'
+            ? `Up to ${ms(cap.burst_s)} ms: one continuous burst. Longer: a run of bursts, one every ${ms(cap.run_s)} ms, `
+              + `each played back as a Range-Doppler frame; up to ${+cap.max_s.toPrecision(3)} s on this preset.`
+            : `Single chirps every ${ms(cap.chirp_s)} ms, up to ${cap.max_s} s.`;
     const withCh = document.getElementById('fmcw-save-ch')?.checked;
-    const size = ok ? `About ${formatBytes(cap.bytes_per_s * d)}, or ${formatBytes(cap.bytes_per_s_iq_ch * d)} with Subarray Channels${withCh ? ' (on)' : ''}.`
+    const size = ok ? `About ${formatBytes(captureBytes(cap, d))}, or ${formatBytes(captureBytes(cap, d, true))} with Subarray Channels${withCh ? ' (on)' : ''}.`
         : `${+d.toPrecision(3)} s is too long: at most ${+cap.max_s.toPrecision(3)} s here.`;
     row.title = `${what} Empty: ${+cap.default_s.toPrecision(3)} s. ${size}`;
-    return ok ? `${+d.toPrecision(3)} s, about ${formatBytes((withCh ? cap.bytes_per_s_iq_ch : cap.bytes_per_s) * d)}` : size;
+    return ok ? `${+d.toPrecision(3)} s, about ${formatBytes(captureBytes(cap, d, withCh))}` : size;
 }
 
 function updateFmcwSaveButton() {
@@ -1400,7 +1405,7 @@ async function startPlayback(file) {
             state.fmcw.plan = { effective_ramp_time: i.T_ramp, ramp_time: i.T_ramp, num_chirps: i.window };
             updateFmcwControlGating();
             log('info', 'PLAYBACK', `${file.name}: ${i.chirps} chirps x ${i.samples} samples, `
-                + `${i.mode === 'burst' ? 'range-Doppler' : 'range profiles'}, `
+                + `${i.bursts ? `${i.bursts} bursts, one every ${Math.round(i.interval)} ms` : i.mode === 'burst' ? 'range-Doppler' : 'range profiles'}, `
                 + `fs ${i.fs / 1e6} MHz, B ${i.B / 1e6} MHz, T_ramp ${+(i.T_ramp * 1e6).toFixed(1)} us, PRI ${+(i.PRI * 1e3).toPrecision(4)} ms, f0 ${i.f0} Hz`);
             if (note) log('info', 'PLAYBACK', note);
             if (i.units === 'counts') {

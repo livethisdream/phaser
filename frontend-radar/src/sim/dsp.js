@@ -13,7 +13,7 @@ import {
     C, DEFAULTS, TAPER_PRESETS, TAPER_MAX, FMCW_DEFAULTS, FMCW_HW_DEFAULTS,
     FMCW_PRESETS, FMCW_PROC_DEFAULTS, MAINLOBE_HALF_BINS, MAP_SPAN_DB, DB_DECIMALS,
     AXIS_DECIMALS, CAPTURE_SINGLE_CHIRP_FRAMES, CAPTURE_MAX_FRAMES_S, CAPTURE_FRAME_S,
-    BYTES_PER_SAMPLE,
+    BYTES_PER_SAMPLE, CAPTURE_BURST_INTERVAL_S, CAPTURE_MAX_BYTES,
     RAMP_SYNCED, RAMP_FREE_RUNNING, RANGE_TIME_SCALE, MAX_BURST_BUFFER,
     RAMP_SETTLE_FRACTION,
 } from './constants.generated.js';
@@ -565,17 +565,39 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
 }
 
 /** phaser_radar_dsp.capture_limits: what Save Capture can do for this plan. */
-export function captureLimits(plan) {
+export function captureLimits(plan, continuous = false) {
     const good = Math.trunc(plan.good_ramp_samples);
     if (plan.synced && plan.num_chirps > 1) {
         const pri = plan.pri_ms / 1e3;
-        const maxChirps = Math.floor(MAX_BURST_BUFFER / (plan.sample_rate * pri));
+        const n = Math.trunc(plan.num_chirps);
         const perS = (good * BYTES_PER_SAMPLE) / pri;
-        return { kind: 'burst', default_s: plan.num_chirps * pri, max_s: maxChirps * pri,
-                 chirp_s: pri, bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
+        const out = { default_s: n * pri, chirp_s: pri, burst_s: n * pri,
+                      bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
+        if (continuous) {
+            const maxChirps = Math.floor(MAX_BURST_BUFFER / (plan.sample_rate * pri));
+            return { kind: 'burst', max_s: maxChirps * pri, ...out };
+        }
+        const runS = Math.max(CAPTURE_BURST_INTERVAL_S, n * pri);
+        const perBurst = n * good * BYTES_PER_SAMPLE;
+        const maxBursts = Math.max(2, Math.floor(CAPTURE_MAX_BYTES / perBurst));
+        return { kind: 'bursts', max_s: Math.min(CAPTURE_MAX_FRAMES_S, maxBursts * runS),
+                 run_s: runS, bytes_per_burst: perBurst, ...out };
     }
     const perS = (good * BYTES_PER_SAMPLE) / CAPTURE_FRAME_S;
     return { kind: 'frames', default_s: CAPTURE_SINGLE_CHIRP_FRAMES * CAPTURE_FRAME_S,
              max_s: CAPTURE_MAX_FRAMES_S, chirp_s: CAPTURE_FRAME_S,
              bytes_per_s: perS, bytes_per_s_iq_ch: 3 * perS };
+}
+
+/** phaser_radar_dsp.capture_bursts: whole bursts in a "bursts" save; 0 for one trimmed burst. */
+export function captureBursts(limits, duration) {
+    if (limits.kind !== 'bursts' || duration <= limits.burst_s * (1 + 1e-9)) return 0;
+    return Math.max(2, roundHalfEven(duration / limits.run_s));
+}
+
+/** phaser_radar_dsp.capture_bytes: the iq bytes a save of `duration` s writes. */
+export function captureBytes(limits, duration, iqCh = false) {
+    const k = iqCh ? 3 : 1;
+    const n = captureBursts(limits, duration);
+    return n ? k * n * limits.bytes_per_burst : k * limits.bytes_per_s * duration;
 }

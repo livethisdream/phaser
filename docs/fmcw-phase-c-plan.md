@@ -677,3 +677,13 @@ Add the results to this doc.
 - With a corner and the preset at 10 GHz, distances read about right. The
   1, 2 and 3 m readings and the Save/Load and Range + Velocity steps are still
   to record.
+- **A 1.6 s Range + Velocity save froze phaser-01.** It was one continuous
+  3,200-chirp burst: a re-entered mode with a 2^22-sample buffer. The backend
+  finished it and put the mode back in about 15 s, all of it on the
+  WebSocket event loop. It then logged nothing until a reboot about 2.5 min
+  later, and by then the Pluto and the Phaser board's links returned Broken
+  pipe; ssh was unresponsive meanwhile. The cause is not established. Since
+  then, a save longer than one burst on a range-Doppler preset is a run of
+  ordinary bursts (`burst_len`, `burst_t` in the file), and only L31 keeps
+  the continuous burst, on a kit only with `PHASER_LONG_BURST=1`. Saves run
+  off the event loop, and `[SAVE]` / `[WS]` lines log each stage.
