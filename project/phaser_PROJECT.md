@@ -180,4 +180,5 @@ Detail and history in [`docs/fmcw-phase-c-plan.md`](../docs/fmcw-phase-c-plan.md
 - [ ] **Phase D: browser radar simulator** -- port the radar sim and DSP to JS, a sim transport for `frontend-radar/`, radar parity cases, the radar UI on Pages. Write the phased plan and review it before code (plan doc, *Follow-on*)
 - [ ] Pi clock: no RTC and no NTP client, so a late network leaves it wrong (tar warns about future timestamps on install)
 - [ ] Merge `radar-dev` into `main` once the radar work is ready
+- [ ] **SAR mode** (asked 2026-11-06): synthetic-aperture imaging -- move the kit along a straight rail, an FMCW capture per position, form a range/cross-range image (backprojection). Scope the rail, position input and a sim scene; plan before code
 - [ ] Optional, offered 2026-10-30: write the settings-pane rules (explanations in hover tooltips, same-size aligned controls, grey out what does nothing) into CLAUDE.md

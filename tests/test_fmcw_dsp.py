@@ -576,3 +576,12 @@ def test_range_doppler_calibrate_searches_the_whole_band():
                                zero_range_freq=100e3 + slope_hz_per_m, range_max=5.0)
     assert min(rd["range_axis"]) >= 0
     assert rd["cal_peak_range"] == pytest.approx(-1.0, abs=0.2)
+
+
+
+def test_every_fmcw_preset_transmits_in_the_arrays_band():
+    """The array is built for ~10-10.5 GHz. Range (Basic) at the script's
+    12.145 GHz could not calibrate on phaser-01: the echo was too weak."""
+    for name, preset in _dsp.FMCW_PRESETS.items():
+        lo, hi = preset["output_freq"], preset["output_freq"] + preset["chirp_bw"]
+        assert 9.5e9 <= lo and hi <= 10.6e9, f"{name}: {lo / 1e9:g}-{hi / 1e9:g} GHz"

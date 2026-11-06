@@ -31,6 +31,8 @@ let rec = null;               // {cols, fs, fc, B, T_ramp, PRI, f0, mode, window
 let cfg = {};
 let pos = 0;
 let timer = null;
+let paused = false;
+let shown = 0;                // start chirp of the frame last posted
 
 /** The playback plan and frame layout for a capture. */
 export function playbackLayout({ nChirps, PRI }) {
@@ -108,10 +110,20 @@ export function playbackRecording(arrays) {
     return { cols, nSamples, units, ...v, ...playbackLayout({ nChirps, PRI: v.PRI }) };
 }
 
+/* The frame on screen, again: a setting changed while paused. */
+function redraw() {
+    try {
+        self.postMessage({ type: 'fmcw_radar_frame', data: playbackFrame(rec, cfg, shown) });
+    } catch (err) {
+        self.postMessage({ type: 'error', message: String(err?.message || err) });
+    }
+}
+
 function step() {
     timer = null;
     if (!rec) return;
     try {
+        shown = pos;
         self.postMessage({ type: 'fmcw_radar_frame', data: playbackFrame(rec, cfg, pos) });
     } catch (err) {
         self.postMessage({ type: 'error', message: String(err?.message || err) });
@@ -120,7 +132,7 @@ function step() {
         pos += rec.hop;
         if (pos + rec.window > rec.cols.length) pos = 0;   // loop
     }
-    timer = setTimeout(step, rec.interval);
+    if (!paused) timer = setTimeout(step, rec.interval);
 }
 
 if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typeof window === 'undefined') {
@@ -136,6 +148,7 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typ
             }
             cfg = { ...(msg.settings || {}) };
             pos = 0;
+            paused = false;
             self.postMessage({
                 type: 'loaded',
                 info: {
@@ -147,6 +160,14 @@ if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typ
             step();
         } else if (msg.cmd === 'settings') {
             Object.assign(cfg, msg.settings || {});
+            // Paused, the frame on screen is redrawn with the new settings.
+            if (paused && rec) redraw();
+        } else if (msg.cmd === 'pause') {
+            paused = true;
+            if (timer) clearTimeout(timer);
+            timer = null;
+        } else if (msg.cmd === 'resume') {
+            if (paused && rec) { paused = false; if (!timer) step(); }
         } else if (msg.cmd === 'stop') {
             if (timer) clearTimeout(timer);
             timer = null;

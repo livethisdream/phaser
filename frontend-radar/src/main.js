@@ -231,6 +231,26 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     });
 });
 
+/* The FMCW plot a preset opens on: Range-Doppler for a multi-chirp preset
+   (or a burst recording), Range Waterfall for a single-chirp one. The
+   single-chirp Range profile is a tab to pick, not the first view: on its
+   own it is the hardest of the three to read. */
+function fmcwDefaultTab() {
+    const multi = state.playback
+        ? state.playback.info?.mode === 'burst'
+        : (state.fmcw.preset_info?.[document.getElementById('fmcw-preset')?.value]?.num_chirps ?? 256) > 1;
+    return multi ? 'tab-fmcw-rd' : 'tab-fmcw-wf';
+}
+
+/* Go to fmcwDefaultTab() -- on entering FMCW, a new preset or a loaded
+   recording -- unless the user is reading the Logs. */
+function showFmcwDefaultTab({ force = false } = {}) {
+    const active = document.querySelector('.tab-btn.active')?.dataset.target;
+    if (active === 'tab-logs' && !force) return;
+    const want = fmcwDefaultTab();
+    if (active !== want) document.querySelector(`.tab-btn[data-target="${want}"]`)?.click();
+}
+
 /* --- Slider/Input combo linking --- */
 function linkComboSlider(rangeId, numId, onChange) {
     const r = document.getElementById(rangeId);
@@ -608,14 +628,16 @@ function setUiMode(mode) {
     document.getElementById('mode-fmcw')?.classList.toggle('active', state.uiMode === 'fmcw');
     const modeTabs = document.querySelector('.mode-tabs');
     if (modeTabs) modeTabs.dataset.mode = state.uiMode;
-    // Show the mode's tabs (and Logs), and land on its first one.
+    // Show the mode's tabs (and Logs), and land on its first one -- in FMCW,
+    // the plot that suits the preset (fmcwDefaultTab).
     let first = null;
     document.querySelectorAll('.tab-btn').forEach(b => {
         const m = b.dataset.mode;
         b.hidden = Boolean(m) && m !== state.uiMode;
         if (!first && m === state.uiMode) first = b;
     });
-    first?.click();
+    if (state.uiMode === 'fmcw') showFmcwDefaultTab({ force: true });
+    else first?.click();
     // Always shown, greyed in CW, so the stats row does not shift.
     const rangeBox = document.getElementById('box-peak-range');
     rangeBox.classList.toggle('set-disabled', state.uiMode !== 'fmcw');
@@ -954,6 +976,8 @@ async function refreshFmcwState() {
             // Short label in the box; the internal name stays the value.
             d.presets.forEach(p => sel.add(new Option(d.preset_info?.[p]?.label || p, p)));
             sel.value = d.presets.includes(keep) ? keep : d.presets[0];
+            // The preset is known only now: land on its plot.
+            if (state.uiMode === 'fmcw') showFmcwDefaultTab();
         }
         updateFmcwControlGating();
         setRunningUi(state.running, state.runningMode || state.uiMode);
@@ -1085,6 +1109,7 @@ fmcwEl('fmcw-scene-noise')?.addEventListener('change', (e) => {
 
 fmcwEl('fmcw-preset')?.addEventListener('change', (e) => {
     updateFmcwControlGating();
+    showFmcwDefaultTab();
     // The lab's own frequency and gains, sent along: an override from an
     // earlier preset would otherwise outlive the switch in the stored params.
     const hw = presetHw(false);
@@ -1366,6 +1391,7 @@ async function startPlayback(file) {
         if (msg.type === 'fmcw_radar_frame') { handleFmcwFrame(msg.data); return; }
         if (msg.type === 'loaded') {
             pb.info = msg.info;
+            if (state.uiMode === 'fmcw') showFmcwDefaultTab();
             const i = msg.info;
             state.fmcw.cfg = {
                 chirp_bw: i.B, signal_freq: i.f0, output_freq: i.fc,
@@ -1394,8 +1420,33 @@ async function startPlayback(file) {
     state.fmcw.avg = null;
     setRunningUi(true, 'fmcw');
     setConnectionStatus(true);
+    setPlaybackPaused(false);
     worker.postMessage({ cmd: 'load', arrays, settings: playbackSettings() });
 }
+
+/* Play/Pause beside Stop, shown only while a recording plays. Paused, the
+   frame stays on screen and the processing controls still redraw it. */
+function setPlaybackPaused(paused) {
+    const btn = document.getElementById('btn-playback-pause');
+    if (state.playback) state.playback.paused = paused;
+    if (!btn) return;
+    btn.hidden = !state.playback;
+    btn.textContent = paused ? 'Play' : 'Pause';
+    // No frames arrive while paused: say so rather than show the last rate.
+    if (paused) {
+        frameTimes.length = 0;
+        const rate = document.getElementById('stat-rate');
+        if (rate) rate.textContent = 'paused';
+    }
+    btn.title = paused ? 'Play the recording on from this frame' : 'Pause the recording on this frame';
+}
+document.getElementById('btn-playback-pause')?.addEventListener('click', () => {
+    const pb = state.playback;
+    if (!pb) return;
+    const paused = !pb.paused;
+    pb.worker.postMessage({ cmd: paused ? 'pause' : 'resume' });
+    setPlaybackPaused(paused);
+});
 
 function stopPlayback({ quiet = false } = {}) {
     const pb = state.playback;
@@ -1403,6 +1454,7 @@ function stopPlayback({ quiet = false } = {}) {
     pb.worker.postMessage({ cmd: 'stop' });
     pb.worker.terminate();
     state.playback = null;
+    setPlaybackPaused(false);
     setRunningUi(false);
     setConnectionStatus(transport.isConnected);
     updateFmcwControlGating();
