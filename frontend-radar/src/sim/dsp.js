@@ -38,6 +38,14 @@ function argmax(arr) {
     return best;
 }
 
+/** numpy.median: the middle value, or the mean of the middle two. */
+function median(arr) {
+    const a = Float64Array.from(arr).sort();
+    const n = a.length;
+    if (!n) return NaN;
+    return n % 2 ? a[(n - 1) >> 1] : (a[n / 2 - 1] + a[n / 2]) / 2;
+}
+
 function sum(arr) {
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i];
@@ -253,9 +261,20 @@ export function mtiFilter(cols, mode = 'none') {
  * FFT to a 5-smooth length, and keep the peak readout off the zero-Doppler
  * cells (peakExclude) while cal_peak_range reads the strongest cell anywhere.
  */
+/** phaser_radar_dsp.mti_gain_db: the pulse canceller's gain at each Doppler frequency, dB. */
+export function mtiGainDb(dopplerHz, pri, mode) {
+    const m = String(mode || 'none').toLowerCase();
+    return Array.from(dopplerHz, (f) => {
+        if (m === 'none' || m === 'off' || m === '') return 0;
+        let h = 2 * Math.abs(Math.sin(Math.PI * f * Number(pri)));
+        if (m === '3pulse') h *= h;
+        return 20 * Math.log10(Math.max(h, 1e-12));
+    });
+}
+
 export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0,
-    velMax = null, peakExclude = 0,
+    velMax = null, peakExclude = 0, mti = 'none', peakSnrDb = 0,
 } = {}) {
     const nSlow = cols.length;
     const nFast = nSlow ? cols[0].re.length : 0;
@@ -298,14 +317,17 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
         }
     }
 
-    // Slow time, range bin by range bin.
+    // Slow time, range bin by range bin. MTI's lift above unity gain at the
+    // fast Doppler bins is taken back out, so the noise floor is flat.
+    const gain = mtiGainDb(vidx.map(i => dopplerHz[i]), pri, mti);
+    const lift = gain.map(g => Math.max(g, 0));
     const mapDb = [];
     for (let r = 0; r < nr; r++) {
         const Y = fft(specRe[r], specIm[r]);
         const mag = new Float64Array(nSlow);
         for (let i = 0; i < nSlow; i++) mag[i] = Math.hypot(Y.re[i], Y.im[i]);
         const shifted = fftshift(mag);
-        mapDb.push(vidx.map(i => toDb(shifted[i], winSum)));
+        mapDb.push(vidx.map((i, k) => toDb(shifted[i], winSum) - lift[k]));
     }
 
     let search = velOut.map(() => true);
@@ -325,13 +347,19 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
         }
     }
     const cr = argmax(calPow);
+    // A peak counts only peakSnrDb above the map's median (its noise floor).
+    const all = [];
+    for (const row of mapDb) for (const v of row) all.push(v);
+    const noiseDb = median(all);
+    const clear = !peakSnrDb || mapDb[pr][pv] - noiseDb >= Number(peakSnrDb);
     return {
         map_db: mapDb,
         range_axis: rangeOut,
         velocity_axis: velOut,
-        peak_range: rangeOut[pr],
+        peak_range: clear ? rangeOut[pr] : null,
         cal_peak_range: ranges[cr],
-        peak_velocity: velOut[pv],
+        peak_velocity: clear ? velOut[pv] : null,
+        noise_db: noiseDb,
         peak_magnitude_db: mapDb[pr][pv],
         range_resolution: rangeResolution(chirpBw),
         velocity_resolution: velocityResolution(nSlow, pri, outputFreq),
@@ -522,6 +550,7 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
             cfg.output_freq, {
                 zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max,
                 velMax: cfg.vel_max, peakExclude: cfg.peak_exclude ?? 0,
+                mti: cfg.mti ?? 'none', peakSnrDb: cfg.peak_snr_db ?? 0,
             });
         Object.assign(out, {
             kind: 'range_doppler',

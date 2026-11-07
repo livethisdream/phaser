@@ -585,3 +585,55 @@ def test_every_fmcw_preset_transmits_in_the_arrays_band():
     for name, preset in _dsp.FMCW_PRESETS.items():
         lo, hi = preset["output_freq"], preset["output_freq"] + preset["chirp_bw"]
         assert 9.5e9 <= lo and hi <= 10.6e9, f"{name}: {lo / 1e9:g}-{hi / 1e9:g} GHz"
+
+
+# --- MTI: a flat noise floor, and no readout without a target ------------
+
+def _rd_noise(mti, seed=0, target_v=None, snr_db=None):
+    """256 chirps of complex noise (and optionally a mover), through MTI and
+    the map. Returns the map result and its Doppler-column means."""
+    rng = np.random.default_rng(seed)
+    n_fast, n_slow, fs, pri, fc = 539, 256, 2e6, 5e-4, 10e9
+    m = (rng.standard_normal((n_fast, n_slow)) + 1j * rng.standard_normal((n_fast, n_slow))) * 10
+    if target_v is not None:
+        t_fast = np.arange(n_fast)[:, None] / fs
+        fd = 2 * target_v * fc / _dsp.C
+        beat = 100e3 + 2 * 500e6 * 2.0 / (_dsp.C * 300e-6)       # a mover at 2 m
+        amp = 10 * 10 ** (snr_db / 20)
+        m = m + amp * np.exp(2j * np.pi * (beat * t_fast + fd * np.arange(n_slow)[None, :] * pri))
+    rd = _dsp.range_doppler_map(_dsp.mti_filter(m, mti), fs, 500e6, 300e-6, pri, fc,
+                                zero_range_freq=100e3, range_max=10.0, peak_exclude=0.3,
+                                mti=mti, peak_snr_db=_dsp.FMCW_PROC_DEFAULTS["peak_snr_db"])
+    return rd, np.asarray(rd["map_db"]).mean(axis=0)
+
+
+@pytest.mark.parametrize("mti", ["2pulse", "3pulse"])
+def test_mti_noise_floor_is_flat_outside_the_notch(mti):
+    """The canceller lifts the fast Doppler bins (+6 / +12 dB at the edges);
+    taken back out, the edges sit level with mid-band noise."""
+    rd, cols = _rd_noise(mti)
+    v = np.asarray(rd["velocity_axis"])
+    vmax = np.abs(v).max()
+    edge = cols[np.abs(v) > 0.8 * vmax].mean()
+    mid = cols[(np.abs(v) > 0.4 * vmax) & (np.abs(v) < 0.6 * vmax)].mean()
+    assert abs(edge - mid) < 1.5, (edge, mid)
+
+
+@pytest.mark.parametrize("mti", ["none", "2pulse", "3pulse"])
+def test_no_peak_readout_on_noise_alone(mti):
+    """Nothing moving: no cell stands 15 dB clear of the median, so the
+    readout is None -- not a different noise cell every frame."""
+    for seed in range(20):
+        rd, _ = _rd_noise(mti, seed=seed)
+        assert rd["peak_range"] is None and rd["peak_velocity"] is None
+        assert rd["cal_peak_range"] is not None
+
+
+@pytest.mark.parametrize("mti", ["2pulse", "3pulse"])
+def test_mti_finds_a_mover_instead_of_the_edges(mti):
+    """A hand-sized mover a few dB over the noise per sample: found at its
+    own velocity, sign kept (closing is negative), every time."""
+    for seed in range(5):
+        rd, _ = _rd_noise(mti, seed=seed, target_v=-1.5, snr_db=-5)
+        assert rd["peak_velocity"] == pytest.approx(-1.5, abs=0.2)
+        assert rd["peak_range"] == pytest.approx(2.0, abs=0.35)

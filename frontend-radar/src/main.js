@@ -884,9 +884,9 @@ function renderFmcwFrame(frame) {
     if (now - state.fmcw.readout_t < FMCW_READOUT_MS) return;
     state.fmcw.readout_t = now;
     const peak = fmcwPeak(frame);
-    if (typeof peak.range === 'number') {
-        document.getElementById('stat-peak-range').textContent = `${peak.range.toFixed(2)} m`;
-    }
+    // null: nothing stood clear of the noise (the backend's peak_snr_db).
+    document.getElementById('stat-peak-range').textContent =
+        typeof peak.range === 'number' ? `${peak.range.toFixed(2)} m` : '-- m';
     document.getElementById('stat-peak-vel').textContent =
         typeof frame.peak_velocity === 'number' ? `${frame.peak_velocity.toFixed(2)} m/s` : '-- m/s';
     if (typeof peak.db === 'number') {
