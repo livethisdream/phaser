@@ -637,3 +637,36 @@ def test_mti_finds_a_mover_instead_of_the_edges(mti):
         rd, _ = _rd_noise(mti, seed=seed, target_v=-1.5, snr_db=-5)
         assert rd["peak_velocity"] == pytest.approx(-1.5, abs=0.2)
         assert rd["peak_range"] == pytest.approx(2.0, abs=0.35)
+
+
+
+# --- Peak interpolation: a target between bins reads where it is -----------
+
+@pytest.mark.parametrize("r", [1.0, 1.1, 1.17, 2.0, 2.05, 3.0, 3.2])
+def test_range_peak_reads_between_bins(r):
+    """One bin is ~0.3 m; the vertex of the parabola through the peak and its
+    neighbors reads a lone target to a few cm, wherever it falls in a bin."""
+    x = _chirp((r, 100.0))
+    prof = _dsp.range_profile(x, 2e6, 500e6, 300e-6, zero_range_freq=100e3,
+                              range_max=20, peak_min=0.5)
+    step = prof["range_axis"][1] - prof["range_axis"][0]
+    assert step > 0.25                                  # bins really are coarse
+    assert prof["peak_range"] == pytest.approx(r, abs=0.03)
+    assert prof["cal_peak_range"] == pytest.approx(r, abs=0.03)
+
+
+def test_peak_offset_edges_and_flat():
+    assert _dsp.peak_offset([0, 1, 0], 0) == 0.0          # edge: no neighbor
+    assert _dsp.peak_offset([1, 1, 1], 1) == 0.0          # flat: no peak
+    assert _dsp.peak_offset([0, 2, 1], 1) == pytest.approx(1 / 6)
+    assert -0.5 <= _dsp.peak_offset([0, 2, 1.99], 1) <= 0.5
+
+
+def test_velocity_peak_reads_between_bins():
+    """Range-Doppler: a mover at a velocity between Doppler bins reads its
+    own velocity, not the nearest bin's."""
+    rd, _ = _rd_noise("none", target_v=-1.37, snr_db=0)
+    dv = abs(rd["velocity_axis"][1] - rd["velocity_axis"][0])
+    assert dv > 0.1
+    assert rd["peak_velocity"] == pytest.approx(-1.37, abs=0.03)
+    assert rd["peak_range"] == pytest.approx(2.0, abs=0.05)

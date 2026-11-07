@@ -425,6 +425,27 @@ def _to_db(mag, win_sum):
     return 20.0 * np.log10(np.maximum(mag / win_sum, 1e-15) / (2 ** 11))
 
 
+def peak_offset(values, k):
+    """Sub-bin position of a peak, in bins from bin k: the vertex of the
+    parabola through values[k-1], values[k], values[k+1] (dB, or any log
+    scale). 0 at an edge, or where the three do not make a peak. Reads a
+    single target's position to a few cm, against one bin (~0.3 m at
+    B = 500 MHz) -- it does not separate two targets closer than a bin."""
+    if k <= 0 or k >= len(values) - 1:
+        return 0.0
+    a, b, c = float(values[k - 1]), float(values[k]), float(values[k + 1])
+    den = a - 2.0 * b + c
+    if not (np.isfinite(a) and np.isfinite(b) and np.isfinite(c)) or den >= 0:
+        return 0.0
+    return float(np.clip(0.5 * (a - c) / den, -0.5, 0.5))
+
+
+def _at(axis, k, offset):
+    """axis[k] moved `offset` bins along a uniform axis."""
+    step = float(axis[1] - axis[0]) if len(axis) > 1 else 0.0
+    return float(axis[k]) + offset * step
+
+
 def range_profile(iq, sample_rate, chirp_bw, ramp_time, zero_range_freq=0.0,
                   fft_window="blackman", range_max=None, range_min=0.0, peak_min=0.0):
     """One chirp -> one range profile. The FMCW range lab's main plot.
@@ -468,11 +489,14 @@ def range_profile(iq, sample_rate, chirp_bw, ramp_time, zero_range_freq=0.0,
         search[:] = True
     peak_idx = int(np.argmax(np.where(search, profile_out, -np.inf)))
     cal_idx = int(np.argmax(profile_db))
+    # Interpolated on the whole profile, so a peak at the crop's edge still
+    # has both neighbors.
+    full_peak = int(np.flatnonzero(mask)[peak_idx])
     return {
         "range_axis": ranges_out.astype(np.float32).tolist(),
         "profile_db": profile_out.astype(np.float32).tolist(),
-        "peak_range": float(ranges_out[peak_idx]),
-        "cal_peak_range": float(ranges[cal_idx]),
+        "peak_range": _at(ranges, full_peak, peak_offset(profile_db, full_peak)),
+        "cal_peak_range": _at(ranges, cal_idx, peak_offset(profile_db, cal_idx)),
         "peak_magnitude_db": float(profile_out[peak_idx]),
         "range_resolution": float(range_resolution(chirp_bw)),
         "max_range": float(max_unambiguous_range(sample_rate, chirp_bw, ramp_time)),
@@ -586,8 +610,9 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     # chirps (a still reflector is all zero-Doppler; any velocity counts).
     # On the fast-time spectrum, so the crop below still saves the slow-time
     # FFT its ~500 undisplayed bins.
-    cal_r = int(np.argmax(np.sum(full.real.astype(np.float64) ** 2
-                                 + full.imag.astype(np.float64) ** 2, axis=1)))
+    cal_pow = np.sum(full.real.astype(np.float64) ** 2 + full.imag.astype(np.float64) ** 2, axis=1)
+    cal_r = int(np.argmax(cal_pow))
+    cal_off = peak_offset(10.0 * np.log10(np.maximum(cal_pow, 1e-300)), cal_r)
     spec = full[rmask]
     spec = np.fft.fftshift(_fft(spec * w_slow.astype(real)[None, :], axis=1), axes=1)
     map_out = _to_db(np.abs(spec[:, vmask]), win_sum)
@@ -628,9 +653,9 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
         "map_db": map_out.astype(np.float32).tolist(),
         "range_axis": ranges_out.astype(np.float32).tolist(),
         "velocity_axis": velocity_out.astype(np.float32).tolist(),
-        "peak_range": float(ranges_out[peak_r]) if clear else None,
-        "cal_peak_range": float(ranges[cal_r]),
-        "peak_velocity": float(velocity_out[peak_v]) if clear else None,
+        "peak_range": _at(ranges_out, peak_r, peak_offset(map_out[:, peak_v], peak_r)) if clear else None,
+        "cal_peak_range": _at(ranges, cal_r, cal_off),
+        "peak_velocity": _at(velocity_out, peak_v, peak_offset(map_out[peak_r, :], peak_v)) if clear else None,
         "noise_db": noise_db,
         "peak_magnitude_db": float(map_out[peak_r, peak_v]),
         "range_resolution": float(range_resolution(chirp_bw)),

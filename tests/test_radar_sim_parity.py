@@ -502,17 +502,18 @@ L28_CORNER = Path("/home/user/livethisdream/ece444/book/extras/radar-data/L28_co
 
 
 @pytest.mark.skipif(not L28_CORNER.exists(), reason="the ece444 recordings are not checked out")
-@pytest.mark.parametrize("peak_min,expect", [(None, 3.09), (0, 0.09)], ids=["default_1m", "off"])
+@pytest.mark.parametrize("peak_min,expect", [(None, 3.0), (0, 0.0)], ids=["default_1m", "off"])
 def test_l28_corner_reads_the_corner_not_the_leakage(peak_min, expect, tmp_path):
     """The L28 thread's file: the 3 m corner is weaker than the leakage, so
-    with Peak Min off the readout said 0.09 m. The 1 m default finds it."""
+    with Peak Min off the readout said the leakage. The 1 m default finds
+    it, and peak interpolation puts it at its 3 m, not the 3.09 m bin."""
     src = (ROOT / "frontend-radar" / "src").as_posix()
     settings = {} if peak_min is None else {"peak_min": peak_min}
     got = _node(_JS_PLAY_DRIVER % {"src": src}, [str(L28_CORNER), settings], tmp_path)
     assert got["units"] == "full_scale"
     assert got["frame"]["peak_range"] == pytest.approx(expect, abs=0.05)
     # Calibrate reads the strongest return wherever it is: the leakage.
-    assert got["frame"]["cal_peak_range"] == pytest.approx(0.09, abs=0.05)
+    assert got["frame"]["cal_peak_range"] == pytest.approx(0.0, abs=0.05)
 
 
 # --- Live scenes ---------------------------------------------------------------

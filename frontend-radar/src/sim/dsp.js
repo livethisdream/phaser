@@ -185,6 +185,22 @@ function rangeMask(ranges, rangeMin, rangeMax) {
     return idx;
 }
 
+/** phaser_radar_dsp.peak_offset: sub-bin position of a peak at k, from the
+    parabola through values[k-1..k+1]; 0 at an edge or where they are no peak. */
+export function peakOffset(values, k) {
+    if (k <= 0 || k >= values.length - 1) return 0;
+    const a = values[k - 1], b = values[k], c = values[k + 1];
+    const den = a - 2 * b + c;
+    if (!(Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c)) || den >= 0) return 0;
+    return Math.min(0.5, Math.max(-0.5, (0.5 * (a - c)) / den));
+}
+
+/** phaser_radar_dsp._at: axis[k] moved `offset` bins along a uniform axis. */
+function at(axis, k, offset) {
+    const step = axis.length > 1 ? axis[1] - axis[0] : 0;
+    return axis[k] + offset * step;
+}
+
 export function rangeProfile(iq, fs, chirpBw, rampTime, {
     zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0, peakMin = 0,
 } = {}) {
@@ -209,15 +225,20 @@ export function rangeProfile(iq, fs, chirpBw, rampTime, {
     }
     if (peak < 0) peak = argmax(profile);
     let cal = 0, calMag = -1;
+    const fullDb = new Float64Array(ranges.length);
     for (let i = 0; i < ranges.length; i++) {
         const m = Math.hypot(X.re[i], X.im[i]);
+        fullDb[i] = toDb(m, ws);
         if (m > calMag) { calMag = m; cal = i; }
     }
+    // Interpolated on the whole profile, so a peak at the crop's edge still
+    // has both neighbors.
+    const fullPeak = idx[peak];
     return {
         range_axis: rangeOut,
         profile_db: profile,
-        peak_range: rangeOut[peak],
-        cal_peak_range: ranges[cal],
+        peak_range: at(ranges, fullPeak, peakOffset(fullDb, fullPeak)),
+        cal_peak_range: at(ranges, cal, peakOffset(fullDb, cal)),
         peak_magnitude_db: profile[peak],
         range_resolution: rangeResolution(chirpBw),
         max_range: maxUnambiguousRange(fs, chirpBw, rampTime),
@@ -356,9 +377,9 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
         map_db: mapDb,
         range_axis: rangeOut,
         velocity_axis: velOut,
-        peak_range: clear ? rangeOut[pr] : null,
-        cal_peak_range: ranges[cr],
-        peak_velocity: clear ? velOut[pv] : null,
+        peak_range: clear ? at(rangeOut, pr, peakOffset(mapDb.map(row => row[pv]), pr)) : null,
+        cal_peak_range: at(ranges, cr, peakOffset(Array.from(calPow, p => 10 * Math.log10(Math.max(p, 1e-300))), cr)),
+        peak_velocity: clear ? at(velOut, pv, peakOffset(mapDb[pr], pv)) : null,
         noise_db: noiseDb,
         peak_magnitude_db: mapDb[pr][pv],
         range_resolution: rangeResolution(chirpBw),
