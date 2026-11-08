@@ -60,6 +60,11 @@ const DEG = Math.PI / 180;
 // Mirrors HOLD_MODES in phaser_headless.py: these hold the beam at
 // hold_angle instead of sweeping it.
 const HOLD_MODES = ['Static Phase', 'Signal vs Time'];
+// Mirrors TRACK_MODE and TRACK_DIRECTION: monopulse tracking acquires with one
+// sweep, then holds the beam and steps its phase one LSB per update by
+// TRACK_DIRECTION * sign(error). See phaser_headless.py for the sign.
+const TRACK_MODE = 'Tracking';
+const TRACK_DIRECTION = 1;
 // Mirrors HOLD_FFT_INTERVAL_S: in a hold mode the spectrum rides along at most
 // this often.
 const HOLD_FFT_INTERVAL_MS = 200;
@@ -138,6 +143,8 @@ export function createEngine(options = {}) {
 
     // When doSweep() last attached the spectrum; see HOLD_FFT_INTERVAL_MS.
     let lastFftMs = null;
+    // Tracking mode's locked steering phase; null until the acquiring sweep.
+    let trackPhase = null;
     // target_tone_hz: re-measured every sweep from pre-injection IQ.
     let targetToneHz = null;
 
@@ -366,9 +373,19 @@ export function createEngine(options = {}) {
         // at SignalFreq.
         const calcFreq = state.SignalFreq - state.BW * 1e6;
 
+        // Tracking: see do_sweep(). No locked phase means this update is the
+        // acquiring sweep; leaving the mode drops the lock.
+        const tracking = state.sweep_mode === TRACK_MODE;
+        if (!tracking) trackPhase = null;
+        const trackHold = tracking && trackPhase !== null;
+        const held = HOLD_MODES.includes(state.sweep_mode) || trackHold;
+
         let phaseValues;
         let steerValues;
-        if (HOLD_MODES.includes(state.sweep_mode)) {
+        if (trackHold) {
+            phaseValues = [trackPhase];
+            steerValues = [convertPhaseToSteerAngle(trackPhase, calcFreq)];
+        } else if (HOLD_MODES.includes(state.sweep_mode)) {
             // Hold the beam: one point, the same ramp the sweep uses there.
             steerValues = [state.hold_angle];
             phaseValues = steerValues.map(
@@ -548,13 +565,10 @@ export function createEngine(options = {}) {
             deltaGain.push(avgDelta);
             phaseDiff.push(avgPhase);
 
-            // error = sign(phase) * (sum - delta) / (sum + delta)
-            const denom = avgSum + avgDelta;
-            let err = 0;
-            if (Math.abs(denom) > 0.001) {
-                err = Math.sign(avgPhase) * ((avgSum - avgDelta) / denom);
-                err = Math.max(-1, Math.min(1, err));
-            }
+            // Monopulse error: sign(phase) * |delta| / |sum|, from the
+            // dB-averaged magnitudes, clamped for display -- see do_sweep().
+            let err = Math.sign(avgPhase) * Math.pow(10, (avgDelta - avgSum) / 20);
+            err = Math.max(-1, Math.min(1, err));
             errorFunc.push(err);
             angles.push(steerValues[i]);
 
@@ -576,6 +590,27 @@ export function createEngine(options = {}) {
             targetToneHz = measureTargetTone({ re, im });
         }
 
+        let trackAngle = null;
+        let trackErr = null;
+        if (tracking) {
+            const phaseLimit = Math.trunc(225 / state.phase_step) * state.phase_step;
+            const clampPhase = (ph) => Math.max(-phaseLimit, Math.min(phaseLimit, ph));
+            if (trackHold) {
+                trackAngle = steerValues[0];
+                trackErr = errorFunc[0];
+                if (trackErr !== 0) {
+                    trackPhase = clampPhase(
+                        trackPhase + TRACK_DIRECTION * Math.sign(trackErr) * state.phase_step);
+                }
+            } else {
+                // Acquire: lock onto the sweep's peak (first argmax, as numpy).
+                let k = 0;
+                for (let j = 1; j < gain.length; j++) if (gain[j] > gain[k]) k = j;
+                trackPhase = clampPhase(phaseValues[k]);
+                trackAngle = steerValues[k];
+            }
+        }
+
         const result = {
             ArrayGain: gain,
             ArrayDelta: deltaGain,
@@ -587,19 +622,21 @@ export function createEngine(options = {}) {
             peak_angle_deg: peakAngleCentroid(angles, gain),
             sweep_mode: state.sweep_mode,
             hold_angle_deg: state.hold_angle,
+            track_angle_deg: trackAngle,
+            track_error: trackErr,
             target_tone_hz: targetToneHz,
             interferer_freq_hz: state.interferer_enable
                 ? (injectedToneHz ?? 0) + state.interferer_offset_hz
                 : null,
         };
 
-        if (HOLD_MODES.includes(state.sweep_mode) && lastW) {
+        if (held && lastW) {
             // Every held update, not throttled with the spectrum.
             result.adaptive_pattern = adaptivePattern(phaseValues[0], lastW);
         }
 
         const now = Date.now();
-        if (!HOLD_MODES.includes(state.sweep_mode) || lastFftMs === null
+        if (!held || lastFftMs === null
             || now - lastFftMs >= HOLD_FFT_INTERVAL_MS) {
             lastFftMs = now;
             // FFT at the peak angle.

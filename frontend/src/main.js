@@ -117,12 +117,17 @@ let angleHistory = [];
 let centroidHistory = [];   // backend peak_angle_deg; null when it sent none
 let peakGainHistory = [];   // peak array gain, dB
 let stampHistory = [];      // browser clock, ms since epoch
+let sweepCounter = 0;       // x axis of the Tracking tab
 
 // Signal vs Time keeps its own history: peak amplitude of the held beam
 // against time. Legacy kept 100 points; this keeps the last SVT_WINDOW_S
 // seconds instead, so a 10-15 s walk around the array fits whatever the update
 // rate turns out to be. SVT_HISTORY_MAX only bounds memory.
 const HOLD_MODES = ['Static Phase', 'Signal vs Time'];
+// Monopulse tracking (Lab 8): the backend acquires with one sweep, then holds
+// the beam and steps it toward the source on the delta beam's error. Each held
+// update carries track_angle_deg, which the Tracking tab plots.
+const TRACK_MODE = 'Tracking';
 const SVT_WINDOW_S = 30;
 const SVT_HISTORY_MAX = 20000;
 let svtT0 = null;           // browser clock, ms, of the first sample since reset
@@ -965,19 +970,27 @@ sweepModeSelect?.addEventListener('change', (e) => {
 // mode is entered (legacy resets Gain_time in mode_select), and the Tracking
 // tab brought forward, as legacy adds and selects its plot tab.
 function setSweepMode(mode, { selectTab = true } = {}) {
+    const entering = mode !== state.mode;
     state.mode = mode;
     resetSvtHistory();
+    if (entering && mode === TRACK_MODE) {
+        // A fresh track each time, as legacy cleared TrackArray.
+        sweepCounter = 0;
+        timeHistory = []; angleHistory = []; centroidHistory = [];
+        peakGainHistory = []; stampHistory = [];
+    }
     if (!isHoldMode()) clearAdaptivePattern();
     syncSweepModeControls();
     drawRectOverlays();
-    if (selectTab && state.mode === 'Signal vs Time') {
+    if (selectTab && (state.mode === 'Signal vs Time' || state.mode === TRACK_MODE)) {
         document.querySelector('[data-target="tab-tracking"]')?.click();
     }
 }
 
 function syncSweepModeControls() {
     if (sweepModeSelect) {
-        sweepModeSelect.value = isHoldMode() ? 'Signal vs Time' : 'Beam Sweep';
+        sweepModeSelect.value = isHoldMode() ? 'Signal vs Time'
+            : state.mode === TRACK_MODE ? TRACK_MODE : 'Beam Sweep';
     }
     const note = document.getElementById('svt-steer-note');
     if (note) note.hidden = !isHoldMode();
@@ -2636,7 +2649,7 @@ function configureTrackingChart() {
         'title.font.size': 13,
         'margin.t': 40,
     } : {
-        'xaxis.title.text': 'Sweep Count',
+        'xaxis.title.text': state.mode === TRACK_MODE ? 'Update' : 'Sweep Count',
         'xaxis.autorange': true,
         'yaxis.title.text': 'Steering Angle (°)',
         'yaxis.autorange': false,
@@ -2671,7 +2684,7 @@ function updatePlotLimits() {
 updatePlotLimits();
 
 /* --- Transport Setup --- */
-let sweepCounter = 0;
+// sweepCounter is declared with the tracking history near the top of the file.
 
 const transport = createTransport({
     onMessage: (msg) => {
@@ -3596,9 +3609,12 @@ function localLabPreset(labIdx) {
         // applies the taper -- the preset loads uniform. Both digital beams
         // start at 0 deg: the sum/delta pair assumes the two channels are in
         // phase, and a Beam 1 Phase left over from Lab 4 skews the error
-        // function. Enables the monopulse delta/error display; Tracking mode
-        // drives the closed-loop steering.
-        case 8: return { ...base, mode: 'Tracking', ui_tab: 'tab-rect',
+        // function. Enables the monopulse delta/error display and leaves the
+        // beam sweeping, so steps 3-4 (read the Delta and Error traces, rotate
+        // the array) happen first; step 5 picks Tracking from the Mode menu,
+        // which closes the loop on the error (see TRACK_MODE in
+        // phaser_headless.py).
+        case 8: return { ...base, mode: 'Beam Sweep', ui_tab: 'tab-rect',
                          Beam0_Phase: 0, Beam1_Phase: 0,
                          showDelta: true, showError: true };
 
@@ -3621,6 +3637,11 @@ async function fetchLabPreset(labIdx) {
 function updateCharts(data) {
     if (HOLD_MODES.includes(data.sweep_mode)) {
         updateSignalVsTime(data);
+        return;
+    }
+    if (data.sweep_mode === TRACK_MODE && Number.isFinite(data.track_angle_deg)
+        && data.ArrayGain && data.ArrayGain.length === 1) {
+        updateTrackingHold(data);
         return;
     }
     if (isHoldMode() && data.sweep_mode === undefined && !svtNoEchoWarned) {
@@ -3738,7 +3759,9 @@ function updateCharts(data) {
 
         // Time tracking - show steering angle vs sweep count
         sweepCounter++;
-        const peakAngle = xData[peakIndex];
+        // On Tracking's acquiring sweep, record the angle the loop locked onto.
+        const peakAngle = (data.sweep_mode === TRACK_MODE && Number.isFinite(data.track_angle_deg))
+            ? data.track_angle_deg : xData[peakIndex];
         const centroid = Number.isFinite(data.peak_angle_deg) ? data.peak_angle_deg : null;
         timeHistory.push(sweepCounter);
         angleHistory.push(peakAngle);
@@ -3788,6 +3811,43 @@ function updateFftChart(data) {
         Plotly.update('chart-fft', {x: [xfMHz], y: [data.max_gain]}, layout);
         updateInterfererReadout(data);
     }
+}
+
+/* --- Monopulse tracking: one held update ------------------------------------
+   The beam is held at track_angle_deg and the backend has already stepped it
+   for the next update. The Rectangular plot keeps the acquiring sweep's trace
+   and marks where the beam is now; the Tracking tab gets the angle. */
+function updateTrackingHold(data) {
+    const angle = data.track_angle_deg;
+    const level = data.ArrayGain[0];
+    sweepCounter++;
+    timeHistory.push(sweepCounter);
+    angleHistory.push(angle);
+    centroidHistory.push(null);
+    peakGainHistory.push(level);
+    stampHistory.push(Date.now());
+    if (timeHistory.length > TRACK_HISTORY_MAX) {
+        timeHistory.shift(); angleHistory.shift(); centroidHistory.shift();
+        peakGainHistory.shift(); stampHistory.shift();
+    }
+    Plotly.update('chart-tracking', {x: [timeHistory], y: [angleHistory]}, {});
+    const exportBtn = document.getElementById('btn-export-tracking');
+    if (exportBtn) exportBtn.disabled = false;
+
+    const rectEl = document.getElementById('chart-rect');
+    if (rectEl?.data) {
+        const shapes = ctfSectorShapes();
+        shapes.push({ type: 'line', x0: angle, y0: 0, x1: angle, y1: 1, yref: 'paper',
+                      line: { color: '#ef4444', dash: 'dash' } });
+        shapes.push(...rectOverlayShapes());
+        Plotly.relayout('chart-rect', { shapes });
+    }
+
+    document.getElementById('stat-peak').innerText = level.toFixed(2) + " dB";
+    angleStats.peak = angle.toFixed(1) + " °";
+    angleStats.centroid = "-- °";
+    renderAngleStat();
+    updateFftChart(data);
 }
 
 /* --- Signal vs Time: peak amplitude of the held beam against time ---------- */

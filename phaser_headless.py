@@ -81,9 +81,27 @@ from phaser_ctf import CtfMode, peak_angle_centroid  # GRCon26 CTF mode (additiv
 SHUTDOWN_CMD = ["/usr/bin/systemctl", "poweroff"]
 
 # Legacy Mode menu values that hold the beam at one steering angle instead of
-# sweeping it. Any other mode ("Beam Sweep", or a lab label such as
-# "Tracking") sweeps.
+# sweeping it. Any other mode ("Beam Sweep", or a lab label) sweeps, except
+# TRACK_MODE below, which sweeps once and then holds a beam it steers itself.
 HOLD_MODES = ("Static Phase", "Signal vs Time")
+
+# Monopulse tracking (ADI Lab 8). The first update of the mode is an ordinary
+# sweep that finds the source; every update after it holds the beam at one
+# steering phase, reads the sum and delta beams there, and steps that phase one
+# LSB toward the side the monopulse error points -- ADI's legacy track(), run
+# until the mode changes instead of for a fixed 1500 updates.
+TRACK_MODE = "Tracking"
+
+# Which way a positive monopulse error moves the beam. In the simulator, with
+# this repo's channel order and the sum*conj(delta) phase in do_sweep(), a
+# source on the +theta side of the beam gives a POSITIVE error (about +0.11
+# per degree near the beam, flipping sign past the first nulls, as monopulse
+# does), so each update steps the phase by +TRACK_DIRECTION * sign(err) LSBs.
+# ADI's legacy code carries the same caveat ("depending on the orientation of
+# Phaser to the source, this might need to be -2.8125"): if a kit's beam walks
+# AWAY from the HB100 in Tracking mode, flip this to -1.
+# frontend/src/sim/engine.js mirrors it.
+TRACK_DIRECTION = 1
 
 # A hold mode returns one point per SDR read, so updates arrive as fast as the
 # receiver reads. The spectrum is ~600 KB of JSON per frame (16k bins of xf and
@@ -388,6 +406,10 @@ class PhaserHeadless:
         # tests the mode after res_bits, so the mode wins.
         self.sweep_mode = "Beam Sweep"
         self.hold_angle = 0.0
+        # Tracking mode's locked steering phase (degrees of PhDelta); None
+        # until the acquiring sweep sets it, and again whenever the mode is
+        # left. See TRACK_MODE.
+        self.track_phase = None
 
         # GRCon26 CTF sector-sequence mode. Passive: it only watches the
         # commanded phaseList and answers ctf_status / ctf_reset, so it has no
@@ -684,7 +706,23 @@ class PhaserHeadless:
         # SignalFreq.
         calc_freq = self.SignalFreq - self.BW * 1e6
 
-        if self.sweep_mode in HOLD_MODES:
+        # Tracking: no locked phase yet means this update is the acquiring
+        # sweep; with one, it is a held point. Leaving the mode drops the lock,
+        # so coming back re-acquires from a fresh sweep.
+        tracking = self.sweep_mode == TRACK_MODE
+        if not tracking:
+            self.track_phase = None
+        track_hold = tracking and getattr(self, "track_phase", None) is not None
+        held = self.sweep_mode in HOLD_MODES or track_hold
+
+        if track_hold:
+            # Hold the beam at the tracked phase, exactly as the sweep loads
+            # that phase, so the error read here is the sweep's at that angle.
+            PhaseValues = np.array([float(self.track_phase)])
+            SteerValues = np.array(
+                [self.ConvertPhaseToSteerAngle(self.track_phase, calc_freq)]
+            )
+        elif self.sweep_mode in HOLD_MODES:
             # Hold the beam: one point, the same +i*PhDelta ramp the sweep
             # uses at that angle, so a held 30 deg reads what the sweep reads
             # at 30 deg. Phase Control offsets still add on top, as in legacy.
@@ -857,15 +895,21 @@ class PhaserHeadless:
             delta_gain.append(avg_delta)
             phase_diff.append(float(avg_phase))
 
-            # Compute error function for monopulse tracking
-            # error = sign(phase) * (sum - delta) / (sum + delta)
-            denom = avg_sum + avg_delta
-            if abs(denom) > 0.001:
-                err = np.sign(avg_phase) * (avg_sum - avg_delta) / denom
-                # Clamp to reasonable range
-                err = max(-1.0, min(1.0, err))
-            else:
-                err = 0.0
+            # Monopulse error: the linear ratio |delta| / |sum|, signed by
+            # which side of the beam the source is on (the sign of the
+            # sum/delta phase). Zero on the source, close to a straight line
+            # near it, and independent of Rx gain because both beams scale
+            # together. avg_sum and avg_delta are averaged in dB, so this is
+            # the ratio of their geometric-mean magnitudes. It replaces
+            # legacy's sign(phase) * (sum_dB - delta_dB) / (sum_dB + delta_dB),
+            # a ratio of negative dBFS numbers whose size meant nothing and
+            # moved with the gain; only its sign was usable.
+            #
+            # Off the main lobe |delta| / |sum| grows without bound toward the
+            # sum beam's nulls, so it is clamped for display; tracking uses
+            # only its sign.
+            err = float(np.sign(avg_phase)) * 10 ** ((avg_delta - avg_sum) / 20)
+            err = max(-1.0, min(1.0, err))
             error_func.append(float(err))
 
             angles.append(float(SteerValues[i]))
@@ -876,6 +920,27 @@ class PhaserHeadless:
 
         if best_raw is not None:
             self.target_tone_hz = self._measure_target_tone(best_raw)
+
+        track_angle = None
+        track_err = None
+        if tracking:
+            # Clamp the tracked phase to the range the sweep covers.
+            phase_limit = int(225 / self.phase_step) * self.phase_step
+            if track_hold:
+                track_angle = float(SteerValues[0])
+                track_err = error_func[0]
+                if track_err != 0.0:
+                    step = TRACK_DIRECTION * np.sign(track_err) * self.phase_step
+                    self.track_phase = float(
+                        max(-phase_limit, min(phase_limit, self.track_phase + step))
+                    )
+            else:
+                # Acquire: lock onto the sweep's peak.
+                k = int(np.argmax(gain))
+                self.track_phase = float(
+                    max(-phase_limit, min(phase_limit, PhaseValues[k]))
+                )
+                track_angle = float(SteerValues[k])
 
         result = {
             "ArrayGain": [float(x) for x in gain],
@@ -892,6 +957,11 @@ class PhaserHeadless:
             # spot a backend too old to know the mode.
             "sweep_mode": self.sweep_mode,
             "hold_angle_deg": float(self.hold_angle),
+            # Tracking mode only (None otherwise): the angle the beam held this
+            # update (or locked onto, on the acquiring sweep), and the
+            # monopulse error read there (None on the acquiring sweep).
+            "track_angle_deg": track_angle,
+            "track_error": track_err,
             # Measured from pre-injection IQ, so it is the real target even
             # with the interferer on. The FFT plot marks both tones from these.
             "target_tone_hz": self.target_tone_hz,
@@ -901,14 +971,14 @@ class PhaserHeadless:
             ),
         }
 
-        if self.sweep_mode in HOLD_MODES and last_w is not None:
+        if held and last_w is not None:
             # Every held update, not throttled with the spectrum: it is 361
             # points, and it should move as the weights do.
             result["adaptive_pattern"] = self._adaptive_pattern(PhaseValues[0], last_w)
 
         now = time.monotonic()
         last_fft = getattr(self, "_last_fft_t", None)
-        if (self.sweep_mode not in HOLD_MODES or last_fft is None
+        if (not held or last_fft is None
                 or now - last_fft >= HOLD_FFT_INTERVAL_S):
             self._last_fft_t = now
             # FFT at peak angle
