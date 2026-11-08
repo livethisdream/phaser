@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-C4DmO8fd.js"></script>
+  <script type="module" crossorigin src="./assets/index-B2w0GUD6.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-BiNdqkoB.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -242,9 +242,10 @@
                     <div class="control-group" style="display:flex; align-items:center; gap:10px;">
                       <label for="sweep-mode" style="margin-bottom:0">Mode</label>
                       <select id="sweep-mode" class="modern-input-small" style="flex:1; width:auto; text-align:left;"
-                              title="Beam Sweep scans the beam; Signal vs Time holds it at the Steer Angle and plots peak amplitude against time">
+                              title="Beam Sweep scans the beam; Signal vs Time holds it at the Steer Angle and plots peak amplitude against time; Tracking finds the source with one sweep, then steers the beam onto it with the monopulse error">
                         <option value="Beam Sweep">Beam Sweep</option>
                         <option value="Signal vs Time">Signal vs Time</option>
+                        <option value="Tracking">Tracking</option>
                       </select>
                     </div>
                     <div class="control-group combo-group">
