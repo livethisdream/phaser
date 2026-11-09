@@ -179,6 +179,11 @@ CASES = [
          "phaseList": [0, 5, 10, 15, 20, 25, 30, 35]},
         {},
     ),
+    # The monopulse error |delta|/|sum| across a sweep with the source off
+    # boresight, so both signs and the clamp are exercised.
+    ("monopulse_off_boresight", {"sim_target_angle_deg": 12.0}, {}),
+    # Tracking's first update is the acquiring sweep.
+    ("tracking_acquire", {"mode": "Tracking", "sim_target_angle_deg": -18.0}, {}),
 ]
 
 CASE_IDS = [c[0] for c in CASES]
@@ -294,6 +299,83 @@ def test_tone_tracking_matches_python(tmp_path, _importable):
     js = _js_sweep(patch, {}, tmp_path=tmp_path, sweeps=2)
     assert py["target_tone_hz"] == pytest.approx(js["target_tone_hz"], abs=1e-6)
     assert py["interferer_freq_hz"] == pytest.approx(js["interferer_freq_hz"], abs=1e-6)
+
+
+# --- monopulse tracking ------------------------------------------------------
+
+def _python_track(start_deg, target_deg, updates):
+    """Acquire on a source at start_deg, move it to target_deg, then track."""
+    if "adi" not in sys.modules:
+        sys.modules["adi"] = types.ModuleType("adi")
+    import phaser_sim
+
+    original = phaser_sim.SimSDR.NOISE_SIGMA
+    phaser_sim.SimSDR.NOISE_SIGMA = 0.0
+    try:
+        import phaser_headless
+
+        h = phaser_headless.PhaserHeadless.__new__(phaser_headless.PhaserHeadless)
+        h.sim_mode = True
+        h.c = 299792458
+        h._do_init_hardware()
+        h.handle_command({"cmd": "set_state", "data": {"state": {
+            "mode": "Tracking", "sim_target_angle_deg": start_deg}}})
+        out = [h.do_sweep()]
+        h.handle_command({"cmd": "set_state", "data": {"state": {
+            "sim_target_angle_deg": target_deg}}})
+        out += [h.do_sweep() for _ in range(updates)]
+        return out
+    finally:
+        phaser_sim.SimSDR.NOISE_SIGMA = original
+
+
+_JS_TRACK_DRIVER = """
+import { createEngine } from '%(sim)s/engine.js';
+const cfg = JSON.parse(process.argv[2]);
+const engine = createEngine({ noiseSigma: 0 });
+engine.setState({ mode: 'Tracking', sim_target_angle_deg: cfg.start });
+const out = [engine.doSweep()];
+engine.setState({ sim_target_angle_deg: cfg.target });
+for (let i = 0; i < cfg.updates; i++) out.push(engine.doSweep());
+process.stdout.write(JSON.stringify(out.map((r) => ({
+    track_angle_deg: r.track_angle_deg, track_error: r.track_error,
+    n: r.ArrayGain.length,
+}))));
+"""
+
+
+def _js_track(start_deg, target_deg, updates, tmp_path):
+    sim_dir = (ROOT / "frontend" / "src" / "sim").as_posix()
+    driver = tmp_path / "track_driver.mjs"
+    driver.write_text(_JS_TRACK_DRIVER % {"sim": sim_dir})
+    cfg = json.dumps({"start": start_deg, "target": target_deg, "updates": updates})
+    proc = subprocess.run([NODE, str(driver), cfg], capture_output=True, text=True,
+                          timeout=300)
+    if proc.returncode != 0:
+        raise AssertionError(f"node driver failed:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("start,target", [(5.0, 15.0), (-20.0, -25.0)])
+def test_tracking_loop_matches_python(start, target, tmp_path, _importable):
+    """The closed loop, update for update: acquire, then step by the error's sign.
+
+    A TRACK_DIRECTION or step-rule drift between the two sides shows up as the
+    two beams walking apart within a few updates.
+    """
+    py = _python_track(start, target, 15)
+    js = _js_track(start, target, 15, tmp_path)
+    assert [len(r["ArrayGain"]) for r in py] == [r["n"] for r in js]
+    assert py[0]["track_error"] is None and js[0]["track_error"] is None
+    for k, (p, j) in enumerate(zip(py, js)):
+        assert abs(p["track_angle_deg"] - j["track_angle_deg"]) < 1e-9, (
+            f"update {k}: tracked angle diverged "
+            f"({p['track_angle_deg']} vs {j['track_angle_deg']})"
+        )
+        if k:
+            assert abs(p["track_error"] - j["track_error"]) < 1e-3, (
+                f"update {k}: monopulse error diverged"
+            )
 
 
 def _assert_sweeps_match(name, py, js):
