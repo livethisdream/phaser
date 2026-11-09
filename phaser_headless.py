@@ -103,6 +103,25 @@ TRACK_MODE = "Tracking"
 # frontend/src/sim/engine.js mirrors it.
 TRACK_DIRECTION = 1
 
+# MVDR's look vector, measured instead of assumed (2026-11-09). On a kit the
+# two digital channels are not in phase for a boresight HB100: the element cal
+# lines up the eight elements through the ADAR, but the two Pluto Rx paths add
+# their own offset. MVDR assumed the ideal look vector [1, 1], so with the
+# target stronger in the beam than the interferer it spent its one null on the
+# target's mismatched component -- the beam slid off the target, the null left
+# the interferer, and MVDR Suppression read negative (Neil's kit, interferer
+# -10 dBFS at +20 deg). The fix measures the target's channel ratio
+# r = chan1/chan0 from the pre-injection samples (the synthetic interferer is
+# added after the read, so those hold only the real scene) and constrains
+# MVDR to pass [1, r]. It is used only when the read is one coherent source
+# (coherence >= MVDR_LOOK_MIN_COHERENCE) near the look direction (|angle r|
+# <= MVDR_LOOK_MAX_DEG, which is ~5 deg of arrival angle at broadside; within
+# that it also absorbs channel errors up to 60 deg), so a target the beam is
+# not pointed at is still nulled as before. frontend/src/sim/engine.js mirrors
+# both constants through constants.generated.js.
+MVDR_LOOK_MAX_DEG = 60.0
+MVDR_LOOK_MIN_COHERENCE = 0.9
+
 # A hold mode returns one point per SDR read, so updates arrive as fast as the
 # receiver reads. The spectrum is ~600 KB of JSON per frame (16k bins of xf and
 # max_gain) and would set the update rate -- and back up the WebSocket, which
@@ -537,7 +556,36 @@ class PhaserHeadless:
         phase_rad = 2 * 3.14159 * self.d * np.sin(np.radians(steer_angle)) * self.SignalFreq / self.c
         return np.degrees(phase_rad)
 
-    def _mvdr_weights(self, snapshots):
+    def _mvdr_look_vector(self, pre0, pre1):
+        """MVDR's look vector [1, r], measured on the real target.
+
+        pre0, pre1: the two channels as read, before the synthetic interferer
+        is added. r = <pre0, pre1> / <pre0, pre0> is the least-squares ratio
+        pre1 ~ r * pre0, i.e. how the target actually arrives at sub-array 1
+        relative to sub-array 0 -- 1 for an ideal kit and an on-look target,
+        e^(j*eps) on a kit whose second Rx path is eps out of phase. Falls back
+        to the ideal [1, 1] unless the read is one coherent source near the
+        look direction; see MVDR_LOOK_MAX_DEG for why.
+
+        PORTED TO JAVASCRIPT in frontend/src/sim/engine.js (mvdrLookVector).
+        """
+        ideal = np.ones(2, dtype=np.complex128)
+        x0 = np.asarray(pre0, dtype=np.complex128)
+        x1 = np.asarray(pre1, dtype=np.complex128)
+        p00 = float(np.vdot(x0, x0).real)
+        p11 = float(np.vdot(x1, x1).real)
+        if p00 <= 0 or p11 <= 0:
+            return ideal
+        c = complex(np.vdot(x0, x1))
+        coherence = abs(c) / np.sqrt(p00 * p11)
+        r = c / p00
+        if (coherence < MVDR_LOOK_MIN_COHERENCE
+                or abs(np.angle(r)) > np.radians(MVDR_LOOK_MAX_DEG)
+                or not 0.5 <= abs(r) <= 2.0):
+            return ideal
+        return np.array([1.0, r], dtype=np.complex128)
+
+    def _mvdr_weights(self, snapshots, look=None):
         """Compute MVDR (Capon) weights for the 2-element digital sub-array.
 
         snapshots: complex ndarray of shape (2, K) — K IQ snapshots stacked
@@ -574,7 +622,10 @@ class PhaserHeadless:
         load = self.mvdr_diag_load * (np.trace(R).real / Nr)
         R = R + load * np.eye(Nr, dtype=np.complex128)
 
-        s = np.ones((Nr, 1), dtype=np.complex128)
+        # Ideal [1, 1] unless do_sweep measured the target's look vector
+        # (_mvdr_look_vector; MVDR_LOOK_MAX_DEG says why).
+        s = (np.ones((Nr, 1), dtype=np.complex128) if look is None
+             else np.asarray(look, dtype=np.complex128).reshape(Nr, 1))
 
         Rinv = np.linalg.inv(R)
         numer = Rinv @ s
@@ -787,6 +838,10 @@ class PhaserHeadless:
                     best_raw_pow = raw_pow
                     best_raw = raw
 
+                # The real scene alone, before the synthetic interferer goes
+                # in: MVDR measures its look vector from these.
+                pre0, pre1 = chan1, chan2
+
                 # Inject before any digital weights, so MVDR sees the
                 # interferer in its covariance like any received signal.
                 interf = self._interferer_channels(PhDelta, len(chan1))
@@ -807,7 +862,7 @@ class PhaserHeadless:
                     # and mathematically equivalent.
                     K = int(min(self.mvdr_K, len(chan1)))
                     X = np.vstack([chan1[:K], chan2[:K]]).astype(np.complex128)
-                    w = self._mvdr_weights(X)
+                    w = self._mvdr_weights(X, self._mvdr_look_vector(pre0, pre1))
                     last_w = w
                     # Apply weights: y = Nr · w^H · x, per-sample. The Nr
                     # matches Manual's scale: MVDR's distortionless weights
@@ -971,9 +1026,19 @@ class PhaserHeadless:
             ),
         }
 
-        if held and last_w is not None:
+        if held:
             # Every held update, not throttled with the spectrum: it is 361
-            # points, and it should move as the weights do.
+            # points, and it should move as the weights do. The Rectangular
+            # tab draws it for a held beam in either beamformer mode. MVDR
+            # gives its own weights; Manual's sum is w0*ch0 + w1*ch1 with no
+            # conjugate, so its pattern takes conj(w)/2 -- [0.5, 0.5], the
+            # conventional pattern, at the default gains and phases.
+            if last_w is None:
+                w_man = np.array([
+                    self.B0_Gain * np.exp(1j * np.deg2rad(self.Beam0_Phase)),
+                    self.B1_Gain * np.exp(1j * np.deg2rad(self.Beam1_Phase)),
+                ])
+                last_w = np.conj(w_man) / 2
             result["adaptive_pattern"] = self._adaptive_pattern(PhaseValues[0], last_w)
 
         now = time.monotonic()
@@ -2229,6 +2294,12 @@ class PhaserHeadless:
                     v = max(-90.0, min(90.0, float(v)))
                     self.sim_target_angle_deg = v
                     self.sdr.target_angle_deg = v
+            # A kit's inter-channel phase error, for reproducing MVDR's
+            # look-vector mismatch in --sim (SimSDR.CHANNEL_PHASE_ERROR_DEG).
+            if "sim_channel_phase_error_deg" in state and self.sim_mode:
+                v = state["sim_channel_phase_error_deg"]
+                if v is not None:
+                    self.sdr.channel_phase_error_deg = max(-180.0, min(180.0, float(v)))
             if "sim_target_range_m" in state and self.sim_mode:
                 v = state["sim_target_range_m"]
                 if v is not None:

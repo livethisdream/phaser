@@ -142,6 +142,35 @@ CASES = [
         },
         {},
     ),
+    # A kit's inter-channel phase error: MVDR measures its look vector on
+    # the target (mvdrLookVector) and still nulls a weaker interferer.
+    (
+        "mvdr_channel_error_held",
+        {
+            "bfMode": "mvdr",
+            "mode": "Signal vs Time",
+            "hold_angle": 0.0,
+            "sim_channel_phase_error_deg": 30.0,
+            "interferer_enable": True,
+            "interferer_angle_deg": 20.0,
+            "interferer_power_dbfs": -10.0,
+        },
+        {},
+    ),
+    # The same error under the Manual beamformer: only the SDR stub's
+    # channel rotation is compared.
+    (
+        "channel_error_manual_sweep",
+        {"sim_channel_phase_error_deg": -25.0},
+        {},
+    ),
+    # Held Manual beam with the difference weights (L24 Procedure B): its
+    # pattern comes from conj(w)/2 of the manual weights.
+    (
+        "manual_held_difference_pattern",
+        {"mode": "Signal vs Time", "hold_angle": 0.0, "Beam1_Phase": 180.0, "B1_Gain": 0.8},
+        {},
+    ),
     ("averaged", {"Averages": 3}, {}),
     # Scene tab: the simulated HB100 dragged off boresight, alone and with
     # the interferer on the other side, through a tapered steered sweep.

@@ -21,6 +21,9 @@ export const TARGET_IF_HZ = 1000000.0;
 // --- Synthesis -------------------------------------------------------------
 export const AMP_SCALE = 60.0;
 export const NOISE_SIGMA = 4.0;
+// Sub-array 1's Rx path relative to sub-array 0's (a real kit's mismatch).
+export const CHANNEL_PHASE_ERROR_DEG = 0.0;
+export const CHANNEL_GAIN_ERROR_DB = 0.0;
 
 // --- Radio -----------------------------------------------------------------
 export const SIGNAL_FREQ_HZ = 10525000000.0;
@@ -49,6 +52,9 @@ export const BW_MHZ = 0;
 export const BF_MODE = 'manual';
 export const MVDR_K = 128;
 export const MVDR_DIAG_LOAD = 0.001;
+// MVDR measures its look vector on the target only within these limits.
+export const MVDR_LOOK_MAX_DEG = 60.0;
+export const MVDR_LOOK_MIN_COHERENCE = 0.9;
 
 // --- Synthetic interferer (injected in do_sweep) ---------------------------
 export const INTERFERER_ANGLE_DEG = -20.0;

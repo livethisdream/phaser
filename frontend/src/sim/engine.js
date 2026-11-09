@@ -34,6 +34,8 @@ import {
     INTERFERER_POWER_DBFS,
     MVDR_DIAG_LOAD,
     MVDR_K,
+    MVDR_LOOK_MAX_DEG,
+    MVDR_LOOK_MIN_COHERENCE,
     NUM_ELEMENTS,
     PHASE_STEP_DEG,
     RX_FREQ_HZ,
@@ -202,17 +204,45 @@ export function createEngine(options = {}) {
     // --- MVDR --------------------------------------------------------------
 
     /**
+     * _mvdr_look_vector: MVDR's look vector [1, r], measured on the target
+     * from the pre-injection channels. r = <x0, x1> / <x0, x0>; the ideal
+     * [1, 1] unless the read is one coherent source near the look direction
+     * (MVDR_LOOK_MIN_COHERENCE, MVDR_LOOK_MAX_DEG). See phaser_headless.py.
+     */
+    function mvdrLookVector(x0, x1) {
+        const ideal = [{ re: 1, im: 0 }, { re: 1, im: 0 }];
+        let p00 = 0, p11 = 0, cRe = 0, cIm = 0;
+        for (let i = 0; i < x0.re.length; i++) {
+            p00 += x0.re[i] * x0.re[i] + x0.im[i] * x0.im[i];
+            p11 += x1.re[i] * x1.re[i] + x1.im[i] * x1.im[i];
+            // conj(x0) * x1
+            cRe += x0.re[i] * x1.re[i] + x0.im[i] * x1.im[i];
+            cIm += x0.re[i] * x1.im[i] - x0.im[i] * x1.re[i];
+        }
+        if (p00 <= 0 || p11 <= 0) return ideal;
+        const coherence = Math.hypot(cRe, cIm) / Math.sqrt(p00 * p11);
+        const rRe = cRe / p00, rIm = cIm / p00;
+        const rMag = Math.hypot(rRe, rIm);
+        if (coherence < MVDR_LOOK_MIN_COHERENCE
+            || Math.abs(Math.atan2(rIm, rRe)) > MVDR_LOOK_MAX_DEG * DEG
+            || rMag < 0.5 || rMag > 2.0) {
+            return ideal;
+        }
+        return [{ re: 1, im: 0 }, { re: rRe, im: rIm }];
+    }
+
+    /**
      * _mvdr_weights for the 2-element digital sub-array, closed form.
      *
      * R is 2x2 Hermitian, so the inverse is by hand rather than via a linear
      * algebra library:
-     *     R = (1/K) X X^H,  R += load*I,  s = [1,1]^T,  w = R^-1 s / (s^H R^-1 s)
+     *     R = (1/K) X X^H,  R += load*I,  w = R^-1 s / (s^H R^-1 s)
      *
-     * The steering vector is [1,1] because the analog ADAR stage has already
-     * phase-compensated all 8 elements for the current sweep angle, so an
-     * on-target signal arrives in phase at both sub-arrays.
+     * s is the look vector: [1, 1] for an ideal kit (the analog ADAR stage has
+     * already phase-compensated all 8 elements for the current sweep angle),
+     * or [1, r] as mvdrLookVector measured it.
      */
-    function mvdrWeights(c0, c1, k) {
+    function mvdrWeights(c0, c1, k, look = null) {
         // R entries. r01 = conj(r10); r00 and r11 are real.
         let r00 = 0, r11 = 0, r01re = 0, r01im = 0;
         for (let i = 0; i < k; i++) {
@@ -234,15 +264,19 @@ export function createEngine(options = {}) {
         const det = r00 * r11 - (r01re * r01re + r01im * r01im);
         const d = Math.abs(det) < 1e-30 ? 1e-30 : det;
 
-        // u = R^-1 s, s = [1,1]
-        const u0re = (r11 - r01re) / d;
-        const u0im = (0 - r01im) / d;
-        const u1re = (r00 - r01re) / d;
-        const u1im = (0 + r01im) / d;
+        const s0 = look ? look[0] : { re: 1, im: 0 };
+        const s1 = look ? look[1] : { re: 1, im: 0 };
 
-        // denom = s^H u = u0 + u1 (real part carries it; imag cancels)
-        const dre = u0re + u1re;
-        const dim = u0im + u1im;
+        // u = R^-1 s
+        //   u0 = (r11*s0 - r01*s1)/det,  u1 = (-conj(r01)*s0 + r00*s1)/det
+        const u0re = (r11 * s0.re - (r01re * s1.re - r01im * s1.im)) / d;
+        const u0im = (r11 * s0.im - (r01re * s1.im + r01im * s1.re)) / d;
+        const u1re = (-(r01re * s0.re + r01im * s0.im) + r00 * s1.re) / d;
+        const u1im = (-(r01re * s0.im - r01im * s0.re) + r00 * s1.im) / d;
+
+        // denom = s^H u = conj(s0) u0 + conj(s1) u1
+        const dre = s0.re * u0re + s0.im * u0im + s1.re * u1re + s1.im * u1im;
+        const dim = s0.re * u0im - s0.im * u0re + s1.re * u1im - s1.im * u1re;
         const dmag = dre * dre + dim * dim || 1e-30;
 
         // w = u / denom
@@ -446,6 +480,10 @@ export function createEngine(options = {}) {
                     bestRaw = [c0, c1];
                 }
 
+                // The real scene alone, before the synthetic interferer goes
+                // in: MVDR measures its look vector from these.
+                const pre0 = c0, pre1 = c1;
+
                 // Inject before any digital weights, so MVDR sees the
                 // interferer in its covariance like any received signal.
                 const iw = interfererWeights(phaseValues[i]);
@@ -462,7 +500,7 @@ export function createEngine(options = {}) {
                     // the first mvdrK of them as the K IQ snapshots -- much
                     // cheaper than K separate reads and mathematically the same.
                     const k = Math.min(state.mvdrK | 0, n);
-                    const w = mvdrWeights(c0, c1, k);
+                    const w = mvdrWeights(c0, c1, k, mvdrLookVector(pre0, pre1));
                     lastW = w;
                     sumRe = new Float64Array(n);
                     sumIm = new Float64Array(n);
@@ -630,9 +668,16 @@ export function createEngine(options = {}) {
                 : null,
         };
 
-        if (held && lastW) {
-            // Every held update, not throttled with the spectrum.
-            result.adaptive_pattern = adaptivePattern(phaseValues[0], lastW);
+        if (held) {
+            // Every held update, not throttled with the spectrum. Manual's
+            // pattern takes conj(w)/2 of its digital weights; see do_sweep().
+            const w = lastW || [
+                { re: state.B0_Gain * Math.cos(state.Beam0_Phase * DEG) / 2,
+                  im: -state.B0_Gain * Math.sin(state.Beam0_Phase * DEG) / 2 },
+                { re: state.B1_Gain * Math.cos(state.Beam1_Phase * DEG) / 2,
+                  im: -state.B1_Gain * Math.sin(state.Beam1_Phase * DEG) / 2 },
+            ];
+            result.adaptive_pattern = adaptivePattern(phaseValues[0], w);
         }
 
         const now = Date.now();
@@ -730,6 +775,10 @@ export function createEngine(options = {}) {
         if (Number.isFinite(patch.interferer_phase_deg)) {
             // Python's % takes the sign of the divisor; JS's of the dividend.
             state.interferer_phase_deg = ((patch.interferer_phase_deg % 360) + 360) % 360;
+        }
+        // A kit's inter-channel phase error (SimSDR.channel_phase_error_deg).
+        if (Number.isFinite(patch.sim_channel_phase_error_deg)) {
+            sdr.setChannelPhaseError(Math.max(-180, Math.min(180, patch.sim_channel_phase_error_deg)));
         }
         // Simulated HB100 position (Polar tab).
         if (Number.isFinite(patch.sim_target_angle_deg)) {

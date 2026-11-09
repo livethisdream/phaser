@@ -302,6 +302,18 @@ class SimSDR:
     # compared.
     NOISE_SIGMA = 4.0
 
+    # Inter-channel mismatch of a real kit: sub-array 1's digital channel
+    # relative to sub-array 0's, after the element calibration. The element
+    # phase cal lines the eight elements up through the ADAR, but the two
+    # Pluto Rx paths carry their own phase and gain offset on top, and on a
+    # kit it is not zero (Neil's kit, 2026-11-09: MVDR at K=128, load 1e-3
+    # spent its null on the boresight HB100 instead of a -10 dBFS interferer).
+    # The synthetic interferer is injected after rx() and never sees this,
+    # exactly as on hardware, which is what makes MVDR's look vector wrong for
+    # the real target. 0 by default so every other test sees ideal channels.
+    CHANNEL_PHASE_ERROR_DEG = 0.0
+    CHANNEL_GAIN_ERROR_DB = 0.0
+
     # CW radar scene. Each target is (velocity_mps, angle_deg, amplitude);
     # velocity is positive for closing targets. The zero-velocity entry is the
     # Tx->Rx leakage every real CW radar has, and it is deliberately the
@@ -384,6 +396,8 @@ class SimSDR:
         # Where the simulated HB100 sits: degrees from boresight, meters away.
         self.target_angle_deg = self.TARGET_ANGLE_DEG
         self.target_range_m = self.TARGET_RANGE_M
+        self.channel_phase_error_deg = self.CHANNEL_PHASE_ERROR_DEG
+        self.channel_gain_error_db = self.CHANNEL_GAIN_ERROR_DB
 
     def set_signal_freq(self, freq_hz):
         """Kept in sync from phaser_headless.set_signal_freq so the spatial
@@ -746,6 +760,10 @@ class SimSDR:
         amp = self.AMP_SCALE
         chan0 = chan_sub[0] * amp
         chan1 = chan_sub[1] * amp
+        if self.channel_phase_error_deg or self.channel_gain_error_db:
+            chan1 = chan1 * np.complex64(
+                10 ** (self.channel_gain_error_db / 20)
+                * np.exp(1j * np.radians(self.channel_phase_error_deg)))
 
         noise_sigma = self.NOISE_SIGMA
         if noise_sigma <= 0:
