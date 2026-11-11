@@ -78,6 +78,7 @@ export function playbackFrame(r, settings, start) {
         range_max: 20,
         peak_exclude: 0.3,
         peak_snr_db: FMCW_PROC_DEFAULTS.peak_snr_db,
+        clutter_margin_db: FMCW_PROC_DEFAULTS.clutter_margin_db,
         cfar_guard: 4, cfar_ref: 16, cfar_bias_db: 6,
         // An empty field (null) means "the default", not "off".
         ...Object.fromEntries(Object.entries(settings).filter(([, v]) => v != null)),

@@ -296,6 +296,7 @@ export function mtiGainDb(dopplerHz, pri, mode) {
 export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0,
     velMax = null, peakExclude = 0, mti = 'none', peakSnrDb = 0,
+    stationary = null, clutterMarginDb = 0,
 } = {}) {
     const nSlow = cols.length;
     const nFast = nSlow ? cols[0].re.length : 0;
@@ -360,19 +361,46 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     }
     if (!search.some(Boolean)) search = search.map(() => true);
 
+    // As range_doppler_map: a moving cell must be within clutterMarginDb of
+    // the strongest still return (zero-Doppler, before MTI) within the
+    // fast-time main lobe of its range. One FFT of the window-weighted chirp
+    // sum gives the still return per range bin, in the map's units.
+    let stillNear = null;
+    if (stationary && clutterMarginDb) {
+        const n0 = stationary.length;
+        const ws0 = window(fftWindow, n0);
+        const sr = new Float64Array(nFast), si = new Float64Array(nFast);
+        for (let c = 0; c < n0; c++) {
+            const col = stationary[c];
+            for (let i = 0; i < nFast; i++) { sr[i] += ws0[c] * col.re[i]; si[i] += ws0[c] * col.im[i]; }
+        }
+        for (let i = 0; i < nFast; i++) { sr[i] *= wFast[i]; si[i] *= wFast[i]; }
+        const S = fft(sr, si, nFft);
+        const norm = (sum(wFast) * sum(ws0)) / n0;
+        const stDb = ridx.map(i => toDb(Math.hypot(S.re[i], S.im[i]), norm));
+        const half = MAINLOBE_HALF_BINS[String(fftWindow).toLowerCase()] ?? 3;
+        stillNear = stDb.map((_, r) => {
+            let m = -Infinity;
+            for (let k = r - half; k <= r + half; k++) m = Math.max(m, stDb[Math.min(Math.max(k, 0), nr - 1)]);
+            return m;
+        });
+    }
     let pr = 0, pv = -1;
     for (let r = 0; r < nr; r++) {
         const row = mapDb[r];
+        const floor = stillNear ? stillNear[r] - Number(clutterMarginDb) : -Infinity;
         for (let v = 0; v < row.length; v++) {
-            if (search[v] && (pv < 0 || row[v] > mapDb[pr][pv])) { pr = r; pv = v; }
+            if (search[v] && row[v] >= floor && (pv < 0 || row[v] > mapDb[pr][pv])) { pr = r; pv = v; }
         }
     }
+    const anyCell = pv >= 0;
+    if (!anyCell) { pr = 0; pv = 0; }
     const cr = argmax(calPow);
     // A peak counts only peakSnrDb above the map's median (its noise floor).
     const all = [];
     for (const row of mapDb) for (const v of row) all.push(v);
     const noiseDb = median(all);
-    const clear = !peakSnrDb || mapDb[pr][pv] - noiseDb >= Number(peakSnrDb);
+    const clear = anyCell && (!peakSnrDb || mapDb[pr][pv] - noiseDb >= Number(peakSnrDb));
     return {
         map_db: mapDb,
         range_axis: rangeOut,
@@ -572,6 +600,7 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
                 zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max,
                 velMax: cfg.vel_max, peakExclude: cfg.peak_exclude ?? 0,
                 mti: cfg.mti ?? 'none', peakSnrDb: cfg.peak_snr_db ?? 0,
+                stationary: data, clutterMarginDb: cfg.clutter_margin_db ?? 0,
             });
         Object.assign(out, {
             kind: 'range_doppler',

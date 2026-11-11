@@ -551,7 +551,8 @@ def mti_gain_db(doppler_hz, pri, mode):
 def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq,
                       zero_range_freq=0.0, fft_window="blackman",
                       range_max=None, range_min=0.0, vel_max=None,
-                      peak_exclude=0.0, mti="none", peak_snr_db=0.0):
+                      peak_exclude=0.0, mti="none", peak_snr_db=0.0,
+                      stationary=None, clutter_margin_db=0.0):
     """2D FFT of the chirp matrix -> range vs velocity.
 
     Range comes from the fast-time FFT down each column, velocity from the
@@ -643,12 +644,34 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     if not np.any(search):
         search[:] = True
     masked = np.where(search[None, :], map_out, -np.inf)
+    # A moving cell must also stand within clutter_margin_db of the still
+    # return at its own range: a strong still target's leftovers -- its
+    # slow-time skirt without MTI, MTI's residue with it -- spread across
+    # every velocity at its range, 36-48 and ~60 dB below it (phaser-01,
+    # 2026-11-11, a corner at 1.1 m), and outshone the noise gate by 25-40 dB.
+    # `stationary` is the chirp matrix before MTI; its zero-Doppler cell per
+    # range bin, in the map's units, is one FFT of the window-weighted chirp
+    # sum (the slow-time FFT at 0 Hz is linear).
+    if stationary is not None and clutter_margin_db:
+        st = np.asarray(stationary)
+        ws0 = window(fft_window, st.shape[1])
+        still = (st * ws0[None, :]).sum(axis=1) * w_fast
+        st_spec = _fft(still.astype(cplx), axis=0, n=n_fft)[: n_fft // 2][rmask]
+        st_db = _to_db(np.abs(st_spec), float(np.sum(w_fast)) * float(np.sum(ws0)) / st.shape[1])
+        # A still return spreads over the fast-time window's main lobe, and
+        # so do its leftovers: compare with the strongest still return
+        # within that many range bins (a null between two walls read 24 dB).
+        half = MAINLOBE_HALF_BINS.get(str(fft_window).lower(), 3)
+        padded = np.pad(st_db, half, mode="edge")
+        st_near = np.max([padded[k:k + len(st_db)] for k in range(2 * half + 1)], axis=0)
+        masked = np.where(map_out >= st_near[:, None] - float(clutter_margin_db), masked, -np.inf)
     peak_r, peak_v = np.unravel_index(int(np.argmax(masked)), map_out.shape)
     # A peak only counts if it stands out: at least peak_snr_db above the
     # map's median, its noise floor. Otherwise -- nothing moving, MTI on --
     # the readout is None rather than whichever noise cell won this frame.
     noise_db = float(np.median(map_out))
-    clear = not peak_snr_db or float(map_out[peak_r, peak_v]) - noise_db >= float(peak_snr_db)
+    clear = (np.isfinite(masked[peak_r, peak_v])
+             and (not peak_snr_db or float(map_out[peak_r, peak_v]) - noise_db >= float(peak_snr_db)))
     return {
         "map_db": map_out.astype(np.float32).tolist(),
         "range_axis": ranges_out.astype(np.float32).tolist(),
@@ -1065,6 +1088,11 @@ FMCW_PROC_DEFAULTS = {
     # 15 dB keeps noise out (~1 frame in 10^5) while a moving hand, summed
     # over 256 chirps, clears it by tens of dB.
     "peak_snr_db": 15.0,
+    # dB; and no more than this below the still (zero-Doppler, before MTI)
+    # return at its own range. A still corner's leftovers sat 36-48 dB below
+    # it without MTI and ~60 dB with (phaser-01, 2026-11-11); a hand is
+    # ~15-20 dB below such a corner, a person ~10 dB below a wall. 0 = off.
+    "clutter_margin_db": 30.0,
 }
 
 # What start_fmcw_radar runs when no preset is named: range and velocity
