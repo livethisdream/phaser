@@ -121,6 +121,7 @@ def main():
     steer_pi = steering_pi()
     h = headless_defaults()
     drop_db = centroid_drop_db()
+    import phaser_headless  # imported (adi stubbed) by headless_defaults
 
     body = f"""// GENERATED FILE -- DO NOT EDIT BY HAND.
 //
@@ -145,6 +146,9 @@ export const TARGET_IF_HZ = {sdr.TARGET_IF_HZ!r};
 // --- Synthesis -------------------------------------------------------------
 export const AMP_SCALE = {sdr.AMP_SCALE!r};
 export const NOISE_SIGMA = {sdr.NOISE_SIGMA!r};
+// Sub-array 1's Rx path relative to sub-array 0's (a real kit's mismatch).
+export const CHANNEL_PHASE_ERROR_DEG = {sdr.CHANNEL_PHASE_ERROR_DEG!r};
+export const CHANNEL_GAIN_ERROR_DB = {sdr.CHANNEL_GAIN_ERROR_DB!r};
 
 // --- Radio -----------------------------------------------------------------
 export const SIGNAL_FREQ_HZ = {h.SignalFreq!r};
@@ -173,6 +177,9 @@ export const BW_MHZ = {h.BW!r};
 export const BF_MODE = {h.bf_mode!r};
 export const MVDR_K = {h.mvdr_K!r};
 export const MVDR_DIAG_LOAD = {h.mvdr_diag_load!r};
+// MVDR measures its look vector on the target only within these limits.
+export const MVDR_LOOK_MAX_DEG = {phaser_headless.MVDR_LOOK_MAX_DEG!r};
+export const MVDR_LOOK_MIN_COHERENCE = {phaser_headless.MVDR_LOOK_MIN_COHERENCE!r};
 
 // --- Synthetic interferer (injected in do_sweep) ---------------------------
 export const INTERFERER_ANGLE_DEG = {h.interferer_angle_deg!r};

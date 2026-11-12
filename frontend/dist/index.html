@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-B2w0GUD6.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-BiNdqkoB.css">
+  <script type="module" crossorigin src="./assets/index-osIojnnq.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-D6_PbFQe.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -507,8 +507,6 @@
                     <button class="tab-btn active" data-target="tab-rect">Rectangular</button>
                     <button class="tab-btn" data-target="tab-polar">Polar</button>
                     <button class="tab-btn" data-target="tab-fft">FFT</button>
-                    <button class="tab-btn" data-target="tab-adaptive" id="tab-btn-adaptive" hidden
-                            title="The array's response with the MVDR weights, for the held beam">Adaptive</button>
                     <button class="tab-btn" data-target="tab-tracking">Tracking</button>
                     <button class="tab-btn" data-target="tab-logs" id="tab-btn-logs" hidden>Logs</button>
                 </div>
@@ -528,7 +526,7 @@
           </div>
         
         <div class="plots-stack">
-          <div class="interferer-badge" id="interferer-badge" hidden>Interferer</div>
+          <div class="interferer-badge" id="interferer-badge" hidden title="A computed jammer is being added to the received signal (Interferer pane)">Interferer ON</div>
           <!-- Mini scene (scene.js), top right, while the interferer is on.
                Hidden on the Polar tab when that already shows the sources. -->
           <div class="scene-mini" id="scene-mini" hidden>
@@ -546,9 +544,6 @@
           </div>
           <div class="chart-wrapper tab-content" id="tab-fft">
              <div id="chart-fft" style="width:100%; height:100%;"></div>
-          </div>
-          <div class="chart-wrapper tab-content" id="tab-adaptive">
-             <div id="chart-adaptive" style="width:100%; height:100%;"></div>
           </div>
           <div class="chart-wrapper tab-content" id="tab-tracking">
              <div id="chart-tracking" style="width:100%; height:100%;"></div>
@@ -568,7 +563,7 @@
             <!-- Plot readouts on the left, hardware status pills on the right:
                  two groups of the same height that wrap as units. -->
             <div class="plot-stats">
-              <div class="stat-box">
+              <div class="stat-box" title="Beam Sweep: the pattern's peak level. Signal vs Time: the held beam's level right now, the last point of the Tracking tab's trace.">
                   <span class="stat-label">Peak Gain</span>
                   <span class="stat-value" id="stat-peak">-- dB</span>
               </div>
@@ -587,12 +582,12 @@
                    is under MVDR than under Manual with the same settings.
                    Shown only while the interferer is on. -->
               <div class="stat-box" id="interferer-ratio-box" hidden
-                   title="Interferer tone level minus target tone level, from the FFT. Measured with the beam held: Mode set to Signal vs Time.">
+                   title="Interferer tone level minus target tone level, from the FFT of the held beam (Mode: Signal vs Time). In Manual the interferer leaks in through the sidelobes and nothing removes it; in MVDR it should drop well below the Manual reading.">
                   <span class="stat-label">Interferer vs Target</span>
                   <span class="stat-value" id="interferer-ratio">-- dB</span>
               </div>
               <div class="stat-box" id="interferer-suppression-box" hidden
-                   title="How much lower Interferer vs Target reads under MVDR than under Manual, same Steer Angle and settings.">
+                   title="Manual's Interferer vs Target minus MVDR's, same Steer Angle and settings. Positive: MVDR pushed the interferer down. Negative: MVDR made it worse.">
                   <span class="stat-label">MVDR Suppression</span>
                   <span class="stat-value" id="interferer-suppression">-- dB</span>
               </div>

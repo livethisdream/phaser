@@ -1762,12 +1762,13 @@ input[type=number]::-webkit-outer-spin-button {
 }
 
 /* Over every plot tab, so a screenshot cannot pass the computed jammer off
-   as a real one. Top centre: the freeze legend owns the top right. */
+   as a real one. Top left, over the y axis: top centre sat on the Rectangular
+   tab's 0 deg line and read as a label for it (Neil, 2026-11-09), and the
+   freeze legend and mini scene own the top right. */
 .interferer-badge {
   position: absolute;
   top: 0.5rem;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 4.25rem;
   z-index: 5;
   pointer-events: none;
   padding: 0.2rem 0.7rem;

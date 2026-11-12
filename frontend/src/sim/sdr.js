@@ -29,6 +29,8 @@
 
 import {
     AMP_SCALE,
+    CHANNEL_GAIN_ERROR_DB,
+    CHANNEL_PHASE_ERROR_DEG,
     C_M_PER_S,
     NOISE_SIGMA,
     NUM_ELEMENTS,
@@ -61,6 +63,10 @@ export function createSimSdr({
         // Where the simulated HB100 sits; SimSDR.target_angle_deg.
         targetAngleDeg: TARGET_ANGLE_DEG,
         targetRangeM: TARGET_RANGE_M,
+        // SimSDR.channel_phase_error_deg / channel_gain_error_db: sub-array
+        // 1's Rx path relative to sub-array 0's, as on a real kit.
+        channelPhaseErrorDeg: CHANNEL_PHASE_ERROR_DEG,
+        channelGainErrorDb: CHANNEL_GAIN_ERROR_DB,
     };
 
     /**
@@ -156,6 +162,17 @@ export function createSimSdr({
             re1[i] *= AMP_SCALE; im1[i] *= AMP_SCALE;
         }
 
+        if (state.channelPhaseErrorDeg || state.channelGainErrorDb) {
+            const g = Math.pow(10, state.channelGainErrorDb / 20);
+            const eRe = g * Math.cos((state.channelPhaseErrorDeg * Math.PI) / 180);
+            const eIm = g * Math.sin((state.channelPhaseErrorDeg * Math.PI) / 180);
+            for (let i = 0; i < n; i++) {
+                const r = re1[i] * eRe - im1[i] * eIm;
+                im1[i] = re1[i] * eIm + im1[i] * eRe;
+                re1[i] = r;
+            }
+        }
+
         if (state.noiseSigma > 0) {
             const s = state.noiseSigma;
             for (let i = 0; i < n; i++) {
@@ -177,6 +194,7 @@ export function createSimSdr({
         setNoiseSigma(sigma) { state.noiseSigma = sigma; },
 
         setTargetAngle(deg) { state.targetAngleDeg = deg; },
+        setChannelPhaseError(deg) { state.channelPhaseErrorDeg = deg; },
 
         setTargetRange(m) { state.targetRangeM = m; },
 

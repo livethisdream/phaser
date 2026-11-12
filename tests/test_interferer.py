@@ -244,13 +244,16 @@ def test_adaptive_pattern_nulls_the_interferer(angle):
     )
 
 
-def test_adaptive_pattern_only_on_a_held_mvdr_beam():
-    """A sweep re-solves the weights at every angle, so there is no one
-    pattern to draw; manual mode has no adaptive weights at all."""
+def test_held_pattern_only_on_a_held_beam():
+    """A sweep re-solves MVDR's weights at every angle, so there is no one
+    pattern to draw. A held beam carries one in either beamformer mode: the
+    Rectangular tab draws it (Neil, 2026-11-09, retiring the Adaptive tab),
+    and at Manual's default weights it is the conventional pattern."""
     sweep = _sweeps(_headless({"bfMode": "mvdr", "interferer_enable": True}), 1)
     manual = _sweeps(_headless({"mode": "Static Phase", "interferer_enable": True}), 1)
     assert "adaptive_pattern" not in sweep
-    assert "adaptive_pattern" not in manual
+    pat = manual["adaptive_pattern"]
+    assert np.allclose(pat["adaptive_db"], pat["conventional_db"])
 
 
 def test_interferer_and_mvdr_settings_survive_a_hardware_reinit():

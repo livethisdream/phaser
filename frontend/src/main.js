@@ -77,11 +77,18 @@ const ctfMode = urlFlag('ctf');
 state.ctfSectors = [];
 state.ctfSectorLines = true;
 
-// Adaptive tab: newest held-beam update carrying adaptive_pattern, and the
-// one last drawn. Up here, not by the chart, because setSweepMode() can clear
-// them before that part of the module has run.
-let adaptiveLatest = null;
-let adaptiveDrawn = null;
+// Held beam's pattern on the Rectangular tab (it replaced the Adaptive tab,
+// Neil 2026-11-09: "we could see all that where we'd expect it -- in the
+// rectangular plot"): the newest held update carrying adaptive_pattern, the
+// one last drawn, and whether chart-rect is showing it rather than a sweep.
+// Up here, not by the chart, because setSweepMode() can clear them before
+// that part of the module has run.
+let heldPatternLatest = null;
+let heldPatternDrawn = null;
+let rectHeldView = false;
+// Rectangular traces that are always there (Sum, Delta, Error, and the held
+// beam's Conventional and weighted patterns); freeze snapshots go after them.
+const RECT_LIVE_TRACES = 5;
 
 // When switching Manual -> MVDR, we zero B0/B1 so residual manual weights
 // don't fight the adaptive algorithm. These snapshots restore them on the
@@ -607,7 +614,7 @@ function rebuildMemoryTraces() {
     const polarEl = document.getElementById('chart-polar');
 
     if (rectEl && rectEl.data) {
-        const liveCount = 3;  // Sum, Delta, Error
+        const liveCount = RECT_LIVE_TRACES;  // Sum, Delta, Error, held patterns
         const extras = rectEl.data.length - liveCount;
         if (extras > 0) {
             const indices = [];
@@ -979,7 +986,7 @@ function setSweepMode(mode, { selectTab = true } = {}) {
         timeHistory = []; angleHistory = []; centroidHistory = [];
         peakGainHistory = []; stampHistory = [];
     }
-    if (!isHoldMode()) clearAdaptivePattern();
+    if (!isHoldMode()) clearHeldPattern();
     syncSweepModeControls();
     drawRectOverlays();
     if (selectTab && (state.mode === 'Signal vs Time' || state.mode === TRACK_MODE)) {
@@ -1033,7 +1040,8 @@ function setBeamformerMode(mode) {
     state.bfMode = mode;
     document.getElementById('bf-panel-manual').hidden = (mode !== 'manual');
     document.getElementById('bf-panel-mvdr').hidden = (mode !== 'mvdr');
-    syncAdaptiveTab();
+    // Redraw the held pattern with the new mode's weights and legend.
+    heldPatternDrawn = null;
     syncStateToBackend();
 }
 
@@ -1475,7 +1483,9 @@ function hb100Visible() {
 // The interferer is computed on the kit too, so unlike the HB100 it is drawn
 // there as well -- while it is on.
 function interfererVisible() {
-    return showInterferer() && !!state.interferer_enable
+    // A held beam's pattern is drawn to show where the interferer lands on it,
+    // so the line is always there then; in a sweep it is the Show option's.
+    return (showInterferer() || isHoldMode()) && !!state.interferer_enable
         && Number.isFinite(state.interferer_angle_deg);
 }
 
@@ -1498,7 +1508,7 @@ function rectOverlayShapes() {
         shapes.push({
             name: 'hold-angle', type: 'line', x0: hold, x1: hold, y0: 0, y1: 1, yref: 'paper',
             line: { color: '#6366f1', width: 2, dash: 'dash' },
-            label: { text: `Beam ${Math.round(hold)}°`, textposition: 'start', textangle: 0,
+            label: { text: `Look ${Math.round(hold)}°`, textposition: 'start', textangle: 0,
                      yanchor: 'bottom', xanchor: 'right', font: { color: '#6366f1', size: 11 } },
         });
     }
@@ -2216,11 +2226,6 @@ function applyPlotTheme() {
         'yaxis.gridcolor': palette.gridColor,
     });
 
-    Plotly.relayout('chart-adaptive', {
-        ...common,
-        'xaxis.gridcolor': palette.gridColor,
-        'yaxis.gridcolor': palette.gridColor,
-    });
 }
 
 Plotly.newPlot('chart-rect', [
@@ -2229,7 +2234,10 @@ Plotly.newPlot('chart-rect', [
     // Trace 1: Delta beam (hidden by default)
     { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#f59e0b', width: 2, dash: 'dash', shape: 'spline' }, visible: false },
     // Trace 2: Error function (hidden by default, secondary y-axis)
-    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Error', yaxis: 'y2', line: { color: '#ef4444', width: 2, shape: 'spline' }, visible: false }
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Error', yaxis: 'y2', line: { color: '#ef4444', width: 2, shape: 'spline' }, visible: false },
+    // Traces 3-4: a held beam's pattern against arrival angle (drawHeldPattern)
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Conventional', showlegend: false, line: { color: '#94a3b8', width: 2, dash: 'dash' } },
+    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'MVDR', showlegend: false, line: { color: '#6366f1', width: 3 } }
 ], Object.assign({}, getLayoutBase(), {
     xaxis: {
         title: 'Steering Angle (°)',
@@ -2539,83 +2547,76 @@ Plotly.newPlot('chart-fft', [{
     yaxis: { title: 'Amplitude (dBFS)', range: [-100, 0], gridcolor: getPlotPalette().gridColor, griddash: 'dash' }
 }), {displayModeBar: false, responsive: true});
 
-/* --- Adaptive tab: the array's response with the MVDR weights -------------
-   The weights are two complex numbers, which say nothing until they are turned
-   back into a pattern; this is where the null on the interferer shows. Only a
-   held beam has one set of weights (a sweep re-solves them at every angle),
-   so the backend attaches adaptive_pattern only then, and the tab is only
-   offered in MVDR mode. */
-Plotly.newPlot('chart-adaptive', [
-    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'Conventional',
-      line: { color: '#94a3b8', width: 2, dash: 'dash' } },
-    { x: [], y: [], type: 'scatter', mode: 'lines', name: 'MVDR',
-      line: { color: '#6366f1', width: 3 } },
-], Object.assign({}, getLayoutBase(), {
-    xaxis: { title: 'Arrival Angle (°)', range: [-90, 90], gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
-    yaxis: { title: 'Response (dB, 0 = look direction)', range: [-60, 5], gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
-    showlegend: true,
-    legend: { x: 1, xanchor: 'right', y: 1 },
-    annotations: [adaptiveEmptyNote()],
-}), {displayModeBar: false, responsive: true});
-
-function adaptiveEmptyNote() {
-    return {
-        xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false,
-        text: 'Hold the beam (Mode: Signal vs Time) in MVDR to see the adaptive pattern.',
-        font: { size: 13, color: getPlotPalette().fontColor },
-    };
+/* --- Held beam's pattern, on the Rectangular tab ---------------------------
+   A held beam (Signal vs Time) has one set of digital weights, so the backend
+   attaches its whole-array response against arrival angle (adaptive_pattern):
+   the conventional pattern, dashed, and the pattern with the weights in use,
+   solid -- MVDR's, or Manual's own (the conventional one at the default
+   gains and phases, the difference pattern at Beam 1 Phase 180). Here the
+   null MVDR puts on the interferer shows on the plot the class already reads,
+   beside the Look and Interferer lines. A sweep re-solves MVDR at every angle,
+   so Beam Sweep keeps its measured trace instead. */
+function rectSweepYRange() {
+    const lo = parseFloat(document.getElementById('val-ymin')?.value);
+    const hi = parseFloat(document.getElementById('val-ymax')?.value);
+    return Number.isFinite(lo) && Number.isFinite(hi) && lo < hi ? [lo, hi] : [-50, 0];
 }
 
-function syncAdaptiveTab() {
-    const btn = document.getElementById('tab-btn-adaptive');
-    if (!btn) return;
-    const show = state.bfMode === 'mvdr';
-    btn.hidden = !show;
-    if (!show && btn.classList.contains('active')) {
-        document.querySelector('[data-target="tab-rect"]')?.click();
+function setRectHeldView(on) {
+    if (on === rectHeldView) return;
+    const el = document.getElementById('chart-rect');
+    if (!el || !el.data) return;
+    rectHeldView = on;
+    if (on) {
+        // The last sweep's trace no longer describes the beam.
+        Plotly.restyle('chart-rect', { x: [[], [], []], y: [[], [], []] }, [0, 1, 2]);
+        Plotly.restyle('chart-rect', { showlegend: [true, true] }, [3, 4]);
+        Plotly.relayout('chart-rect', {
+            'xaxis.title.text': 'Arrival Angle (°)',
+            'yaxis.title.text': 'Held-beam response (dB, 0 = look direction)',
+            'yaxis.range': [-60, 5],
+            // Bottom left: the mini scene covers the top right while the
+            // interferer is on, and the patterns' nulls leave the bottom clear.
+            'legend.x': 0.01, 'legend.xanchor': 'left',
+            'legend.y': 0.02, 'legend.yanchor': 'bottom',
+        });
+    } else {
+        Plotly.restyle('chart-rect', { x: [[], []], y: [[], []], showlegend: [false, false] }, [3, 4]);
+        Plotly.relayout('chart-rect', {
+            'xaxis.title.text': 'Steering Angle (°)',
+            'yaxis.title.text': 'Magnitude (dBFS)',
+            'yaxis.range': rectSweepYRange(),
+            'legend.x': 1, 'legend.xanchor': 'right',
+            'legend.y': 1, 'legend.yanchor': 'auto',
+        });
     }
-    if (!show) clearAdaptivePattern();
 }
 
-/** Back to the empty note: the last pattern no longer describes the beam. */
-function clearAdaptivePattern() {
-    adaptiveLatest = null;
-    adaptiveDrawn = null;
-    if (!document.getElementById('chart-adaptive')?.data) return;
-    Plotly.update('chart-adaptive', { x: [[], []], y: [[], []] },
-        { shapes: [], annotations: [adaptiveEmptyNote()] });
+/** Back to the sweep view: the last pattern no longer describes the beam. */
+function clearHeldPattern() {
+    heldPatternLatest = null;
+    heldPatternDrawn = null;
+    setRectHeldView(false);
 }
 
-function drawAdaptivePattern() {
-    if (!adaptiveLatest || adaptiveLatest === adaptiveDrawn) return;
-    adaptiveDrawn = adaptiveLatest;
-    const pat = adaptiveLatest.adaptive_pattern;
-    const look = adaptiveLatest.hold_angle_deg;
-    const marker = (x, color, text, y) => ({
-        shape: {
-            type: 'line', x0: x, x1: x, y0: 0, y1: 1, yref: 'paper',
-            line: { color, width: 1.5, dash: 'dot' },
-        },
-        note: { x, y, xref: 'x', yref: 'paper', text, showarrow: false, font: { color, size: 11 } },
-    });
-    const marks = [];
-    // Below the top centre, where the Interferer badge sits.
-    if (Number.isFinite(look)) marks.push(marker(look, '#10b981', 'Look', 0.9));
-    if (state.interferer_enable) {
-        marks.push(marker(state.interferer_angle_deg, '#f59e0b', 'Interferer', 0.85));
-    }
+function drawHeldPattern() {
+    if (!isHoldMode() || !heldPatternLatest || heldPatternLatest === heldPatternDrawn) return;
+    if (!document.getElementById('chart-rect')?.data) return;
+    heldPatternDrawn = heldPatternLatest;
+    setRectHeldView(true);
+    const pat = heldPatternLatest.adaptive_pattern;
+    const mvdr = state.bfMode === 'mvdr';
     // MVDR can rise well above 0 dB away from the look direction -- a jammer
     // near the sub-arrays' grating ambiguity (+/-30 deg at boresight) takes
     // large weights to null -- so the top follows the data.
     const top = Math.max(5, Math.ceil(Math.max(...pat.adaptive_db) / 5) * 5 + 5);
-    Plotly.update('chart-adaptive', {
+    Plotly.restyle('chart-rect', {
         x: [pat.angles, pat.angles],
         y: [pat.conventional_db, pat.adaptive_db],
-    }, {
-        shapes: marks.map((m) => m.shape),
-        annotations: marks.map((m) => m.note),
-        'yaxis.range': [-60, top],
-    });
+        name: ['Conventional', mvdr ? 'MVDR' : 'Manual'],
+    }, [3, 4]);
+    Plotly.relayout('chart-rect', { 'yaxis.range': [-60, top] });
+    drawRectOverlays();
 }
 
 Plotly.newPlot('chart-tracking', [{
@@ -2643,7 +2644,7 @@ function configureTrackingChart() {
         'xaxis.title.text': 'Time (s)',
         'xaxis.autorange': false,
         'xaxis.range': svtXRange(),
-        'yaxis.title.text': 'Peak Amplitude (dBFS)',
+        'yaxis.title.text': 'Held-beam level (dBFS)',
         'yaxis.autorange': true,
         'title.text': svtTitle(),
         'title.font.size': 13,
@@ -3391,7 +3392,6 @@ function resizePlotsAfterSidebarTransition() {
       Plotly.Plots.resize(document.getElementById('chart-rect'));
       Plotly.Plots.resize(document.getElementById('chart-polar'));
       Plotly.Plots.resize(document.getElementById('chart-fft'));
-      Plotly.Plots.resize(document.getElementById('chart-adaptive'));
       Plotly.Plots.resize(document.getElementById('chart-tracking'));
   }, 300);
 }
@@ -3644,6 +3644,7 @@ function updateCharts(data) {
         updateTrackingHold(data);
         return;
     }
+    if (rectHeldView) clearHeldPattern();
     if (isHoldMode() && data.sweep_mode === undefined && !svtNoEchoWarned) {
         // A backend from before this mode existed sweeps regardless.
         svtNoEchoWarned = true;
@@ -3874,7 +3875,7 @@ function svtXRange() {
 function svtTitle() {
     const hold = svtHold.length ? svtHold[svtHold.length - 1] : state.hold_angle;
     const rate = svtRate();
-    let title = `Beam held at ${Number(hold).toFixed(1)}°`;
+    let title = `Level of the beam held at ${Number(hold).toFixed(1)}°, over time`;
     title += rate === null ? '' : ` · ${rate.toFixed(1)} updates/s`;
     if (state.phaseList.some((v) => Number(v) !== 0)) {
         title += ' · Phase Control offsets active';
@@ -3909,7 +3910,7 @@ function updateSignalVsTime(data) {
     // In a hold mode the backend attaches the spectrum only a few times a
     // second; keep the last one that had it.
     if (data.xf && data.max_gain) svtLatestFft = data;
-    if (data.adaptive_pattern && state.bfMode === 'mvdr') adaptiveLatest = data;
+    if (data.adaptive_pattern) heldPatternLatest = data;
     if (svtDrawTimer === null) {
         const wait = Math.max(0, SVT_DRAW_MS - (now - svtLastDraw));
         svtDrawTimer = setTimeout(drawSignalVsTime, wait);
@@ -3946,7 +3947,7 @@ function drawSignalVsTime() {
         svtDrawnFft = svtLatestFft;
         updateFftChart(svtLatestFft);
     }
-    drawAdaptivePattern();
+    drawHeldPattern();
 }
 
 /* --- Tracking tab: Export CSV -----------------------------------------------
@@ -4161,7 +4162,7 @@ async function probeBackendReadiness() {
 // Force resize all plots after initial render to prevent "jump" on first tab click
 // This ensures hidden plots have correct dimensions when first shown
 setTimeout(() => {
-    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-adaptive', 'chart-tracking'];
+    const chartIds = ['chart-rect', 'chart-polar', 'chart-fft', 'chart-tracking'];
     chartIds.forEach(id => {
         const el = document.getElementById(id);
         if (el && window.Plotly) {
