@@ -48,7 +48,7 @@ export const TAPER_MAX = 127;
 export const FMCW_DEFAULTS = {"sample_rate": 600000, "chirp_bw": 500000000.0, "ramp_time": 0.001, "num_chirps": 1, "pri": 0.001, "signal_freq": 100000, "output_freq": 12200000000.0, "center_freq": 2200000000.0, "rx_gain": 30, "tx_gain": 0, "fft_window": "blackman", "taper": "blackman", "range_max": 20.0, "mti": "none", "zero_range_freq": null};
 export const FMCW_HW_DEFAULTS = {"pri_guard_ms": 1.0, "fft_size": 4096, "prefetch": true};
 export const FMCW_PRESETS = {"range": {"sample_rate": 600000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.001, "num_chirps": 1, "pri_guard_ms": 1.0, "fft_size": 4096, "rx_gain": 30, "tx_gain": 0}, "range_sync": {"sample_rate": 5000000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0005, "num_chirps": 1, "pri_guard_ms": 1.0, "rx_gain": 20, "tx_gain": 0}, "cfar": {"sample_rate": 2000000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0005, "num_chirps": 1, "pri_guard_ms": 1.0, "rx_gain": 20, "tx_gain": 0}, "range_doppler": {"sample_rate": 2000000, "output_freq": 9900000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0}, "range_doppler_far": {"sample_rate": 4000000, "output_freq": 9900000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0, "range_max": 100.0}, "micro_doppler": {"sample_rate": 600000, "output_freq": 10000000000.0, "chirp_bw": 500000000.0, "ramp_time": 0.0003, "num_chirps": 256, "pri_guard_ms": 0.2, "rx_gain": 60, "tx_gain": 0, "range_max": 4.0}};
-export const FMCW_PROC_DEFAULTS = {"vel_max": null, "cfar": false, "cfar_guard": 4, "cfar_ref": 16, "cfar_bias_db": 6.0, "peak_exclude": 0.3, "peak_min": 1.0, "peak_snr_db": 15.0, "clutter_margin_db": 30.0};
+export const FMCW_PROC_DEFAULTS = {"vel_max": null, "cfar": false, "cfar_guard": 4, "cfar_ref": 16, "cfar_bias_db": 6.0, "peak_exclude": 0.3, "peak_min": 1.0, "peak_snr_db": 15.0, "clutter_margin_db": 30.0, "spectrogram_range": null};
 export const FMCW_DEFAULT_PRESET = "range_doppler";
 export const FMCW_FALLBACK_PRESET = "range";
 // [label, hint] per preset, in the dropdown's order.
@@ -69,6 +69,8 @@ export const CAPTURE_MAX_FRAMES_S = 60.0;
 export const CAPTURE_FRAME_S = 0.05;
 export const BYTES_PER_SAMPLE = 8;
 export const CAPTURE_FULL_SCALE = 2048;
+export const SPEC_WINDOW = 64;
+export const SPEC_HOP = 16;
 export const CAPTURE_BURST_INTERVAL_S = 0.25;
 export const CAPTURE_MAX_BYTES = 64000000.0;
 export const CAPTURE_COUNTS_ABOVE = 4.0;

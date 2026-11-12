@@ -56,6 +56,9 @@ CASES = [
     ("cfar_tuned", "fmcw",
      {"preset": "cfar", "cfar": True, "cfar_guard": 2, "cfar_ref": 8, "cfar_bias_db": 3.0}),
     ("range_rect_window", "fmcw", {"preset": "range", "fft_window": "rect", "taper": "hann"}),
+    # The micro-Doppler spectrogram held at a range, with and without MTI.
+    ("rd_spectrogram_fixed", "fmcw", {"spectrogram_range": 3.5}),
+    ("rd_spectrogram_mti", "fmcw", {"spectrogram_range": 3.5, "mti": "2pulse"}),
     # Peak Min off, and a 0 m beat set above the reflector's (Calibrate has
     # to find it below 0 m, outside the displayed profile).
     ("range_peak_min_off", "fmcw", {"preset": "range", "peak_min": 0}),
@@ -178,7 +181,7 @@ def test_frame_matches_python(name, mode, params, js_frames):
         if key in ignore:
             continue
         other = js[key]
-        if key == "map":
+        if key in ("map", "sg_map") and value is not None:
             assert (other["rows"], other["cols"]) == (value["rows"], value["cols"]), name
             _close(name, "map.db_max", value["db_max"], other["db_max"], DB_TOL)
             _close(name, "map.db_min", value["db_min"], other["db_min"], DB_TOL)

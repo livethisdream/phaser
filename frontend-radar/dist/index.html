@@ -10,7 +10,7 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CS6KetJJ.js"></script>
+  <script type="module" crossorigin src="./assets/index-Cg7iOi7D.js"></script>
   <link rel="stylesheet" crossorigin href="./assets/index-De-p9im4.css">
   <meta name="phaser-transport" content="web">
 </head>
@@ -212,6 +212,10 @@
                   <label for="fmcw-range-max">Range Max (m)</label>
                   <input type="number" id="fmcw-range-max" class="set-ctrl" step="1" min="1" placeholder="preset">
                 </div>
+                <div class="set-row" id="fmcw-sg-range-row" title="Where the Spectrogram looks, in meters. Empty: it follows the strongest mover. Turn MTI on so still clutter stays out of it.">
+                  <label for="fmcw-sg-range">Spectrogram (m)</label>
+                  <input type="number" id="fmcw-sg-range" class="set-ctrl" step="0.1" min="0" placeholder="auto">
+                </div>
                 <div class="set-row" id="fmcw-peak-min-row" title="Ignores returns closer than this when reading Peak Range, so the 0 m leakage does not hide a weaker target. 0 = off. Calibrate still reads the strongest return anywhere.">
                   <label for="fmcw-peak-min">Peak Min (m)</label>
                   <input type="number" id="fmcw-peak-min" class="set-ctrl" step="0.1" min="0" value="1">
@@ -308,6 +312,7 @@
               <button class="tab-btn" data-target="tab-time" data-mode="cw">Time-Domain</button>
               <button class="tab-btn" data-target="tab-fmcw-wf" data-mode="fmcw" hidden>Range Waterfall</button>
               <button class="tab-btn" data-target="tab-fmcw-rd" data-mode="fmcw" hidden>Range-Doppler</button>
+              <button class="tab-btn" data-target="tab-fmcw-sg" data-mode="fmcw" hidden title="Micro-Doppler: velocity against time at one range">Spectrogram</button>
               <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw" hidden>Range</button>
               <button class="tab-btn" data-target="tab-logs">Logs</button>
             </div>
@@ -337,6 +342,9 @@
           </div>
           <div class="chart-wrapper tab-content" id="tab-fmcw-rd">
             <div id="chart-fmcw-rd" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-fmcw-sg">
+            <div id="chart-fmcw-sg" style="width:100%; height:100%;"></div>
           </div>
           <div class="chart-wrapper tab-content" id="tab-logs">
             <div class="logs-pane">
