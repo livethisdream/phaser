@@ -408,8 +408,11 @@ def test_range_doppler_frame_carries_a_decodable_map_on_its_axes():
     vel = np.array(f["velocity_axis"])
     moving = np.where(np.abs(vel)[None, :] >= dsp.FMCW_PROC_DEFAULTS["peak_exclude"], m, -np.inf)
     r, v = np.unravel_index(int(np.argmax(moving)), m.shape)
-    assert f["range_axis"][r] == pytest.approx(f["peak_range"], abs=1e-3)
-    assert f["velocity_axis"][v] == pytest.approx(f["peak_velocity"], abs=1e-3)
+    # Interpolated between cells (dsp.peak_offset): within half a cell of it.
+    dr = abs(f["range_axis"][1] - f["range_axis"][0])
+    dv = abs(f["velocity_axis"][1] - f["velocity_axis"][0])
+    assert abs(f["range_axis"][r] - f["peak_range"]) <= dr / 2 + 1e-3
+    assert abs(f["velocity_axis"][v] - f["peak_velocity"]) <= dv / 2 + 1e-3
 
 
 def test_range_profile_frame_carries_its_trace_and_cfar():

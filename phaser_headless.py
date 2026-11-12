@@ -1036,7 +1036,7 @@ class PhaserHeadless:
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
         "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude", "peak_min",
-        "peak_snr_db",
+        "peak_snr_db", "clutter_margin_db",
         "scene", "scene_noise",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
@@ -1494,7 +1494,8 @@ class PhaserHeadless:
                 cfg["output_freq"], zero_range_freq=zero, fft_window=window,
                 range_max=cfg.get("range_max"), vel_max=cfg.get("vel_max"),
                 peak_exclude=cfg.get("peak_exclude", 0.0), mti=cfg.get("mti", "none"),
-                peak_snr_db=cfg.get("peak_snr_db", 0.0))
+                peak_snr_db=cfg.get("peak_snr_db", 0.0),
+                stationary=data, clutter_margin_db=cfg.get("clutter_margin_db", 0.0))
             out.update({
                 "kind": "range_doppler",
                 "peak_range": rd["peak_range"],

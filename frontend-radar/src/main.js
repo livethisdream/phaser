@@ -1,6 +1,6 @@
 import { createTransport, resolveTransportMode } from './transport.js';
 import { fromBase64, readNpz } from './npz.js';
-import { captureBytes } from './sim/dsp.js';
+import { captureBytes, peakOffset } from './sim/dsp.js';
 
 /* --- State --- */
 const state = {
@@ -940,7 +940,11 @@ function fmcwPeak(frame, { cal = false } = {}) {
             if (axis[i] >= min && (best < 0 || avg.power[i] > avg.power[best])) best = i;
         }
         if (best < 0) best = avg.power.indexOf(Math.max(...avg.power));
-        return { range: axis[best], db: 10 * Math.log10(avg.power[best]) };
+        // Between bins, as the backend's peak_range (phaser_radar_dsp.peak_offset):
+        // the vertex of the parabola through the averaged peak and its neighbors.
+        const db = avg.power.map(p => 10 * Math.log10(Math.max(p, 1e-30)));
+        const step = axis.length > 1 ? axis[1] - axis[0] : 0;
+        return { range: axis[best] + peakOffset(db, best) * step, db: db[best] };
     }
     return { range: frame.peak_range, db: frame.peak_magnitude_db };
 }

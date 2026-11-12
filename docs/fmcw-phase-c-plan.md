@@ -687,3 +687,17 @@ Add the results to this doc.
   ordinary bursts (`burst_len`, `burst_t` in the file), and only Micro-Doppler (the L31 recordings' settings) keeps
   the continuous burst, on a kit only with `PHASER_LONG_BURST=1`. Saves run
   off the event loop, and `[SAVE]` / `[WS]` lines log each stage.
+
+### phaser-01 bench, 2026-11-11 (radar-dev + #94, #95, #96)
+
+- Passed: sub-bin Peak Range (2 m read 1.93 m), Calibrate, the fixed color
+  scale, CFAR (bias 3 dB: threshold 15-20 dB over the noise past 3 m, corner
+  through; 6 detections were bins of one peak -- grouping is a follow-up), and
+  the clean exit to beamforming.
+- MTI in a still room still jumped -3.2..+3.5 m/s. A saved burst (corner at
+  1.1 m) showed the chirps are coherent -- 0.16 deg phase std chirp to chirp,
+  1.5% amplitude, no sample slips -- and MTI cancelled the corner by ~60 dB.
+  The corner was so strong that its leftovers (36-48 dB below it without MTI,
+  ~60 dB with) still cleared the noise gate by 25-40 dB. Fix: a moving peak
+  must also be within clutter_margin_db (30 dB) of the strongest still return
+  near its own range. The capture then reads "--" with MTI off, 2- and 3-pulse.

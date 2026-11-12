@@ -637,3 +637,82 @@ def test_mti_finds_a_mover_instead_of_the_edges(mti):
         rd, _ = _rd_noise(mti, seed=seed, target_v=-1.5, snr_db=-5)
         assert rd["peak_velocity"] == pytest.approx(-1.5, abs=0.2)
         assert rd["peak_range"] == pytest.approx(2.0, abs=0.35)
+
+
+
+# --- Peak interpolation: a target between bins reads where it is -----------
+
+@pytest.mark.parametrize("r", [1.0, 1.1, 1.17, 2.0, 2.05, 3.0, 3.2])
+def test_range_peak_reads_between_bins(r):
+    """One bin is ~0.3 m; the vertex of the parabola through the peak and its
+    neighbors reads a lone target to a few cm, wherever it falls in a bin."""
+    x = _chirp((r, 100.0))
+    prof = _dsp.range_profile(x, 2e6, 500e6, 300e-6, zero_range_freq=100e3,
+                              range_max=20, peak_min=0.5)
+    step = prof["range_axis"][1] - prof["range_axis"][0]
+    assert step > 0.25                                  # bins really are coarse
+    assert prof["peak_range"] == pytest.approx(r, abs=0.03)
+    assert prof["cal_peak_range"] == pytest.approx(r, abs=0.03)
+
+
+def test_peak_offset_edges_and_flat():
+    assert _dsp.peak_offset([0, 1, 0], 0) == 0.0          # edge: no neighbor
+    assert _dsp.peak_offset([1, 1, 1], 1) == 0.0          # flat: no peak
+    assert _dsp.peak_offset([0, 2, 1], 1) == pytest.approx(1 / 6)
+    assert -0.5 <= _dsp.peak_offset([0, 2, 1.99], 1) <= 0.5
+
+
+def test_velocity_peak_reads_between_bins():
+    """Range-Doppler: a mover at a velocity between Doppler bins reads its
+    own velocity, not the nearest bin's."""
+    rd, _ = _rd_noise("none", target_v=-1.37, snr_db=0)
+    dv = abs(rd["velocity_axis"][1] - rd["velocity_axis"][0])
+    assert dv > 0.1
+    assert rd["peak_velocity"] == pytest.approx(-1.37, abs=0.03)
+    assert rd["peak_range"] == pytest.approx(2.0, abs=0.05)
+
+
+# --- A strong still target's leftovers are not a mover ---------------------
+
+def _still_room(mti, mover_db=None, mover_r=1.15, seed=0):
+    """A 4 in corner at 1.15 m, with phaser-01's 1.5% chirp-to-chirp amplitude
+    jitter (2026-11-11 capture), noise, and optionally a mover mover_db below
+    the corner at mover_r, -1.2 m/s. The readout as the backend runs it:
+    MTI'd map, the pre-MTI matrix as `stationary`."""
+    rng = np.random.default_rng(seed)
+    n_fast, n_slow, fs, pri, fc = 539, 256, 2e6, 5e-4, 10e9
+    t = np.arange(n_fast)[:, None] / fs
+    k = np.arange(n_slow)[None, :]
+    beat = lambda r: 100e3 + 2 * 500e6 * r / (_dsp.C * 300e-6)
+    amp = 3e4 * (1 + 0.015 * rng.standard_normal((1, n_slow)))
+    m = amp * np.exp(2j * np.pi * beat(1.15) * t)
+    m = m + (rng.standard_normal((n_fast, n_slow)) + 1j * rng.standard_normal((n_fast, n_slow))) * 3
+    if mover_db is not None:
+        fd = 2 * -1.2 * fc / _dsp.C
+        m = m + 3e4 * 10 ** (mover_db / 20) * np.exp(2j * np.pi * (beat(mover_r) * t + fd * k * pri))
+    d = _dsp.FMCW_PROC_DEFAULTS
+    return _dsp.range_doppler_map(_dsp.mti_filter(m, mti), fs, 500e6, 300e-6, pri, fc,
+                                  zero_range_freq=100e3, range_max=10.0, peak_exclude=0.3, mti=mti,
+                                  peak_snr_db=d["peak_snr_db"], stationary=m,
+                                  clutter_margin_db=d["clutter_margin_db"])
+
+
+@pytest.mark.parametrize("mti", ["none", "2pulse", "3pulse"])
+def test_still_corner_leftovers_read_no_mover(mti):
+    """Its skirt (no MTI) and MTI's residue cleared the noise gate by 25-40 dB
+    on phaser-01 and the readout jumped -3.2..+3.5 m/s. Judged against the
+    still return at their own range, they read None."""
+    for seed in range(5):
+        rd = _still_room(mti, seed=seed)
+        assert rd["peak_velocity"] is None and rd["peak_range"] is None
+        assert rd["cal_peak_range"] == pytest.approx(1.15, abs=0.05)
+
+
+@pytest.mark.parametrize("mti", ["none", "2pulse"])
+@pytest.mark.parametrize("mover_db,mover_r", [(-17, 1.15), (-25, 2.5)], ids=["hand_at_corner", "weak_far"])
+def test_a_real_mover_still_reads(mti, mover_db, mover_r):
+    """A hand 17 dB below the corner in its own range bin, or a weaker mover
+    elsewhere: found at its velocity and range."""
+    rd = _still_room(mti, mover_db=mover_db, mover_r=mover_r)
+    assert rd["peak_velocity"] == pytest.approx(-1.2, abs=0.05)
+    assert rd["peak_range"] == pytest.approx(mover_r, abs=0.1)
