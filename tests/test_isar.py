@@ -158,3 +158,51 @@ def test_backprojection_puts_a_synthetic_point_in_place():
     img, x, y = _image(out)
     iy, ix = np.unravel_index(np.argmax(img), img.shape)
     assert (x[ix], y[iy]) == (pytest.approx(px, abs=0.003), pytest.approx(py, abs=0.006))
+
+
+def test_flip_phase_turns_the_image_180_deg(platter):
+    """The other beat-phase sign: a kit whose receiver has it images every
+    point at (-x, -y) until Flip Phase is on."""
+    platter([(0.04, 0.02, 0.1)])
+    h = _headless()
+    _start(h)
+    img, x, y = _image(_sweep(h, range(-180, 180, 10)))
+    iy, ix = np.unravel_index(np.argmax(img), img.shape)
+    assert (x[ix], y[iy]) == (pytest.approx(0.04, abs=0.004), pytest.approx(0.02, abs=0.004))
+    img, _, _ = _image(h.isar_image({"flip": True})["data"])
+    iy, ix = np.unravel_index(np.argmax(img), img.shape)
+    assert (x[ix], y[iy]) == (pytest.approx(-0.04, abs=0.004), pytest.approx(-0.02, abs=0.004))
+
+
+@pytest.mark.parametrize("zero_khz,expect", [(None, 1.5), (104.0, 1.14), (97.0, 1.77)])
+def test_find_distance_reads_the_radar_range_scale(platter, zero_khz, expect):
+    """The platter on the profiles' own range scale, which an off 0 m beat
+    shifts (4 kHz is ~0.36 m at 500 MHz in 300 us); the image still focuses,
+    referenced to the leakage wherever it has moved to."""
+    platter([(0.04, 0.02, 0.1)])
+    h = _headless()
+    _start(h, zero_range_freq=None if zero_khz is None else zero_khz * 1e3)
+    _sweep(h, range(-180, 180, 10))
+    data = h.isar_find_distance({})["data"]
+    assert data["r0"] == pytest.approx(expect, abs=0.03)
+    img, x, y = _image(data)
+    iy, ix = np.unravel_index(np.argmax(img), img.shape)
+    assert (x[ix], y[iy]) == (pytest.approx(0.04, abs=0.004), pytest.approx(0.02, abs=0.004))
+
+
+def test_find_distance_needs_steps():
+    h = _headless()
+    _start(h)
+    assert "Capture a step first" in h.isar_find_distance({})["message"]
+
+
+def test_the_phase_reference_finds_a_leakage_moved_off_0_m():
+    """isar_profile turns the profile by the leakage's phase, where it is."""
+    fs, bw, ramp, n = 2e6, 500e6, 300e-6, 540
+    t = np.arange(n) / fs
+    beat = 104e3                     # the leakage, with the 0 m beat set at 100 kHz
+    x = 3.0 * np.exp(1j * (2 * np.pi * beat * t + 1.2))
+    ranges, prof = dsp.isar_profile(x, fs, bw, ramp, zero_range_freq=100e3)
+    k = int(np.argmax(np.abs(prof)))
+    assert ranges[k] == pytest.approx(0.36, abs=0.03)
+    assert abs(np.angle(prof[k])) < 1e-6

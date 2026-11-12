@@ -321,9 +321,14 @@
                   <label for="isar-clutter">Remove Clutter</label>
                   <label class="toggle-container set-switch"><input type="checkbox" id="isar-clutter"><span class="checkmark"></span></label>
                 </div>
+                <div class="set-row" title="Flip the sign of the beat phase. If a corner placed off the axis shows up on the opposite side of the image (turned 180°), turn this on. If it shows up mirrored left to right instead, the platter turned the other way from the angles: use a negative Step.">
+                  <label for="isar-flip">Flip Phase</label>
+                  <label class="toggle-container set-switch"><input type="checkbox" id="isar-flip"><span class="checkmark"></span></label>
+                </div>
                 <div class="taper-buttons mt-2">
                   <button class="btn btn-outline" id="isar-capture" disabled title="Start FMCW to capture ISAR steps">Capture Step</button>
                   <button class="btn btn-outline" id="isar-sweep-btn" hidden disabled title="Simulation: turn the platter through Sweep, a step at a time">Sweep</button>
+                  <button class="btn btn-outline" id="isar-find" title="Set Distance from the steps taken: the strongest return within 0.5 m of it, on the radar's own range scale (which follows the 0 m calibration, so it can differ from a tape measure)">Find Distance</button>
                   <button class="btn btn-outline" id="isar-clear" title="Forget the steps so far">Clear</button>
                 </div>
                 <div class="fmcw-capability mt-2" id="isar-status">No steps yet</div>

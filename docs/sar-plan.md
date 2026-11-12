@@ -127,6 +127,31 @@ scene and Save / Load of a step set. What the simulator showed:
   means flip the sign in `isar_backproject`.
 - Done when: two corners about 5 cm apart on the platter show as two spots.
 
+**S2 bench procedure (phaser-01).** Install the branch, open the radar page
+(no `?sim=1`) and pick **SAR**.
+
+- Set-up: the stand's tripod with the platter; the Phaser on its own tripod
+  ~1.5 m away, boresight on the platter's axis at target height. Type the
+  tape-measured distance into Distance.
+- Frame: at Angle 0, x is to the radar's right and y away from it. A
+  positive Step turns the platter counterclockwise seen from above (the
+  simulator's convention). Turn it the other way and use a negative Step.
+- Targets: a corner reflector only returns strongly within ~+-40 deg of
+  facing the radar, so a full turn wants targets that look the same from
+  every side -- upright drink cans, or bolts stood on end. (The simulator's
+  corners are isotropic; real ones aren't.)
+- Each step: click the platter one 5 deg detent, press Capture Step (Angle
+  moves on by itself). 72 steps make a full turn. After a few, press **Find
+  Distance**: it moves Distance onto the radar's own range scale.
+1. One can on the axis, a full turn. Expect one spot at (0, 0). A ring or
+   smear instead means phase drift between steps that the leakage
+   reference doesn't remove -- the first risk below.
+2. One can 5 cm to the radar's right and 3 cm beyond the axis, at Angle 0.
+   Expect a spot at (+5, +3). At (-5, -3), turn on **Flip Phase** (the
+   kit's beat-phase sign is the simulator's opposite). At (-5, +3), the
+   platter turned the other way: negative Step.
+3. Two cans 5 cm apart: two spots. That is S2 done.
+
 **S3. Motorized turntable. Deferred: not this semester (2026-11-12).**
 - A stepper on the stand's GT2 rim (300 teeth; with a 20T pulley 15:1), on
   the bracket mounts the stand already has. The Pi steps it and captures at

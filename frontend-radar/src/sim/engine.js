@@ -19,7 +19,7 @@ import {
 } from './constants.generated.js';
 import {
     captureBursts, captureLimits, chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
-    resolveTaper, sliceChirps, isarProfile, isarBackproject, isarFRef,
+    resolveTaper, sliceChirps, isarProfile, isarBackproject, isarFRef, isarFindDistance,
 } from './dsp.js';
 import {
     createGauss, finishCapture, finishChannels, synthesizeCw, synthesizeFmcw,
@@ -309,10 +309,11 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
     // --- ISAR: phaser_headless.isar_capture / isar_image / isar_clear --------
 
     function isarView(params = {}) {
-        const view = s.isarView || { r0: ISAR_R0_M, extent: ISAR_EXTENT_M, clutter: false };
+        const view = s.isarView || { r0: ISAR_R0_M, extent: ISAR_EXTENT_M, clutter: false, flip: false };
         if (params.r0 != null) view.r0 = Number(params.r0);
         if (params.extent != null) view.extent = Number(params.extent);
         if (params.clutter != null) view.clutter = Boolean(params.clutter);
+        if (params.flip != null) view.flip = Boolean(params.flip);
         if (!(view.r0 >= 0.2 && view.r0 <= 10) || !(view.extent >= 0.02 && view.extent <= 1)) {
             throw new Error('Target distance must be 0.2-10 m and the patch 0.02-1 m');
         }
@@ -327,7 +328,7 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
             data.n_steps = isar.profiles.length;
             data.angles = [...isar.angles];
             Object.assign(data, isarBackproject(isar.profiles, isar.angles, isar.ranges, isar.fRef,
-                view.r0, { extent: view.extent, clutter: view.clutter }));
+                view.r0, { extent: view.extent, clutter: view.clutter, flip: view.flip }));
         }
         return { status: 'ok', data };
     }
@@ -363,6 +364,16 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
 
     function isarImage(params = {}) {
         try { isarView(params); } catch (e) { return { status: 'error', message: `ISAR image: ${e.message}` }; }
+        return isarResult();
+    }
+
+    function isarFindDistanceCmd(params = {}) {
+        let view;
+        try { view = isarView(params); } catch (e) { return { status: 'error', message: `Find Distance: ${e.message}` }; }
+        if (!s.isar || !s.isar.profiles.length) {
+            return { status: 'error', message: 'Capture a step first: Find Distance reads the profiles' };
+        }
+        view.r0 = isarFindDistance(s.isar.profiles, s.isar.ranges, view.r0);
         return isarResult();
     }
 
@@ -509,6 +520,8 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
                 return isarImage(data);
             case 'isar_clear':
                 return isarClear();
+            case 'isar_find_distance':
+                return isarFindDistanceCmd(data);
 
             default:
                 return { status: 'error', message: `Unknown command: ${cmd}` };

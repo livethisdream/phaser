@@ -306,6 +306,8 @@ export const SPEC_WINDOW = {dsp.SPEC_WINDOW!r};
 export const ISAR_PAD = {dsp.ISAR_PAD!r};
 export const ISAR_EXTENT_M = {dsp.ISAR_EXTENT_M!r};
 export const ISAR_PIXELS = {dsp.ISAR_PIXELS!r};\nexport const ISAR_R0_M = {dsp.ISAR_R0_M!r};
+export const ISAR_LEAK_SEARCH_M = {dsp.ISAR_LEAK_SEARCH_M!r};
+export const ISAR_FIND_SPAN_M = {dsp.ISAR_FIND_SPAN_M!r};
 export const SPEC_HOP = {dsp.SPEC_HOP!r};
 export const CAPTURE_BURST_INTERVAL_S = {dsp.CAPTURE_BURST_INTERVAL_S!r};
 export const CAPTURE_MAX_BYTES = {dsp.CAPTURE_MAX_BYTES!r};

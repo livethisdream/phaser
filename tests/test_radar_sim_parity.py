@@ -608,6 +608,10 @@ ISAR_CASES = [
     ("isar_60_by_5", {"scene": "turntable"}, list(range(-30, 31, 5)), {}),
     ("isar_clutter_wide", {"scene": "turntable", "fft_window": "hann"},
      list(range(0, 91, 10)), {"clutter": True, "extent": 0.3, "r0": 1.45}),
+    # Flip Phase, and a 0 m beat far enough off that the leakage sits
+    # tenths of a meter from 0 m (the phase reference has to find it).
+    ("isar_flip_offset_zero", {"scene": "turntable", "zero_range_freq": 104_000.0},
+     list(range(-60, 61, 10)), {"flip": True}),
 ]
 ISAR_FLOOR_DB = -30.0
 
@@ -623,7 +627,9 @@ for (const [name, params, angles, view] of cases) {
         resp = engine.handle('isar_capture', { angle_deg: a, ...view });
         if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
     }
-    out[name] = resp.data;
+    const found = engine.handle('isar_find_distance', {});
+    if (found.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(found));
+    out[name] = { ...resp.data, found_r0: found.data.r0 };
 }
 process.stdout.write(JSON.stringify(out));
 """
@@ -658,7 +664,9 @@ def _python_isar(params, angles, view):
         for a in angles:
             resp = h.isar_capture({"angle_deg": a, **view})
             assert resp["status"] == "ok", resp
-        return resp["data"]
+        found = h.isar_find_distance({})
+        assert found["status"] == "ok", found
+        return {**resp["data"], "found_r0": found["data"]["r0"]}
     finally:
         phaser_sim.SimSDR.NOISE_SIGMA = original
 
@@ -680,8 +688,9 @@ def js_isar(tmp_path_factory):
 @pytest.mark.parametrize("name,params,angles,view", ISAR_CASES, ids=[c[0] for c in ISAR_CASES])
 def test_isar_image_matches_python(name, params, angles, view, js_isar):
     py, js = _python_isar(params, angles, view), js_isar[name]
-    for key in ("n_steps", "angles", "r0", "extent", "clutter"):
+    for key in ("n_steps", "angles", "r0", "extent", "clutter", "flip"):
         assert js[key] == py[key], key
+    assert js["found_r0"] == pytest.approx(py["found_r0"], abs=1e-3)
     np.testing.assert_allclose(js["x_axis"], py["x_axis"], atol=AXIS_TOL)
     a, b = np.asarray(py["image_db"]), np.asarray(js["image_db"])
     assert a.shape == b.shape

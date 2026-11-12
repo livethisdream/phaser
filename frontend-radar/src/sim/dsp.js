@@ -16,6 +16,7 @@ import {
     BYTES_PER_SAMPLE, CAPTURE_BURST_INTERVAL_S, CAPTURE_MAX_BYTES,
     RAMP_SYNCED, RAMP_FREE_RUNNING, RANGE_TIME_SCALE, MAX_BURST_BUFFER,
     RAMP_SETTLE_FRACTION, SPEC_WINDOW, SPEC_HOP, ISAR_PAD, ISAR_EXTENT_M, ISAR_PIXELS,
+    ISAR_LEAK_SEARCH_M, ISAR_FIND_SPAN_M,
 } from './constants.generated.js';
 
 export { window };
@@ -490,8 +491,8 @@ export function dopplerSpectrogram(cols, fs, chirpBw, rampTime, pri, outputFreq,
 
 /**
  * One step's complex range profile: the burst's chirps averaged, windowed,
- * FFT'd with `pad` x zero-padding, and turned so the 0 m bin (the leakage)
- * has zero phase. Returns {ranges, re, im}.
+ * FFT'd with `pad` x zero-padding, and turned so the leakage (the strongest
+ * bin within ISAR_LEAK_SEARCH_M of 0 m) has zero phase. Returns {ranges, re, im}.
  */
 export function isarProfile(cols, fs, chirpBw, rampTime, {
     zeroRangeFreq = 0, fftWindow = 'blackman', pad = ISAR_PAD,
@@ -508,8 +509,16 @@ export function isarProfile(cols, fs, chirpBw, rampTime, {
     const half = Math.floor(nFft / 2);
     const ws = sum(w);
     const ranges = rangeBins(nFft, fs, chirpBw, rampTime, zeroRangeFreq);
-    let k0 = 0;
-    for (let k = 1; k < half; k++) if (Math.abs(ranges[k]) < Math.abs(ranges[k0])) k0 = k;
+    let k0 = -1, best = -1;
+    for (let k = 0; k < half; k++) {
+        if (Math.abs(ranges[k]) > ISAR_LEAK_SEARCH_M) continue;
+        const m2 = spec.re[k] * spec.re[k] + spec.im[k] * spec.im[k];
+        if (m2 > best) { best = m2; k0 = k; }
+    }
+    if (k0 < 0) {
+        k0 = 0;
+        for (let k = 1; k < half; k++) if (Math.abs(ranges[k]) < Math.abs(ranges[k0])) k0 = k;
+    }
     const rr = spec.re[k0] / ws, ri = spec.im[k0] / ws;
     const mag = Math.hypot(rr, ri);
     const cr = mag > 0 ? rr / mag : 1, ci = mag > 0 ? -ri / mag : 0;   // conj(ref) / |ref|
@@ -541,15 +550,15 @@ function interp(x, xs, ys) {
  * the platter: phaser_radar_dsp.isar_backproject. Rows are y, columns x.
  */
 export function isarBackproject(profiles, anglesDeg, ranges, fRef, r0, {
-    extent = ISAR_EXTENT_M, nPix = ISAR_PIXELS, clutter = false,
+    extent = ISAR_EXTENT_M, nPix = ISAR_PIXELS, clutter = false, flip = false,
 } = {}) {
-    let profs = profiles;
+    let profs = flip ? profiles.map(p => ({ re: p.re, im: p.im.map(v => -v) })) : profiles;
     if (clutter && profiles.length > 1) {
         const len = profiles[0].re.length;
         const mr = new Float64Array(len), mi = new Float64Array(len);
-        for (const p of profiles) for (let k = 0; k < len; k++) { mr[k] += p.re[k]; mi[k] += p.im[k]; }
-        for (let k = 0; k < len; k++) { mr[k] /= profiles.length; mi[k] /= profiles.length; }
-        profs = profiles.map(p => ({ re: p.re.map((v, k) => v - mr[k]), im: p.im.map((v, k) => v - mi[k]) }));
+        for (const p of profs) for (let k = 0; k < len; k++) { mr[k] += p.re[k]; mi[k] += p.im[k]; }
+        for (let k = 0; k < len; k++) { mr[k] /= profs.length; mi[k] /= profs.length; }
+        profs = profs.map(p => ({ re: p.re.map((v, k) => v - mr[k]), im: p.im.map((v, k) => v - mi[k]) }));
     }
     const ax = new Float64Array(nPix);
     for (let i = 0; i < nPix; i++) ax[i] = (i - (nPix - 1) / 2) * (Number(extent) / (nPix - 1));
@@ -585,6 +594,25 @@ export function isarBackproject(profiles, anglesDeg, ranges, fRef, r0, {
     }
     const axis = rounded(ax, AXIS_DECIMALS);
     return { image_db: image, x_axis: axis, y_axis: axis.slice() };
+}
+
+/** phaser_radar_dsp.isar_find_distance: the strongest return near r0, averaged over steps. */
+export function isarFindDistance(profiles, ranges, r0, span = ISAR_FIND_SPAN_M) {
+    const len = ranges.length;
+    const mean = new Float64Array(len);
+    for (const p of profiles) for (let k = 0; k < len; k++) mean[k] += Math.hypot(p.re[k], p.im[k]);
+    for (let k = 0; k < len; k++) mean[k] /= profiles.length;
+    let kb = -1;
+    for (let k = 0; k < len; k++) {
+        if (Math.abs(ranges[k] - r0) > span || ranges[k] <= ISAR_LEAK_SEARCH_M) continue;
+        if (kb < 0 || mean[k] > mean[kb]) kb = k;
+    }
+    if (kb < 0) return Number(r0);
+    const db = Array.from(mean, v => 20 * Math.log10(Math.max(v, 1e-15)));
+    const pos = kb + peakOffset(db, kb);
+    const lo = Math.floor(pos), f = pos - lo;
+    const r = lo + 1 < len ? ranges[lo] + f * (ranges[lo + 1] - ranges[lo]) : ranges[lo];
+    return Math.round(r * 1e4) / 1e4;
 }
 
 /** The chirp's frequency at the first settled sample: start + slope x offset. */

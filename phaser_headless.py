@@ -1470,8 +1470,8 @@ class PhaserHeadless:
     def _isar_view(self, params):
         view = getattr(self, "isar_view", None) or {
             "r0": phaser_radar_dsp.ISAR_R0_M, "extent": phaser_radar_dsp.ISAR_EXTENT_M,
-            "clutter": False}
-        for key, cast in (("r0", float), ("extent", float), ("clutter", bool)):
+            "clutter": False, "flip": False}
+        for key, cast in (("r0", float), ("extent", float), ("clutter", bool), ("flip", bool)):
             if params.get(key) is not None:
                 view[key] = cast(params[key])
         if not (0.2 <= view["r0"] <= 10.0) or not (0.02 <= view["extent"] <= 1.0):
@@ -1486,7 +1486,7 @@ class PhaserHeadless:
             data.update(n_steps=len(isar["profiles"]), angles=list(isar["angles"]))
             data.update(phaser_radar_dsp.isar_backproject(
                 isar["profiles"], isar["angles"], isar["ranges"], isar["f_ref"],
-                view["r0"], extent=view["extent"], clutter=view["clutter"]))
+                view["r0"], extent=view["extent"], clutter=view["clutter"], flip=view["flip"]))
         return {"status": "ok", "data": data}
 
     def isar_capture(self, params=None):
@@ -1529,11 +1529,26 @@ class PhaserHeadless:
     def isar_image(self, params=None):
         """The image from the steps so far, re-formed with new view settings:
         `r0` (m, radar to turntable axis), `extent` (m, patch side) and
-        `clutter` (subtract the mean profile: still clutter doesn't turn)."""
+        `clutter` (subtract the mean profile: still clutter doesn't turn)
+        and `flip` (conjugate the profiles: the other beat-phase sign)."""
         try:
             self._isar_view(params or {})
         except (TypeError, ValueError) as e:
             return {"status": "error", "message": f"ISAR image: {e}"}
+        return self._isar_result()
+
+    def isar_find_distance(self, params=None):
+        """Set the target distance from the steps so far: the strongest
+        return near `r0` (or the current distance) on the radar's own range
+        scale, then re-form the image there."""
+        try:
+            view = self._isar_view(params or {})
+        except (TypeError, ValueError) as e:
+            return {"status": "error", "message": f"Find Distance: {e}"}
+        isar = getattr(self, "isar", None)
+        if not isar or not isar["profiles"]:
+            return {"status": "error", "message": "Capture a step first: Find Distance reads the profiles"}
+        view["r0"] = phaser_radar_dsp.isar_find_distance(isar["profiles"], isar["ranges"], view["r0"])
         return self._isar_result()
 
     def isar_clear(self):
@@ -2354,6 +2369,9 @@ class PhaserHeadless:
 
         elif cmd == "isar_clear":
             return self.isar_clear()
+
+        elif cmd == "isar_find_distance":
+            return self.isar_find_distance(data)
 
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}

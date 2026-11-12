@@ -463,9 +463,11 @@ Plotly.newPlot('chart-isar', [{
 }], Object.assign({}, getLayoutBase(), {
     title: { text: 'Turntable, from above (radar below)', font: { size: 12 } },
     annotations: isarHint(),
-    xaxis: { title: 'Cross-range (cm)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-8, 8] },
-    yaxis: { title: 'Down-range (cm)', gridcolor: getPlotPalette().gridColor, griddash: 'dash',
-             scaleanchor: 'x', scaleratio: 1, range: [-8, 8] },
+    // No grid: it showed only beside the image, where it read as part of it.
+    // 'domain' shrinks the plot to the square patch instead of padding it.
+    xaxis: { title: 'Cross-range (cm)', showgrid: false, zeroline: false, range: [-8, 8], constrain: 'domain' },
+    yaxis: { title: 'Down-range (cm)', showgrid: false, zeroline: false, range: [-8, 8], constrain: 'domain',
+             scaleanchor: 'x', scaleratio: 1 },
 }), { displayModeBar: false, responsive: true });
 
 function refreshWaterfallScale() {
@@ -1562,6 +1564,7 @@ function isarView() {
         r0: isarNumber('isar-r0', 1.5),
         extent: isarNumber('isar-extent', 0.16),
         clutter: Boolean(document.getElementById('isar-clutter')?.checked),
+        flip: Boolean(document.getElementById('isar-flip')?.checked),
     };
 }
 
@@ -1572,6 +1575,8 @@ function updateIsarButtons() {
     const sweep = document.getElementById('isar-sweep-btn');
     const row = document.getElementById('isar-sweep-row');
     if (row) row.hidden = !sim;
+    const find = document.getElementById('isar-find');
+    if (find) find.disabled = isarBusy || !isarSteps;
     if (sweep) {
         sweep.hidden = !sim;
         sweep.disabled = !ready || isarBusy;
@@ -1586,6 +1591,7 @@ function updateIsarButtons() {
 
 function renderIsar(data) {
     isarSteps = data.n_steps || 0;
+    updateIsarButtons();
     const status = document.getElementById('isar-status');
     if (status) {
         const a = data.angles || [];
@@ -1680,7 +1686,18 @@ document.getElementById('isar-clear')?.addEventListener('click', async () => {
 });
 
 // The view settings re-form the image from the steps already taken.
-for (const id of ['isar-r0', 'isar-extent', 'isar-clutter']) {
+document.getElementById('isar-find')?.addEventListener('click', async () => {
+    try {
+        const before = isarNumber('isar-r0', 1.5);
+        const data = await isarCall('isar_find_distance', isarView());
+        document.getElementById('isar-r0').value = String(data.r0);
+        log('info', 'SAR', `Distance ${before} m -> ${data.r0} m (the strongest return near it)`);
+    } catch (e) {
+        log('error', 'SAR', `Find Distance failed: ${e.message || e}`);
+    }
+});
+
+for (const id of ['isar-r0', 'isar-extent', 'isar-clutter', 'isar-flip']) {
     document.getElementById(id)?.addEventListener('change', async () => {
         if (!isarSteps) return;
         try {
