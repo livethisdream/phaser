@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CfxtA4iX.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-D-S0mciZ.css">
+  <script type="module" crossorigin src="./assets/index-DWLUxMWC.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-l72XKyTb.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -299,16 +299,16 @@
                   <label for="isar-sweep">Sweep (°)</label>
                   <input type="number" id="isar-sweep" class="set-ctrl" step="any" min="5" max="360" value="360">
                 </div>
-                <div class="set-row" title="From the array to the turntable's axis, in meters. Measure it: a few cm off blurs the image.">
-                  <label for="isar-r0">Target Distance (m)</label>
+                <div class="set-row" title="Target distance: from the array to the turntable's axis, in meters. Measure it: a few cm off blurs the image.">
+                  <label for="isar-r0">Distance (m)</label>
                   <input type="number" id="isar-r0" class="set-ctrl" step="0.01" min="0.2" max="10" value="1.5">
                 </div>
                 <div class="set-row" title="Side of the square patch of platter imaged, in meters, centered on the axis.">
                   <label for="isar-extent">Patch (m)</label>
                   <input type="number" id="isar-extent" class="set-ctrl" step="0.01" min="0.02" max="1" value="0.16">
                 </div>
-                <div class="set-row" title="Subtract the average over all steps from each one: still clutter (the room, the stand's base) doesn't turn, so it goes. So does a target right on the axis, which doesn't move either.">
-                  <label for="isar-clutter">Remove Still Clutter</label>
+                <div class="set-row" title="Remove still clutter: subtract the average over all steps from each one: still clutter (the room, the stand's base) doesn't turn, so it goes. So does a target right on the axis, which doesn't move either.">
+                  <label for="isar-clutter">Remove Clutter</label>
                   <label class="toggle-container set-switch"><input type="checkbox" id="isar-clutter"><span class="checkmark"></span></label>
                 </div>
                 <div class="taper-buttons mt-2">

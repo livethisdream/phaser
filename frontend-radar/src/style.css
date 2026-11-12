@@ -585,7 +585,10 @@ h1, h2, h3 {
      transition: max-height 0.3s ease-out, padding 0.3s ease;
 }
 .accordion-item.active .accordion-body {
-     max-height: 800px;
+     /* A cap, not a size: the open/close animation needs a number. Keep it
+        well above the tallest section -- FMCW passed 800px with SAR and its
+        last rows were cut off, unscrollable (2026-11-12). */
+     max-height: 3000px;
      padding: 0.35rem 0.5rem;
 }
 
