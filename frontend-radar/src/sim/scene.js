@@ -14,7 +14,7 @@
 import {
     AMP_SCALE, C, ELEMENT_SPACING_M, NOISE_SIGMA, RX_GAIN_AMPLITUDE,
     SCENE_PT_DBM, SCENE_GTGR_DB, SCENE_NF_DB, SCENE_NOISE_DBFS, SCENE_LEAKAGE_DBFS,
-    SCENE_R_MIN, SCENE_FULL_SCALE, SCENE_WALKER_PHASES,
+    SCENE_R_MIN, SCENE_FULL_SCALE, SCENE_WALKER_PHASES, SCENE_TURNTABLE_R0, SCENE_TURNTABLE_POINTS,
     SCENE_NOISE, FMCW_DEFAULT_SCENE_NOISE, SCENE_CLUTTER, SCENE_SKIRT, SCENE_FLUCT_HZ, SCENE_FLUCT_PHASE,
 } from './constants.generated.js';
 import { roundHalfEven } from './dsp.js';
@@ -196,14 +196,14 @@ export function sceneFluctDb(t, k, depthDb) {
  * the same order, as phaser_sim.scene_scatterers, `noise` (SCENE_NOISE) adding
  * the room's clutter and the leakage skirt and fading the moving targets.
  */
-export function sceneScatterers(name, fs, fc, noise = FMCW_DEFAULT_SCENE_NOISE) {
-    const out = sceneTargets(name, fs, fc);
+export function sceneScatterers(name, fs, fc, noise = FMCW_DEFAULT_SCENE_NOISE, turntableDeg = 0) {
+    const out = sceneTargets(name, fs, fc, turntableDeg);
     if (name === 'static') return out;
     const level = SCENE_NOISE[noise];
     if (!level) throw new Error(`unknown scene noise '${noise}'`);
     const depth = level.fluct_db;
     let res = out;
-    if (depth && name !== 'corners') {          // corner reflectors hold steady
+    if (depth && name !== 'corners' && name !== 'turntable') {   // corner reflectors hold steady
         res = [out[0], ...out.slice(1).map((sc, k) => ({
             ...sc, level: (r, t) => sc.level(r, t) + sceneFluctDb(t, k, depth),
         }))];
@@ -220,11 +220,26 @@ export function sceneScatterers(name, fs, fc, noise = FMCW_DEFAULT_SCENE_NOISE) 
     return res;
 }
 
+/** phaser_sim.turntable_point: platter point (x, y) turned by deg -> [range m, azimuth deg]. */
+export function turntablePoint(x, y, deg, r0 = SCENE_TURNTABLE_R0) {
+    const a = (deg * Math.PI) / 180;
+    const xw = x * Math.cos(a) - y * Math.sin(a);
+    const yw = r0 + x * Math.sin(a) + y * Math.cos(a);
+    return [Math.hypot(xw, yw), (Math.atan2(xw, yw) * 180) / Math.PI];
+}
+
 /** A scene's own scatterers, as fmcw_sim places them: leakage first. */
-function sceneTargets(name, fs, fc) {
+function sceneTargets(name, fs, fc, turntableDeg = 0) {
     const echo = (rcs) => (r) => sceneEchoDbfs(r, rcs, fs, fc);
     // `still`: range and level never change, so every chirp is the same one.
     const out = [{ range: () => 0, level: () => SCENE_LEAKAGE_DBFS, phase0: 0.7, az: 0, still: true }];
+    if (name === 'turntable') {
+        SCENE_TURNTABLE_POINTS.forEach(([x, y, rcs], k) => {
+            const [r0, az] = turntablePoint(x, y, turntableDeg);
+            out.push({ range: () => r0, level: echo(rcs), phase0: 0.4 + 0.9 * k, az, still: true });
+        });
+        return out;
+    }
     if (name === 'corners') {
         for (const [r0, ph] of [[1.0, 0.0], [2.0, 1.1], [3.0, 2.3]]) {
             out.push({ range: () => r0, level: echo(0.47), phase0: ph, az: 0, still: true });
@@ -257,7 +272,7 @@ function sceneTargets(name, fs, fc) {
  * A live scene, chirp by chirp at absolute time t0 + m PRI + t_fast:
  * phaser_sim._synthesize_fmcw_scene. Pre-AMP_SCALE units, like the others.
  */
-export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, noise, t0, elements, phaseError }) {
+export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, noise, t0, elements, phaseError, turntableDeg = 0 }) {
     const chans = emptyChannels(n);
     const numChirps = Math.max(1, Math.trunc(fmcw.num_chirps));
     let slot, rampN;
@@ -274,7 +289,7 @@ export function synthesizeFmcwScene({ n, fs, fmcw, plan, scene, noise, t0, eleme
     const pri = fmcw.pri, fIf = fmcw.signal_freq;
     const wr = new Float64Array(rampN), wi = new Float64Array(rampN);
     const still = emptyChannels(rampN);
-    for (const sc of sceneScatterers(scene, fs, fc, noise)) {
+    for (const sc of sceneScatterers(scene, fs, fc, noise, turntableDeg)) {
         const coef = subarrayCoefficients(elements, phaseError, sc.az, 1.0, wavelength);
         if (sc.still) {
             // Range and level never change: the same chirp in every slot, so

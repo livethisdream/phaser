@@ -44,7 +44,7 @@ const state = {
 
 // Every Plotly chart on the page, for the resize-after-layout-change passes.
 const ALL_CHARTS = ['chart-waterfall', 'chart-spectrum', 'chart-time',
-                    'chart-fmcw-range', 'chart-fmcw-wf', 'chart-fmcw-rd', 'chart-fmcw-sg'];
+                    'chart-fmcw-range', 'chart-fmcw-wf', 'chart-fmcw-rd', 'chart-fmcw-sg', 'chart-isar'];
 const C_LIGHT = 299792458;
 
 /* --- Theme --- */
@@ -438,6 +438,19 @@ Plotly.newPlot('chart-fmcw-sg', [{
 }), { displayModeBar: false, responsive: true });
 enableColorbarDrag('chart-fmcw-sg', 'sg');
 const SG_SECONDS = 6;     // burst time shown
+
+// ISAR image: the platter seen from above, the radar off the bottom edge.
+// 0 dB is the brightest pixel; the scale is fixed at 20 dB below it.
+Plotly.newPlot('chart-isar', [{
+    z: [[]], x: [], y: [], type: 'heatmap', colorscale: 'Hot', zmin: -20, zmax: 0, zauto: false,
+    colorbar: { title: 'dB', thickness: 12 },
+    hovertemplate: 'x=%{x:.1f} cm<br>y=%{y:.1f} cm<br>%{z:.1f} dB<extra></extra>',
+}], Object.assign({}, getLayoutBase(), {
+    title: { text: 'Turntable, from above (radar below)', font: { size: 12 } },
+    xaxis: { title: 'Cross-range (cm)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Down-range (cm)', gridcolor: getPlotPalette().gridColor, griddash: 'dash',
+             scaleanchor: 'x', scaleratio: 1 },
+}), { displayModeBar: false, responsive: true });
 
 function refreshWaterfallScale() {
     if (state.autoscale) {
@@ -1060,7 +1073,7 @@ async function refreshFmcwState() {
             if (state.fmcw.scenes && sceneSel.options.length !== Object.keys(state.fmcw.scenes).length) {
                 sceneSel.innerHTML = '';
                 for (const [name, label] of Object.entries(state.fmcw.scenes)) {
-                    const short = { static: 'Static', corners: 'Corners', walker: 'Walker', hand: 'Hand Wave' }[name] || name;
+                    const short = { static: 'Static', corners: 'Corners', walker: 'Walker', hand: 'Hand Wave', turntable: 'Turntable' }[name] || name;
                     const opt = new Option(short, name);
                     opt.title = label;
                     sceneSel.add(opt);
@@ -1437,6 +1450,7 @@ function updateFmcwSaveButton() {
         : !ready ? 'Start FMCW to save a capture'
         : !ok ? est
         : `Save raw chirps as a course .npz (iq, fs, fc, B, T_ramp, PRI, f0), downloaded to this computer: ${est}`;
+    updateIsarButtons();
 }
 document.getElementById('fmcw-save-dur')?.addEventListener('input', updateFmcwSaveButton);
 document.getElementById('fmcw-save-ch')?.addEventListener('change', updateFmcwSaveButton);
@@ -1478,6 +1492,149 @@ document.getElementById('fmcw-save')?.addEventListener('click', async () => {
         updateFmcwSaveButton();
     }
 });
+
+/* --- SAR: ISAR on the turntable (docs/sar-plan.md) ---
+   The radar holds still and the target turns. Capture Step records a burst
+   at the Angle field's turntable angle and moves the field on by Step; the
+   backend keeps every step's range profile and returns the image so far,
+   so it sharpens as the steps add up. In simulation the scene's platter
+   turns itself, and Sweep runs a whole set of steps. */
+let isarBusy = false;
+let isarSteps = 0;
+
+function isarNumber(id, fallback) {
+    const v = parseFloat(document.getElementById(id)?.value);
+    return Number.isFinite(v) ? v : fallback;
+}
+
+function isarView() {
+    return {
+        r0: isarNumber('isar-r0', 1.5),
+        extent: isarNumber('isar-extent', 0.16),
+        clutter: Boolean(document.getElementById('isar-clutter')?.checked),
+    };
+}
+
+function updateIsarButtons() {
+    const ready = state.runningMode === 'fmcw' && !state.playback;
+    const sim = Boolean(state.fmcw.scenes);
+    const cap = document.getElementById('isar-capture');
+    const sweep = document.getElementById('isar-sweep-btn');
+    const row = document.getElementById('isar-sweep-row');
+    if (row) row.hidden = !sim;
+    if (sweep) {
+        sweep.hidden = !sim;
+        sweep.disabled = !ready || isarBusy;
+    }
+    if (cap) {
+        cap.disabled = !ready || isarBusy;
+        cap.title = state.playback ? 'ISAR steps are live captures, not playback'
+            : !ready ? 'Start FMCW to capture ISAR steps'
+            : 'Record one burst at Angle, add it to the image, and move Angle on by Step';
+    }
+}
+
+function renderIsar(data) {
+    isarSteps = data.n_steps || 0;
+    const status = document.getElementById('isar-status');
+    if (status) {
+        const a = data.angles || [];
+        status.textContent = !isarSteps ? 'No steps yet'
+            : `${isarSteps} step${isarSteps === 1 ? '' : 's'}, ${Math.min(...a)}° to ${Math.max(...a)}°`;
+    }
+    if (!data.image_db) {
+        Plotly.restyle('chart-isar', { z: [[[]]], x: [[]], y: [[]] });
+        return;
+    }
+    const cm = (v) => v * 100;
+    Plotly.restyle('chart-isar', {
+        z: [data.image_db], x: [data.x_axis.map(cm)], y: [data.y_axis.map(cm)],
+    });
+}
+
+async function isarCall(cmd, params = {}) {
+    const resp = await transport.invoke(cmd, params, 30000);
+    if (resp.status !== 'ok') throw new Error(resp.message || `${cmd} failed`);
+    renderIsar(resp.data);
+    return resp.data;
+}
+
+function showIsarTab() {
+    const btn = document.querySelector('.tab-btn[data-target="tab-isar"]');
+    if (btn && !btn.classList.contains('active')) btn.click();
+}
+
+document.getElementById('isar-capture')?.addEventListener('click', async () => {
+    isarBusy = true;
+    updateIsarButtons();
+    try {
+        const angle = isarNumber('isar-angle', 0);
+        await isarCall('isar_capture', { angle_deg: angle, ...isarView() });
+        const next = +(angle + isarNumber('isar-step', 5)).toFixed(6);
+        document.getElementById('isar-angle').value = String(next);
+        showIsarTab();
+    } catch (e) {
+        log('error', 'SAR', `Capture Step failed: ${e.message || e}`);
+    } finally {
+        isarBusy = false;
+        updateIsarButtons();
+    }
+});
+
+document.getElementById('isar-sweep-btn')?.addEventListener('click', async () => {
+    isarBusy = true;
+    updateIsarButtons();
+    try {
+        // The sweep is meaningless on any scene but the turntable: switch to it.
+        const sceneSel = fmcwEl('fmcw-scene');
+        if (sceneSel && sceneSel.value !== 'turntable' && state.fmcw.scenes?.turntable) {
+            sceneSel.value = 'turntable';
+            sceneSel.dispatchEvent(new Event('change'));
+            log('info', 'SAR', 'Scene set to Turntable for the sweep');
+        }
+        const step = Math.max(0.1, isarNumber('isar-step', 5));
+        const sweep = Math.max(step, isarNumber('isar-sweep', 60));
+        const n = Math.round(sweep / step);
+        await isarCall('isar_clear');
+        showIsarTab();
+        let last = 0;
+        // A full turn ends where it began: leave out the repeat of the first step.
+        const steps = sweep >= 360 ? n : n + 1;
+        for (let k = 0; k < steps; k++) {
+            last = +(-sweep / 2 + k * step).toFixed(6);
+            await isarCall('isar_capture', { angle_deg: last, ...isarView() });
+            await new Promise(r => setTimeout(r, 0));     // let the image draw
+        }
+        document.getElementById('isar-angle').value = String(+(last + step).toFixed(6));
+        log('info', 'SAR', `Swept ${steps} steps, ${-sweep / 2}° to ${last}°`);
+    } catch (e) {
+        log('error', 'SAR', `Sweep failed: ${e.message || e}`);
+    } finally {
+        isarBusy = false;
+        updateIsarButtons();
+    }
+});
+
+document.getElementById('isar-clear')?.addEventListener('click', async () => {
+    try {
+        await isarCall('isar_clear');
+        document.getElementById('isar-angle').value = '0';
+    } catch (e) {
+        log('error', 'SAR', `Clear failed: ${e.message || e}`);
+    }
+});
+
+// The view settings re-form the image from the steps already taken.
+for (const id of ['isar-r0', 'isar-extent', 'isar-clutter']) {
+    document.getElementById(id)?.addEventListener('change', async () => {
+        if (!isarSteps) return;
+        try {
+            await isarCall('isar_image', isarView());
+        } catch (e) {
+            log('error', 'SAR', e.message || String(e));
+        }
+    });
+}
 
 /* --- Load Recording: play a course .npz through the FMCW views ---
    The recording's own fs, B, T_ramp, PRI, fc and f0 set the waveform; the

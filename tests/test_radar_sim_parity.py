@@ -596,3 +596,94 @@ def test_scenes_move():
     r = [_python_frame("fmcw", {"preset": "range_doppler", "scene": "walker"}, clock=t)["peak_range"]
          for t in (0.0, 1.5, 3.0, 4.5)]
     assert r[0] < r[1] < r[2] and r[3] < r[2], r
+
+
+# --- ISAR (docs/sar-plan.md, S1) ----------------------------------------------
+# A sweep of isar_capture steps on the turntable scene, then the image, each
+# side end to end. The scene's scatterers all hold still, so no clock is
+# needed. Cells are compared down to ISAR_FLOOR_DB below the peak: in the
+# nulls, complex64 against float64 rounding takes over.
+
+ISAR_CASES = [
+    ("isar_60_by_5", {"scene": "turntable"}, list(range(-30, 31, 5)), {}),
+    ("isar_clutter_wide", {"scene": "turntable", "fft_window": "hann"},
+     list(range(0, 91, 10)), {"clutter": True, "extent": 0.3, "r0": 1.45}),
+]
+ISAR_FLOOR_DB = -30.0
+
+_JS_ISAR_DRIVER = """
+import { createRadarEngine } from '%(sim)s/engine.js';
+const cases = JSON.parse(process.argv[2]);
+const out = {};
+for (const [name, params, angles, view] of cases) {
+    const engine = createRadarEngine({ noiseSigma: 0 });
+    let resp = engine.handle('start_fmcw_radar', params);
+    if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
+    for (const a of angles) {
+        resp = engine.handle('isar_capture', { angle_deg: a, ...view });
+        if (resp.status !== 'ok') throw new Error(name + ': ' + JSON.stringify(resp));
+    }
+    out[name] = resp.data;
+}
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _python_isar(params, angles, view):
+    if "adi" not in sys.modules:
+        sys.modules["adi"] = types.ModuleType("adi")
+    import phaser_sim
+
+    original = phaser_sim.SimSDR.NOISE_SIGMA
+    phaser_sim.SimSDR.NOISE_SIGMA = 0.0
+    try:
+        import phaser_headless
+
+        h = phaser_headless.PhaserHeadless.__new__(phaser_headless.PhaserHeadless)
+        h.sim_mode = True
+        h.c = 299792458
+        h._do_init_hardware()
+        h.mode = "idle"
+        h.sweeping = False
+        h.cw_params = {}
+        h.cw_saved_sdr = {}
+        h.cw_lock = threading.RLock()
+        h.fmcw_params = {}
+        h.fmcw_saved = {}
+        h.fmcw_hw = None
+        h.fmcw_cfg = None
+        h.fmcw_plan = None
+        h.cal_process = None
+        assert h.start_fmcw_radar(dict(params))["status"] == "ok"
+        for a in angles:
+            resp = h.isar_capture({"angle_deg": a, **view})
+            assert resp["status"] == "ok", resp
+        return resp["data"]
+    finally:
+        phaser_sim.SimSDR.NOISE_SIGMA = original
+
+
+@pytest.fixture(scope="module")
+def js_isar(tmp_path_factory):
+    if NODE is None:
+        pytest.skip("node is not installed")
+    sim_dir = (ROOT / "frontend-radar" / "src" / "sim").as_posix()
+    driver = tmp_path_factory.mktemp("radar_isar_parity") / "driver.mjs"
+    driver.write_text(_JS_ISAR_DRIVER % {"sim": sim_dir})
+    proc = subprocess.run([NODE, str(driver), json.dumps([list(c) for c in ISAR_CASES])],
+                          capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0:
+        raise AssertionError(f"node driver failed:\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.parametrize("name,params,angles,view", ISAR_CASES, ids=[c[0] for c in ISAR_CASES])
+def test_isar_image_matches_python(name, params, angles, view, js_isar):
+    py, js = _python_isar(params, angles, view), js_isar[name]
+    for key in ("n_steps", "angles", "r0", "extent", "clutter"):
+        assert js[key] == py[key], key
+    np.testing.assert_allclose(js["x_axis"], py["x_axis"], atol=AXIS_TOL)
+    a, b = np.asarray(py["image_db"]), np.asarray(js["image_db"])
+    assert a.shape == b.shape
+    keep = (a > ISAR_FLOOR_DB) | (b > ISAR_FLOOR_DB)
+    np.testing.assert_allclose(b[keep], a[keep], atol=0.1)

@@ -282,6 +282,39 @@
                   <button class="btn btn-outline" id="fmcw-load" title="Play a recorded capture (a course .npz) through these views, as if live">Load Capture</button>
                 </div>
                 <input type="file" id="fmcw-load-file" accept=".npz" hidden>
+                <!-- SAR: ISAR on the turntable (docs/sar-plan.md) -->
+                <hr class="divider"/>
+                <div class="set-label-row" title="ISAR: the radar holds still while the target turns on the turntable. Each step records one burst at the angle below; the steps are combined into an image of the platter, on the ISAR Image tab.">SAR (Turntable)</div>
+                <div class="set-row" title="The turntable angle of the next step, in degrees. It moves on by Step after each capture; on the kit, turn the platter to match before pressing Capture Step.">
+                  <label for="isar-angle">Angle (°)</label>
+                  <input type="number" id="isar-angle" class="set-ctrl" step="any" value="0">
+                </div>
+                <div class="set-row" title="Degrees between steps: one 5° detent on the printed stand. Smaller steps image a wider patch without ghosts (5° is clean to about ±8 cm from the axis).">
+                  <label for="isar-step">Step (°)</label>
+                  <input type="number" id="isar-step" class="set-ctrl" step="any" min="0.1" max="45" value="5">
+                </div>
+                <div class="set-row" id="isar-sweep-row" hidden title="Simulation: how far Sweep turns the platter, centered on 0°. A short sweep resolves across (60° gives 1.4 cm) but hardly down-range; a full 360° turn gives about 7 mm both ways.">
+                  <label for="isar-sweep">Sweep (°)</label>
+                  <input type="number" id="isar-sweep" class="set-ctrl" step="any" min="5" max="360" value="360">
+                </div>
+                <div class="set-row" title="From the array to the turntable's axis, in meters. Measure it: a few cm off blurs the image.">
+                  <label for="isar-r0">Target Distance (m)</label>
+                  <input type="number" id="isar-r0" class="set-ctrl" step="0.01" min="0.2" max="10" value="1.5">
+                </div>
+                <div class="set-row" title="Side of the square patch of platter imaged, in meters, centered on the axis.">
+                  <label for="isar-extent">Patch (m)</label>
+                  <input type="number" id="isar-extent" class="set-ctrl" step="0.01" min="0.02" max="1" value="0.16">
+                </div>
+                <div class="set-row" title="Subtract the average over all steps from each one: still clutter (the room, the stand's base) doesn't turn, so it goes. So does a target right on the axis, which doesn't move either.">
+                  <label for="isar-clutter">Remove Still Clutter</label>
+                  <label class="toggle-container set-switch"><input type="checkbox" id="isar-clutter"><span class="checkmark"></span></label>
+                </div>
+                <div class="taper-buttons mt-2">
+                  <button class="btn btn-outline" id="isar-capture" disabled title="Start FMCW to capture ISAR steps">Capture Step</button>
+                  <button class="btn btn-outline" id="isar-sweep-btn" hidden disabled title="Simulation: turn the platter through Sweep, a step at a time">Sweep</button>
+                  <button class="btn btn-outline" id="isar-clear" title="Forget the steps so far">Clear</button>
+                </div>
+                <div class="fmcw-capability mt-2" id="isar-status">No steps yet</div>
               </div>
             </div>
 
@@ -312,6 +345,7 @@
               <button class="tab-btn" data-target="tab-fmcw-rd" data-mode="fmcw" hidden>Range-Doppler</button>
               <button class="tab-btn" data-target="tab-fmcw-sg" data-mode="fmcw" hidden title="Micro-Doppler: velocity against time at one range">Spectrogram</button>
               <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw" hidden>Range</button>
+              <button class="tab-btn" data-target="tab-isar" data-mode="fmcw" hidden title="ISAR: the turntable steps combined into an image of the platter">ISAR Image</button>
               <button class="tab-btn" data-target="tab-logs">Logs</button>
             </div>
           </div>
@@ -343,6 +377,9 @@
           </div>
           <div class="chart-wrapper tab-content" id="tab-fmcw-sg">
             <div id="chart-fmcw-sg" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-isar">
+            <div id="chart-isar" style="width:100%; height:100%;"></div>
           </div>
           <div class="chart-wrapper tab-content" id="tab-logs">
             <div class="logs-pane">

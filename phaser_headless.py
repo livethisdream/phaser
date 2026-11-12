@@ -1461,6 +1461,86 @@ class PhaserHeadless:
             "data": base64.b64encode(blob).decode("ascii"),
         }
 
+    # --- ISAR (docs/sar-plan.md, S1/S2) -------------------------------------
+    # The radar holds still and the target turns on the printed stand. Each
+    # Capture Step records one burst at the turntable angle the user gives
+    # (in simulation the scene's platter is turned to it), keeps its range
+    # profile, and backprojects every step so far onto the platter.
+
+    def _isar_view(self, params):
+        view = getattr(self, "isar_view", None) or {
+            "r0": phaser_radar_dsp.ISAR_R0_M, "extent": phaser_radar_dsp.ISAR_EXTENT_M,
+            "clutter": False}
+        for key, cast in (("r0", float), ("extent", float), ("clutter", bool)):
+            if params.get(key) is not None:
+                view[key] = cast(params[key])
+        if not (0.2 <= view["r0"] <= 10.0) or not (0.02 <= view["extent"] <= 1.0):
+            raise ValueError("Target distance must be 0.2-10 m and the patch 0.02-1 m")
+        self.isar_view = view
+        return view
+
+    def _isar_result(self):
+        isar, view = getattr(self, "isar", None), self.isar_view
+        data = {"n_steps": 0, "angles": [], **view}
+        if isar and isar["profiles"]:
+            data.update(n_steps=len(isar["profiles"]), angles=list(isar["angles"]))
+            data.update(phaser_radar_dsp.isar_backproject(
+                isar["profiles"], isar["angles"], isar["ranges"], isar["f_ref"],
+                view["r0"], extent=view["extent"], clutter=view["clutter"]))
+        return {"status": "ok", "data": data}
+
+    def isar_capture(self, params=None):
+        """One ISAR step: a burst at turntable angle `angle_deg`, its profile
+        kept, and the image so far returned (`r0`, `extent`, `clutter` as
+        isar_image). A changed plan (preset, frequency, bandwidth) starts a
+        new set of steps: profiles from two plans don't add up."""
+        params = params or {}
+        try:
+            angle = float(params["angle_deg"])
+            self._isar_view(params)
+        except (KeyError, TypeError, ValueError) as e:
+            return {"status": "error", "message": f"ISAR step: {e}"}
+        if self.mode != "fmcw_radar":
+            return {"status": "error", "message": "Start FMCW to capture an ISAR step"}
+        with self._get_mode_lock():
+            cfg, plan = self.fmcw_cfg, self.fmcw_plan
+            if self.mode != "fmcw_radar" or cfg is None or plan is None:
+                return {"status": "error", "message": "Start FMCW to capture an ISAR step"}
+            if not plan["synced"]:
+                return {"status": "error", "message": "ISAR needs a synced preset, such as Range + Velocity"}
+            if self.sim_mode:
+                self.sdr.turntable_deg = angle
+            data = phaser_fmcw_radar.capture_fmcw_frame(self.sdr, self.fmcw_hw, plan)
+        zero = cfg.get("zero_range_freq")
+        zero = cfg["signal_freq"] if zero is None else zero
+        ranges, profile = phaser_radar_dsp.isar_profile(
+            data, plan["sample_rate"], cfg["chirp_bw"], plan["effective_ramp_time"],
+            zero_range_freq=zero, fft_window=cfg.get("fft_window", "blackman"))
+        key = (plan["sample_rate"], cfg["chirp_bw"], plan["effective_ramp_time"],
+               cfg["output_freq"], float(zero), len(ranges))
+        isar = getattr(self, "isar", None)
+        if not isar or isar["key"] != key:
+            isar = self.isar = {"key": key, "ranges": ranges, "profiles": [], "angles": [],
+                                "f_ref": phaser_radar_dsp.isar_f_ref(cfg, plan)}
+        isar["profiles"].append(profile)
+        isar["angles"].append(angle)
+        return self._isar_result()
+
+    def isar_image(self, params=None):
+        """The image from the steps so far, re-formed with new view settings:
+        `r0` (m, radar to turntable axis), `extent` (m, patch side) and
+        `clutter` (subtract the mean profile: still clutter doesn't turn)."""
+        try:
+            self._isar_view(params or {})
+        except (TypeError, ValueError) as e:
+            return {"status": "error", "message": f"ISAR image: {e}"}
+        return self._isar_result()
+
+    def isar_clear(self):
+        self.isar = None
+        self._isar_view({})
+        return self._isar_result()
+
     def do_fmcw_radar_frame(self):
         """Capture and process one FMCW frame. Returns the broadcast payload.
 
@@ -2265,6 +2345,15 @@ class PhaserHeadless:
 
         elif cmd == "save_fmcw_capture":
             return self.save_fmcw_capture(data)
+
+        elif cmd == "isar_capture":
+            return self.isar_capture(data)
+
+        elif cmd == "isar_image":
+            return self.isar_image(data)
+
+        elif cmd == "isar_clear":
+            return self.isar_clear()
 
         else:
             return {"status": "error", "message": f"Unknown command: {cmd}"}

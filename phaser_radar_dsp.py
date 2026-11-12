@@ -736,6 +736,82 @@ def doppler_spectrogram(matrix, sample_rate, chirp_bw, ramp_time, pri, output_fr
     }
 
 
+# ISAR: the radar still, the target turning on the printed stand
+# (docs/sar-plan.md). Each step's burst becomes one range profile; the
+# profiles are backprojected onto the platter.
+ISAR_PAD = 8            # zero-padding of the range FFT, for interpolation
+ISAR_EXTENT_M = 0.16    # imaged patch, m square: 5 deg steps alias beyond ~+-8 cm
+ISAR_PIXELS = 81        # pixels a side (2 mm)
+ISAR_R0_M = 1.5         # default radar-to-turntable-axis distance, m
+
+
+def isar_profile(matrix, sample_rate, chirp_bw, ramp_time, zero_range_freq=0.0,
+                 fft_window="blackman", pad=ISAR_PAD):
+    """One step's complex range profile: the burst's chirps averaged (the
+    scene holds still), windowed and FFT'd with `pad` x zero-padding.
+
+    Phase reference: the profile is turned so the 0 m bin -- the Tx->Rx
+    leakage, a path inside the kit that doesn't move -- has zero phase, so
+    drift between bursts seconds apart cancels. Returns (ranges, profile).
+    """
+    m = np.asarray(matrix)
+    x = m.mean(axis=1) if m.ndim == 2 else m
+    n = len(x)
+    w = window(fft_window, n)
+    n_fft = _fast_len(n) * int(pad)
+    spec = np.fft.fft(x * w, n=n_fft)[: n_fft // 2] / float(np.sum(w))
+    ranges = _range_bins(n_fft, sample_rate, chirp_bw, ramp_time, zero_range_freq)
+    k0 = int(np.argmin(np.abs(ranges)))
+    ref = spec[k0]
+    if abs(ref) > 0:
+        spec = spec * np.conj(ref) / abs(ref)
+    return ranges, spec
+
+
+def isar_backproject(profiles, angles_deg, ranges, f_ref, r0, extent=ISAR_EXTENT_M,
+                     n_pix=ISAR_PIXELS, clutter=False):
+    """Backproject range profiles taken at turntable angles onto the platter.
+
+    Pixel (x, y) in the platter's frame (y away from the radar at 0 deg,
+    the axis r0 m out on boresight) sits, at angle a, at range
+    R = |(x cos a - y sin a, r0 + x sin a + y cos a)|; its echo in that
+    step's profile has phase -4 pi R f_ref / c, so the image is the sum over
+    steps of profile(R) * exp(+j 4 pi R f_ref / c). `f_ref` is the frequency
+    at the first sample of each chirp's settled part. `clutter` subtracts the
+    mean profile over all steps first: still clutter doesn't turn with the
+    platter. Returns {"image_db" (rows = y, cols = x, 0 dB at the peak),
+    "x_axis", "y_axis"}.
+    """
+    p = np.asarray(profiles, dtype=complex)
+    if clutter and len(p) > 1:
+        p = p - p.mean(axis=0, keepdims=True)
+    ax = (np.arange(n_pix) - (n_pix - 1) / 2) * (float(extent) / (n_pix - 1))
+    gx, gy = np.meshgrid(ax, ax)
+    k = 4.0 * np.pi * float(f_ref) / C
+    img = np.zeros_like(gx, dtype=complex)
+    rr = np.asarray(ranges, dtype=float)
+    for prof, deg in zip(p, angles_deg):
+        a = np.radians(float(deg))
+        xw = gx * np.cos(a) - gy * np.sin(a)
+        yw = float(r0) + gx * np.sin(a) + gy * np.cos(a)
+        rng = np.hypot(xw, yw)
+        val = np.interp(rng, rr, prof.real) + 1j * np.interp(rng, rr, prof.imag)
+        img += val * np.exp(1j * k * rng)
+    mag = np.abs(img)
+    peak = float(mag.max()) or 1.0
+    return {
+        "image_db": rounded(20.0 * np.log10(np.maximum(mag / peak, 1e-6)), DB_DECIMALS),
+        "x_axis": rounded(ax, AXIS_DECIMALS),
+        "y_axis": rounded(ax, AXIS_DECIMALS),
+    }
+
+
+def isar_f_ref(cfg, plan):
+    """The chirp's frequency at the first settled sample: start + slope x offset."""
+    slope = float(cfg["chirp_bw"]) / float(plan["effective_ramp_time"])
+    return float(cfg["output_freq"]) + slope * float(plan.get("start_offset_samples", 0)) / float(plan["sample_rate"])
+
+
 # --- frame payload (C3) ----------------------------------------------------
 #
 # What the backend sends the browser each frame. A range_doppler map is ~60 x

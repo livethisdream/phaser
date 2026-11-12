@@ -1,8 +1,8 @@
 # SAR mode: plan
 
-Status: draft for review, revised 2026-11-12. No code until the open
-decisions below are settled. FMCW (C5) passed on phaser-01 on 2026-11-11,
-which this builds on.
+Status: S1 (simulator, ISAR) in progress, 2026-11-12. S3 (motorized
+turntable) is deferred: not this semester. FMCW (C5) passed on phaser-01 on
+2026-11-11, which this builds on.
 
 ## What it is
 
@@ -85,7 +85,20 @@ is what a student can follow.
 
 ## Phases (each its own PR into radar-dev)
 
-**S1. Simulator, both geometries.**
+**S1. Simulator, both geometries.** ISAR part done, 2026-11-12: the
+`turntable` scene, `phaser_radar_dsp.isar_profile` / `isar_backproject`
+(Python and JS, parity in `tests/test_radar_sim_parity.py`), the headless
+`isar_capture` / `isar_image` / `isar_clear` commands, and a SAR (Turntable)
+section plus an ISAR Image tab in the radar UI. Two corners 3 cm apart
+resolve with 60 deg (`tests/test_isar.py`). Still to come: the SAR rail
+scene and Save / Load of a step set. What the simulator showed:
+- 60 deg resolves across (1.4 cm) but barely down-range (~11 cm): the
+  image is streaks. A full 360 deg turn gives ~7 mm both ways, so the
+  simulated Sweep defaults to 360 deg.
+- 5 deg steps image cleanly only within ~8 cm of the axis (grating lobes
+  at lambda / (2 x step) = 17 cm), so the patch defaults to 16 cm.
+- Remove Still Clutter is off by default: it also removes a target on the
+  axis, which S2's first test uses.
 - Scenes: point targets on a rotating platter (ISAR), and point targets in a
   room with the radar's position as a parameter of the FMCW synthesis (SAR).
 - `phaser_radar_dsp.sar_backproject` in Python and JS, with parity cases.
@@ -106,9 +119,14 @@ is what a student can follow.
   is step count x 5 deg, or typed in.
 - First test: a single corner on the axis must focus to one spot. That checks
   the phase reference before anything else.
+- Second test: one corner off the axis, on a known side. The image's
+  handedness depends on the sign of the beat phase, which the simulator
+  and the kit may not share (the simulator's Doppler sign is opposite the
+  kit's: it reads an approaching target as positive). A mirrored image
+  means flip the sign in `isar_backproject`.
 - Done when: two corners about 5 cm apart on the platter show as two spots.
 
-**S3. Motorized turntable.**
+**S3. Motorized turntable. Deferred: not this semester (2026-11-12).**
 - A stepper on the stand's GT2 rim (300 teeth; with a 20T pulley 15:1), on
   the bracket mounts the stand already has. The Pi steps it and captures at
   each angle, so a sweep runs unattended.

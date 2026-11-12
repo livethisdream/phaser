@@ -1552,3 +1552,13 @@ input.set-ctrl {
 .set-ctrl.set-invalid {
     border-color: var(--error);
 }
+
+/* A small heading inside a settings section (SAR). */
+.set-label-row {
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted, inherit);
+    margin: 0.25rem 0 0.5rem;
+}
