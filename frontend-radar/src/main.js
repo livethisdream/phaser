@@ -19,6 +19,9 @@ const state = {
     // CW or FMCW: which controls, tabs and Start the page shows, and which
     // mode is running on the backend (null when idle).
     uiMode: 'cw',
+    // SAR mode is FMCW underneath (the Range + Velocity chirp): uiMode reads
+    // 'fmcw' and this is set, so the FMCW frame path runs unchanged.
+    sar: false,
     runningMode: null,
     playback: null,          // a recording playing through the FMCW views, or null
     fmcw: {
@@ -121,6 +124,8 @@ const accordionIcons = [
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M3.5 5h17v11h-17z"></path><path d="M9 19h6M12 16v3"></path></svg>',
     // 4. FMCW (sawtooth ramps)
     '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><path d="M4 18L10 6M10 18l6-12M16 18l4-8"></path></svg>',
+    // 5. SAR (a turntable)
+    '<svg viewBox="0 0 24 24" style="width:100%; height:100%; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round;"><ellipse cx="12" cy="15" rx="8" ry="3"></ellipse><path d="M12 12V5M8.5 7.5a5 2 0 0 1 7 0"></path></svg>',
 ];
 
 document.querySelectorAll('.accordion-icon[data-icon]').forEach(iconEl => {
@@ -239,6 +244,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
    single-chirp Range profile is a tab to pick, not the first view: on its
    own it is the hardest of the three to read. */
 function fmcwDefaultTab() {
+    if (state.sar && !state.playback) return 'tab-isar';
     const multi = state.playback
         ? state.playback.info?.mode === 'burst'
         : (state.fmcw.preset_info?.[document.getElementById('fmcw-preset')?.value]?.num_chirps ?? 256) > 1;
@@ -439,6 +445,15 @@ Plotly.newPlot('chart-fmcw-sg', [{
 enableColorbarDrag('chart-fmcw-sg', 'sg');
 const SG_SECONDS = 6;     // burst time shown
 
+// What to do, on the empty ISAR plot.
+function isarHint() {
+    return [{
+        text: 'No image yet: press Start, then Capture Step<br>(or Sweep, in simulation) in SAR (Turntable)',
+        xref: 'paper', yref: 'paper', x: 0.5, y: 0.5, showarrow: false,
+        font: { size: 14, color: getPlotPalette().fontColor },
+    }];
+}
+
 // ISAR image: the platter seen from above, the radar off the bottom edge.
 // 0 dB is the brightest pixel; the scale is fixed at 20 dB below it.
 Plotly.newPlot('chart-isar', [{
@@ -447,9 +462,10 @@ Plotly.newPlot('chart-isar', [{
     hovertemplate: 'x=%{x:.1f} cm<br>y=%{y:.1f} cm<br>%{z:.1f} dB<extra></extra>',
 }], Object.assign({}, getLayoutBase(), {
     title: { text: 'Turntable, from above (radar below)', font: { size: 12 } },
-    xaxis: { title: 'Cross-range (cm)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    annotations: isarHint(),
+    xaxis: { title: 'Cross-range (cm)', gridcolor: getPlotPalette().gridColor, griddash: 'dash', range: [-8, 8] },
     yaxis: { title: 'Down-range (cm)', gridcolor: getPlotPalette().gridColor, griddash: 'dash',
-             scaleanchor: 'x', scaleratio: 1 },
+             scaleanchor: 'x', scaleratio: 1, range: [-8, 8] },
 }), { displayModeBar: false, responsive: true });
 
 function refreshWaterfallScale() {
@@ -587,7 +603,7 @@ function setRunningUi(running, mode = state.uiMode) {
         btn.disabled = !running && state.uiMode === 'fmcw' && state.fmcw.available === false;
     }
     // One mode at a time on the backend: switch only while idle.
-    document.querySelectorAll('#mode-cw, #mode-fmcw').forEach(b => { b.disabled = running; });
+    document.querySelectorAll('#mode-cw, #mode-fmcw, #mode-sar').forEach(b => { b.disabled = running; });
 }
 
 /* --- CW / FMCW mode switch --- */
@@ -649,25 +665,44 @@ function updateModeGating() {
         gateRow(document.getElementById(id)?.closest('.set-row'), fmcw, why));
 }
 
+// The view the mode tabs show: 'cw', 'fmcw' or 'sar' (FMCW underneath).
+function viewMode() {
+    return state.sar ? 'sar' : state.uiMode;
+}
+
+// The settings sections each view shows (indices into accordionItems):
+// FMCW's own section in FMCW only, SAR's in SAR only.
+const FMCW_SECTION = 4, SAR_SECTION = 5;
+
 function setUiMode(mode) {
     const prev = state.uiMode;
-    state.uiMode = mode === 'fmcw' ? 'fmcw' : 'cw';
+    state.sar = mode === 'sar';
+    state.uiMode = mode === 'fmcw' || mode === 'sar' ? 'fmcw' : 'cw';
+    const view = viewMode();
     if (prev !== state.uiMode) {
         hwStash[prev] = readHw();
         writeHw(state.uiMode === 'fmcw' ? (hwStash.fmcw || presetHw()) : hwStash.cw);
     }
     updateModeGating();
     document.getElementById('mode-cw')?.classList.toggle('active', state.uiMode === 'cw');
-    document.getElementById('mode-fmcw')?.classList.toggle('active', state.uiMode === 'fmcw');
+    document.getElementById('mode-fmcw')?.classList.toggle('active', view === 'fmcw');
+    document.getElementById('mode-sar')?.classList.toggle('active', view === 'sar');
+    document.getElementById('mode-cw')?.classList.toggle('active', view === 'cw');
     const modeTabs = document.querySelector('.mode-tabs');
-    if (modeTabs) modeTabs.dataset.mode = state.uiMode;
+    if (modeTabs) modeTabs.dataset.mode = view;
+    for (const [idx, shown] of [[FMCW_SECTION, view === 'fmcw'], [SAR_SECTION, view === 'sar']]) {
+        if (accordionItems[idx]) accordionItems[idx].hidden = !shown;
+        sidebarSectionButtons.forEach(b => {
+            if (parseInt(b.dataset.section, 10) === idx) b.hidden = !shown;
+        });
+    }
     // Show the mode's tabs (and Logs), and land on its first one -- in FMCW,
     // the plot that suits the preset (fmcwDefaultTab).
     let first = null;
     document.querySelectorAll('.tab-btn').forEach(b => {
-        const m = b.dataset.mode;
-        b.hidden = Boolean(m) && m !== state.uiMode;
-        if (!first && m === state.uiMode) first = b;
+        const modes = (b.dataset.mode || '').split(' ').filter(Boolean);
+        b.hidden = modes.length > 0 && !modes.includes(view);
+        if (!first && modes.includes(view)) first = b;
     });
     if (state.uiMode === 'fmcw') showFmcwDefaultTab({ force: true });
     else first?.click();
@@ -677,11 +712,12 @@ function setUiMode(mode) {
     rangeBox.title = state.uiMode === 'fmcw' ? '' : 'FMCW only: CW measures velocity, not range.';
     if (state.uiMode !== 'fmcw') document.getElementById('stat-peak-range').textContent = '-- m';
     // The FMCW settings open with FMCW; CW keeps the Hardware section.
-    activateSidebarSection(state.uiMode === 'fmcw' ? 4 : 0);
+    activateSidebarSection(view === 'sar' ? SAR_SECTION : view === 'fmcw' ? FMCW_SECTION : 0);
     setRunningUi(state.running, state.runningMode || state.uiMode);
 }
 document.getElementById('mode-cw')?.addEventListener('click', () => setUiMode('cw'));
 document.getElementById('mode-fmcw')?.addEventListener('click', () => setUiMode('fmcw'));
+document.getElementById('mode-sar')?.addEventListener('click', () => setUiMode('sar'));
 
 /* --- Frame rate, shared by both modes --- */
 // Frames counted over the last second. An average of 1/dt between messages
@@ -1008,6 +1044,20 @@ function fmcwPeak(frame, { cal = false } = {}) {
 
 /* --- FMCW controls --- */
 const fmcwEl = (id) => document.getElementById(id);
+
+/* SAR's Start: the Range + Velocity chirp (256 chirps a burst, averaged per
+   step), no MTI or CFAR, the preset's own frequency and gains, and in
+   simulation the turntable scene. The FMCW pane's other settings (window,
+   taper, 0 m calibration) carry over. */
+function readSarParams() {
+    const params = readFmcwParams();
+    for (const k of ['output_freq', 'rx_gain', 'tx_gain', 'range_max', 'spectrogram_range']) delete params[k];
+    return {
+        ...params,
+        preset: 'range_doppler', mti: 'none', cfar: false,
+        scene: state.fmcw.scenes?.turntable ? 'turntable' : undefined,
+    };
+}
 
 function readFmcwParams() {
     const params = {
@@ -1544,11 +1594,16 @@ function renderIsar(data) {
     }
     if (!data.image_db) {
         Plotly.restyle('chart-isar', { z: [[[]]], x: [[]], y: [[]] });
+        Plotly.relayout('chart-isar', { annotations: isarHint() });
         return;
     }
     const cm = (v) => v * 100;
     Plotly.restyle('chart-isar', {
         z: [data.image_db], x: [data.x_axis.map(cm)], y: [data.y_axis.map(cm)],
+    });
+    const half = (data.extent ?? 0.16) * 50;     // m -> cm, half the patch
+    Plotly.relayout('chart-isar', {
+        annotations: [], 'xaxis.range': [-half, half], 'yaxis.range': [-half, half],
     });
 }
 
@@ -1587,7 +1642,7 @@ document.getElementById('isar-sweep-btn')?.addEventListener('click', async () =>
     try {
         // The sweep is meaningless on any scene but the turntable: switch to it.
         const sceneSel = fmcwEl('fmcw-scene');
-        if (sceneSel && sceneSel.value !== 'turntable' && state.fmcw.scenes?.turntable) {
+        if (!state.sar && sceneSel && sceneSel.value !== 'turntable' && state.fmcw.scenes?.turntable) {
             sceneSel.value = 'turntable';
             sceneSel.dispatchEvent(new Event('change'));
             log('info', 'SAR', 'Scene set to Turntable for the sweep');
@@ -1841,14 +1896,14 @@ async function startRadar() {
     const mode = state.uiMode;
     try {
         const resp = mode === 'fmcw'
-            ? await transport.startFmcwRadar(readFmcwParams())
+            ? await transport.startFmcwRadar(state.sar ? readSarParams() : readFmcwParams())
             : await transport.startCwRadar(readParams());
         if (resp.status === 'ok') {
             state.last_frame_t = null;
             state.fmcw.waterfall = null;
             state.fmcw.last = null;
             setRunningUi(true, mode);
-            log('info', 'Radar', `Started ${mode.toUpperCase()}`);
+            log('info', 'Radar', `Started ${viewMode().toUpperCase()}`);
             if (mode === 'fmcw') await refreshFmcwState();
         } else {
             log('error', 'Radar', `Start failed: ${resp.message || JSON.stringify(resp)}`);

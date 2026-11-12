@@ -88,8 +88,9 @@ is what a student can follow.
 **S1. Simulator, both geometries.** ISAR part done, 2026-11-12: the
 `turntable` scene, `phaser_radar_dsp.isar_profile` / `isar_backproject`
 (Python and JS, parity in `tests/test_radar_sim_parity.py`), the headless
-`isar_capture` / `isar_image` / `isar_clear` commands, and a SAR (Turntable)
-section plus an ISAR Image tab in the radar UI. Two corners 3 cm apart
+`isar_capture` / `isar_image` / `isar_clear` commands, and a SAR mode in
+the radar UI (a third mode tab beside CW and FMCW: FMCW's Range + Velocity
+chirp underneath, its own settings section and an ISAR Image tab). Two corners 3 cm apart
 resolve with 60 deg (`tests/test_isar.py`). Still to come: the SAR rail
 scene and Save / Load of a step set. What the simulator showed:
 - 60 deg resolves across (1.4 cm) but barely down-range (~11 cm): the

@@ -56,6 +56,12 @@
               <path d="M4 18L10 6M10 18l6-12M16 18l4-8"></path>
             </svg>
           </button>
+          <button class="sidebar-icon-btn" data-section="5" title="SAR (Turntable)" aria-label="SAR (Turntable)" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <ellipse cx="12" cy="15" rx="8" ry="3"></ellipse>
+              <path d="M12 12V5M8.5 7.5a5 2 0 0 1 7 0"></path>
+            </svg>
+          </button>
           <div class="sidebar-icons-spacer"></div>
           <button class="sidebar-icon-btn" id="btn-theme-toggle-icon" title="Switch theme" aria-label="Switch theme">
             <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-moon">
@@ -78,6 +84,7 @@
           <div class="mode-tabs" role="tablist" aria-label="Radar mode" data-mode="cw">
             <button class="mode-tab active" id="mode-cw" role="tab" title="CW Doppler: velocity">CW</button>
             <button class="mode-tab" id="mode-fmcw" role="tab" title="FMCW: range, and range-Doppler">FMCW</button>
+            <button class="mode-tab" id="mode-sar" role="tab" title="SAR: image a target turning on the turntable (ISAR)">SAR</button>
           </div>
 
           <div class="accordion" id="accordionSettings">
@@ -282,10 +289,15 @@
                   <button class="btn btn-outline" id="fmcw-load" title="Play a recorded capture (a course .npz) through these views, as if live">Load Capture</button>
                 </div>
                 <input type="file" id="fmcw-load-file" accept=".npz" hidden>
-                <!-- SAR: ISAR on the turntable (docs/sar-plan.md) -->
-                <hr class="divider"/>
-                <div class="set-label-row" title="ISAR: the radar holds still while the target turns on the turntable. Each step records one burst at the angle below; the steps are combined into an image of the platter, on the ISAR Image tab.">SAR (Turntable)</div>
-                <div class="set-row" title="The turntable angle of the next step, in degrees. It moves on by Step after each capture; on the kit, turn the platter to match before pressing Capture Step.">
+              </div>
+            </div>
+
+            <!-- 6. SAR: ISAR on the turntable (docs/sar-plan.md). Shown in SAR mode only. -->
+            <div class="accordion-item" id="sar-section" hidden>
+              <button class="accordion-header" title="ISAR: the radar holds still while the target turns on the turntable. Each step records one burst at Angle; the steps are combined into an image of the platter, on the ISAR Image tab."><span class="accordion-icon" data-icon="5"></span> SAR (Turntable) <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="fmcw-capability" id="sar-capability">Runs the Range + Velocity chirp</div>
+                <div class="set-row mt-2" title="The turntable angle of the next step, in degrees. It moves on by Step after each capture; on the kit, turn the platter to match before pressing Capture Step.">
                   <label for="isar-angle">Angle (°)</label>
                   <input type="number" id="isar-angle" class="set-ctrl" step="any" value="0">
                 </div>
@@ -341,11 +353,11 @@
               <button class="tab-btn active" data-target="tab-waterfall" data-mode="cw">Waterfall</button>
               <button class="tab-btn" data-target="tab-spectrum" data-mode="cw">Spectrum</button>
               <button class="tab-btn" data-target="tab-time" data-mode="cw">Time-Domain</button>
-              <button class="tab-btn" data-target="tab-fmcw-wf" data-mode="fmcw" hidden>Range Waterfall</button>
+              <button class="tab-btn" data-target="tab-fmcw-wf" data-mode="fmcw sar" hidden>Range Waterfall</button>
               <button class="tab-btn" data-target="tab-fmcw-rd" data-mode="fmcw" hidden>Range-Doppler</button>
               <button class="tab-btn" data-target="tab-fmcw-sg" data-mode="fmcw" hidden title="Micro-Doppler: velocity against time at one range">Spectrogram</button>
-              <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw" hidden>Range</button>
-              <button class="tab-btn" data-target="tab-isar" data-mode="fmcw" hidden title="ISAR: the turntable steps combined into an image of the platter">ISAR Image</button>
+              <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw sar" hidden>Range</button>
+              <button class="tab-btn" data-target="tab-isar" data-mode="sar" hidden title="ISAR: the turntable steps combined into an image of the platter">ISAR Image</button>
               <button class="tab-btn" data-target="tab-logs">Logs</button>
             </div>
           </div>
