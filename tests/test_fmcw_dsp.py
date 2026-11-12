@@ -758,3 +758,11 @@ def test_spectrogram_follows_the_mover_in_the_frame():
     assert held["sg_range"] == pytest.approx(7.0, abs=0.35)
     rows = _dsp.decode_db_u8(held["sg_map"]).shape
     assert rows == (13, _dsp.SPEC_WINDOW)
+
+
+def test_every_preset_runs_at_a_rate_the_pluto_accepts():
+    """The AD9361 refuses rates below 521 kS/s without a decimating FIR.
+    Micro-Doppler at 0.3 MS/s would not start on phaser-01 (2026-11-12);
+    the simulator has no such limit, so only this test catches it."""
+    for name, preset in _dsp.FMCW_PRESETS.items():
+        assert preset["sample_rate"] >= _dsp.MIN_SAMPLE_RATE, f"{name}: {preset['sample_rate']} S/s"
