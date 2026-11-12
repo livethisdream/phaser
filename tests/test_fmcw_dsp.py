@@ -716,3 +716,12 @@ def test_a_real_mover_still_reads(mti, mover_db, mover_r):
     rd = _still_room(mti, mover_db=mover_db, mover_r=mover_r)
     assert rd["peak_velocity"] == pytest.approx(-1.2, abs=0.05)
     assert rd["peak_range"] == pytest.approx(mover_r, abs=0.1)
+
+
+
+def test_every_preset_runs_at_a_rate_the_pluto_accepts():
+    """The AD9361 refuses rates below 521 kS/s without a decimating FIR.
+    Micro-Doppler at 0.3 MS/s would not start on phaser-01 (2026-11-12);
+    the simulator has no such limit, so only this test catches it."""
+    for name, preset in _dsp.FMCW_PRESETS.items():
+        assert preset["sample_rate"] >= _dsp.MIN_SAMPLE_RATE, f"{name}: {preset['sample_rate']} S/s"

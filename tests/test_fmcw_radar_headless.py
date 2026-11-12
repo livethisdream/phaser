@@ -628,7 +628,7 @@ def test_capture_limits_per_preset():
     assert rd["kind"] == "bursts" and rd["run_s"] == dsp.CAPTURE_BURST_INTERVAL_S
     assert dsp.capture_bytes(rd, rd["max_s"]) <= dsp.CAPTURE_MAX_BYTES
     assert caps["range_doppler_far"]["max_s"] < rd["max_s"]      # twice the samples
-    assert caps["micro_doppler"]["kind"] == "burst" and caps["micro_doppler"]["max_s"] > 10
+    assert caps["micro_doppler"]["kind"] == "burst" and caps["micro_doppler"]["max_s"] > 5
     assert caps["range"]["kind"] == "frames" and caps["range"]["max_s"] == dsp.CAPTURE_MAX_FRAMES_S
     for c in caps.values():
         assert c["bytes_per_s_iq_ch"] == pytest.approx(3 * c["bytes_per_s"])
@@ -700,7 +700,7 @@ def test_micro_doppler_preset_saves_seconds_with_iq_ch():
     h = _headless()
     _start(h, preset="micro_doppler")
     resp, cap = _saved(h, duration_s=3.0, iq_ch=True)
-    assert cap["iq"].shape[0] == 6000 and float(cap["fs"]) == 300_000.0
+    assert cap["iq"].shape[0] == 6000 and float(cap["fs"]) == 600_000.0
     assert cap["iq_ch"].shape == (2,) + cap["iq"].shape
     lim = h.get_fmcw_radar_state()["data"]["capture"]
     assert resp["size"] == pytest.approx(lim["bytes_per_s_iq_ch"] * 3.0, rel=0.01)

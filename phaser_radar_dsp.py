@@ -971,6 +971,11 @@ FMCW_HW_DEFAULTS = {
     "prefetch": True,      # synced: fire the next burst while this frame is processed
 }
 
+# The AD9361's lowest sample rate without a decimating FIR loaded (pyadi-iio:
+# "Does not currently support sample rates below 521e3"). Every preset must
+# run at or above it, or it will not start on a kit.
+MIN_SAMPLE_RATE = 521e3
+
 # One preset per lab. Values come from the script the lab runs, except where
 # the lab text disagrees, where the lab wins. center_freq is deliberately in
 # none of them: it is the kit's characterized IF, which differs per unit (see
@@ -1051,13 +1056,16 @@ FMCW_PRESETS = {
     },
     # Micro-Doppler: long continuous records of moving targets (a walker, a
     # fan, a spinner) to classify by their micro-Doppler signatures. 300 us
-    # chirps every 0.5 ms at 0.3 MS/s, as the ECE 444 classification
-    # recordings (ece444 radar-data/L31_*.npz) were made. The low rate is what makes a
-    # long continuous record fit the Pluto's burst buffer -- ~14 s against
-    # ~2 s at range_doppler's 2 MS/s -- at the cost of range: the beat
-    # reaches Nyquist 4.5 m above the 0 m frequency, so the display stops at 4 m.
+    # chirps every 0.5 ms, as the ECE 444 classification recordings (ece444
+    # radar-data/L31_*.npz) were made -- but at 0.6 MS/s, not their 0.3: the
+    # AD9361 refuses rates below 521 kS/s without a decimating FIR, and on
+    # phaser-01 (2026-11-12) the preset would not start. 0.6 MS/s is what
+    # Range (Basic) already runs there. The low rate is what makes a long
+    # continuous record fit the Pluto's burst buffer -- ~7 s against ~2 s at
+    # range_doppler's 2 MS/s. The beat reaches Nyquist ~17 m out; the display
+    # stops at 4 m, where micro-Doppler targets are.
     "micro_doppler": {
-        "sample_rate": 300_000,
+        "sample_rate": 600_000,
         "output_freq": 10e9,
         "chirp_bw": 500e6,
         "ramp_time": 300e-6,
@@ -1110,7 +1118,7 @@ FMCW_PRESET_UI = {
     "range": ("Range (Basic)", "FMCW lab: the 0 m calibration and kHz per meter."),
     "range_sync": ("Range (Fast)", "A steeper chirp, out to ~375 m."),
     "cfar": ("Range (CFAR)", "CFAR lab: tune the threshold, then Apply."),
-    "micro_doppler": ("Micro-Doppler", "Long continuous records of moving targets for micro-Doppler: 0.3 MS/s, up to ~14 s, out to 4 m."),
+    "micro_doppler": ("Micro-Doppler", "Long continuous records of moving targets for micro-Doppler: 0.6 MS/s, up to ~7 s, shown out to 4 m."),
 }
 
 
