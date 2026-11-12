@@ -716,3 +716,45 @@ def test_a_real_mover_still_reads(mti, mover_db, mover_r):
     rd = _still_room(mti, mover_db=mover_db, mover_r=mover_r)
     assert rd["peak_velocity"] == pytest.approx(-1.2, abs=0.05)
     assert rd["peak_range"] == pytest.approx(mover_r, abs=0.1)
+
+
+# --- Micro-Doppler spectrogram ---------------------------------------------
+
+def test_spectrogram_shows_a_spinner_both_ways():
+    """Two blades of a spinner at 1 m, tips at +-3 m/s turning at 10 Hz: the
+    spectrogram's columns, ~8 ms apart, reach both signs, a burst at a time."""
+    n_fast, n_slow, fs, pri, fc = 539, 256, 2e6, 5e-4, 10e9
+    t_fast = np.arange(n_fast)[:, None] / fs
+    t = np.arange(n_slow)[None, :] * pri
+    beat = 100e3 + 2 * 500e6 * 1.0 / (_dsp.C * 300e-6)
+    lam = _dsp.C / fc
+    m = np.zeros((n_fast, n_slow), complex)
+    for sign in (+1, -1):
+        # radial displacement of a blade tip: r_tip sin(2 pi f t); v = 2 pi f r_tip cos(...)
+        r_tip = 3.0 / (2 * np.pi * 10)
+        disp = sign * r_tip * np.sin(2 * np.pi * 10 * t)
+        m = m + 1e3 * np.exp(2j * np.pi * beat * t_fast - 4j * np.pi * disp / lam)
+    sg = _dsp.doppler_spectrogram(m, fs, 500e6, 300e-6, pri, fc, 1.0, zero_range_freq=100e3)
+    cols = np.asarray(sg["columns_db"])
+    v = np.asarray(sg["velocity_axis"])
+    assert cols.shape == ((n_slow - _dsp.SPEC_WINDOW) // _dsp.SPEC_HOP + 1, _dsp.SPEC_WINDOW)
+    assert sg["t_step"] == pytest.approx(_dsp.SPEC_HOP * pri)
+    assert sg["range"] == pytest.approx(1.0, abs=0.2)
+    # Energy at the tips' speed on both sides, somewhere in the burst.
+    loud = cols > cols.max() - 20
+    assert np.any(loud[:, v > 1.5]) and np.any(loud[:, v < -1.5])
+    assert not np.any(loud[:, np.abs(v) > 4.5])
+
+
+def test_spectrogram_follows_the_mover_in_the_frame():
+    """The payload's spectrogram sits at the range-Doppler peak unless held."""
+    import sys, types
+    sys.modules.setdefault("adi", types.ModuleType("adi"))
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_radar_sim_parity import _python_frame
+    f = _python_frame("fmcw", {})
+    assert f["sg_range"] == pytest.approx(f["peak_range"], abs=0.35)
+    held = _python_frame("fmcw", {"spectrogram_range": 7.0})
+    assert held["sg_range"] == pytest.approx(7.0, abs=0.35)
+    rows = _dsp.decode_db_u8(held["sg_map"]).shape
+    assert rows == (13, _dsp.SPEC_WINDOW)

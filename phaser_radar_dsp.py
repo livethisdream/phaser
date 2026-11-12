@@ -688,6 +688,54 @@ def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq
     }
 
 
+# Micro-Doppler spectrogram: velocity against time at one range. Each burst
+# is cut into SPEC_WINDOW-chirp windows SPEC_HOP chirps apart, so a 256-chirp
+# burst gives 13 columns ~8 ms apart -- fine enough to see a spinner's blades
+# flicker, not one smear a frame.
+SPEC_WINDOW = 64
+SPEC_HOP = 16
+
+
+def doppler_spectrogram(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq,
+                        range_m, zero_range_freq=0.0, fft_window="blackman",
+                        mti="none", win_len=SPEC_WINDOW, hop=SPEC_HOP):
+    """Short-time Doppler spectra of the chirp matrix at one range.
+
+    The range bin nearest `range_m` and its two neighbors are taken straight
+    from the fast-time DFT (three bins, not a full FFT), then each window of
+    `win_len` chirps, `hop` apart, gets its own slow-time FFT; power is summed
+    over the three bins. dB in the map's units, MTI's lift above unity taken
+    out as range_doppler_map does. Returns {"columns_db": [n_cols][win_len],
+    "velocity_axis", "t_step" (s between columns), "range" (m)}.
+    """
+    matrix = np.asarray(matrix)
+    n_fast, n_slow = matrix.shape
+    n_fft = _fast_len(n_fast)
+    ranges = _range_bins(n_fft, sample_rate, chirp_bw, ramp_time, zero_range_freq)
+    k0 = int(np.argmin(np.abs(ranges - float(range_m))))
+    ks = np.array([k for k in (k0 - 1, k0, k0 + 1) if 0 <= k < len(ranges)])
+    w_fast = window(fft_window, n_fast)
+    n = np.arange(n_fast)
+    dft = np.exp(-2j * np.pi * np.outer(ks, n) / n_fft)
+    x = dft @ (matrix * w_fast[:, None])                     # bins x chirps
+    win_len = int(min(win_len, n_slow))
+    hop = max(1, int(hop))
+    w_slow = window(fft_window, win_len)
+    doppler_hz = np.fft.fftshift(np.fft.fftfreq(win_len, float(pri)))
+    lift = np.maximum(mti_gain_db(doppler_hz, pri, mti), 0.0)
+    cols = []
+    for start in range(0, n_slow - win_len + 1, hop):
+        y = np.fft.fftshift(np.fft.fft(x[:, start:start + win_len] * w_slow[None, :], axis=1), axes=1)
+        mag = np.sqrt(np.sum(np.abs(y) ** 2, axis=0))
+        cols.append(_to_db(mag, float(np.sum(w_fast)) * float(np.sum(w_slow)) / win_len) - lift)
+    return {
+        "columns_db": np.asarray(cols).tolist(),
+        "velocity_axis": (C * doppler_hz / (2.0 * float(output_freq))).tolist(),
+        "t_step": hop * float(pri),
+        "range": float(ranges[k0]),
+    }
+
+
 # --- frame payload (C3) ----------------------------------------------------
 #
 # What the backend sends the browser each frame. A range_doppler map is ~60 x
@@ -1093,6 +1141,9 @@ FMCW_PROC_DEFAULTS = {
     # it without MTI and ~60 dB with (phaser-01, 2026-11-11); a hand is
     # ~15-20 dB below such a corner, a person ~10 dB below a wall. 0 = off.
     "clutter_margin_db": 30.0,
+    # m; where the micro-Doppler spectrogram looks. None follows the strongest
+    # mover (the range-Doppler peak); a number holds it there.
+    "spectrogram_range": None,
 }
 
 # What start_fmcw_radar runs when no preset is named: range and velocity

@@ -15,7 +15,7 @@ import {
     AXIS_DECIMALS, CAPTURE_SINGLE_CHIRP_FRAMES, CAPTURE_MAX_FRAMES_S, CAPTURE_FRAME_S,
     BYTES_PER_SAMPLE, CAPTURE_BURST_INTERVAL_S, CAPTURE_MAX_BYTES,
     RAMP_SYNCED, RAMP_FREE_RUNNING, RANGE_TIME_SCALE, MAX_BURST_BUFFER,
-    RAMP_SETTLE_FRACTION,
+    RAMP_SETTLE_FRACTION, SPEC_WINDOW, SPEC_HOP,
 } from './constants.generated.js';
 
 export { window };
@@ -428,6 +428,64 @@ function base64(bytes) {
 }
 
 /** A 2D dB array as one byte a cell, base64, with its own scale. */
+/** phaser_radar_dsp.doppler_spectrogram: short-time Doppler spectra at one range. */
+export function dopplerSpectrogram(cols, fs, chirpBw, rampTime, pri, outputFreq, rangeM, {
+    zeroRangeFreq = 0, fftWindow = 'blackman', mti = 'none', winLen = SPEC_WINDOW, hop = SPEC_HOP,
+} = {}) {
+    const nSlow = cols.length;
+    const nFast = cols[0].re.length;
+    const nFft = fastLen(nFast);
+    const ranges = rangeBins(nFft, fs, chirpBw, rampTime, zeroRangeFreq);
+    let k0 = 0;
+    for (let k = 1; k < ranges.length; k++) {
+        if (Math.abs(ranges[k] - rangeM) < Math.abs(ranges[k0] - rangeM)) k0 = k;
+    }
+    const ks = [k0 - 1, k0, k0 + 1].filter(k => k >= 0 && k < ranges.length);
+    const wFast = window(fftWindow, nFast);
+    // Three bins of the fast-time DFT, every chirp: x[b][c].
+    const xr = ks.map(() => new Float64Array(nSlow)), xi = ks.map(() => new Float64Array(nSlow));
+    ks.forEach((k, b) => {
+        const cr = new Float64Array(nFast), ci = new Float64Array(nFast);
+        for (let n = 0; n < nFast; n++) {
+            const a = (-2 * Math.PI * k * n) / nFft;
+            cr[n] = Math.cos(a) * wFast[n]; ci[n] = Math.sin(a) * wFast[n];
+        }
+        for (let c = 0; c < nSlow; c++) {
+            const col = cols[c];
+            let re = 0, im = 0;
+            for (let n = 0; n < nFast; n++) {
+                re += col.re[n] * cr[n] - col.im[n] * ci[n];
+                im += col.re[n] * ci[n] + col.im[n] * cr[n];
+            }
+            xr[b][c] = re; xi[b][c] = im;
+        }
+    });
+    const W = Math.min(winLen, nSlow);
+    const step = Math.max(1, Math.trunc(hop));
+    const wSlow = window(fftWindow, W);
+    const dopplerHz = fftshift(fftfreq(W, Number(pri)));
+    const lift = mtiGainDb(dopplerHz, pri, mti).map(g => Math.max(g, 0));
+    const norm = (sum(wFast) * sum(wSlow)) / W;
+    const columns = [];
+    for (let start = 0; start + W <= nSlow; start += step) {
+        const pow = new Float64Array(W);
+        for (let b = 0; b < ks.length; b++) {
+            const yr = new Float64Array(W), yi = new Float64Array(W);
+            for (let i = 0; i < W; i++) { yr[i] = xr[b][start + i] * wSlow[i]; yi[i] = xi[b][start + i] * wSlow[i]; }
+            const Y = fft(yr, yi);
+            for (let i = 0; i < W; i++) pow[i] += Y.re[i] * Y.re[i] + Y.im[i] * Y.im[i];
+        }
+        const shifted = fftshift(pow);
+        columns.push(Array.from(shifted, (p, i) => toDb(Math.sqrt(p), norm) - lift[i]));
+    }
+    return {
+        columns_db: columns,
+        velocity_axis: Array.from(dopplerHz, f => (C * f) / (2 * Number(outputFreq))),
+        t_step: step * Number(pri),
+        range: ranges[k0],
+    };
+}
+
 export function encodeDbU8(mapDb, spanDb = MAP_SPAN_DB) {
     const rows = mapDb.length, cols = rows ? mapDb[0].length : 0;
     let hi = -Infinity, lo = Infinity;
@@ -602,6 +660,18 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
                 mti: cfg.mti ?? 'none', peakSnrDb: cfg.peak_snr_db ?? 0,
                 stationary: data, clutterMarginDb: cfg.clutter_margin_db ?? 0,
             });
+        // The micro-Doppler spectrogram, at Spectrogram Range or the strongest mover.
+        const sgAt = cfg.spectrogram_range == null ? rd.peak_range : Number(cfg.spectrogram_range);
+        const sg = sgAt != null && matrix.length >= 2
+            ? dopplerSpectrogram(matrix, fs, cfg.chirp_bw, ramp, plan.pri_ms / 1e3, cfg.output_freq, sgAt, {
+                zeroRangeFreq: zero, fftWindow, mti: cfg.mti ?? 'none',
+            }) : null;
+        Object.assign(out, {
+            sg_map: sg ? encodeDbU8(sg.columns_db) : null,
+            sg_velocity_axis: sg ? rounded(sg.velocity_axis, AXIS_DECIMALS) : null,
+            sg_range: sg ? sg.range : null,
+            sg_t_step: sg ? sg.t_step : null,
+        });
         Object.assign(out, {
             kind: 'range_doppler',
             peak_range: rd.peak_range,

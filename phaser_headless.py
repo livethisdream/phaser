@@ -1036,7 +1036,7 @@ class PhaserHeadless:
     # Params that only change processing; they apply on the next frame.
     _FMCW_LIVE_KEYS = frozenset({
         "mti", "fft_window", "range_max", "vel_max", "zero_range_freq", "peak_exclude", "peak_min",
-        "peak_snr_db", "clutter_margin_db",
+        "peak_snr_db", "clutter_margin_db", "spectrogram_range",
         "scene", "scene_noise",
         "cfar", "cfar_guard", "cfar_ref", "cfar_bias_db",
     })
@@ -1496,6 +1496,19 @@ class PhaserHeadless:
                 peak_exclude=cfg.get("peak_exclude", 0.0), mti=cfg.get("mti", "none"),
                 peak_snr_db=cfg.get("peak_snr_db", 0.0),
                 stationary=data, clutter_margin_db=cfg.get("clutter_margin_db", 0.0))
+            sg_at = cfg.get("spectrogram_range")
+            sg_at = rd["peak_range"] if sg_at is None else float(sg_at)
+            sg = (phaser_radar_dsp.doppler_spectrogram(
+                matrix, fs, cfg["chirp_bw"], ramp, plan["pri_ms"] / 1e3, cfg["output_freq"],
+                sg_at, zero_range_freq=zero, fft_window=window, mti=cfg.get("mti", "none"))
+                if sg_at is not None and matrix.shape[1] >= 2 else None)
+            out.update({
+                "sg_map": phaser_radar_dsp.encode_db_u8(sg["columns_db"]) if sg else None,
+                "sg_velocity_axis": phaser_radar_dsp.rounded(
+                    sg["velocity_axis"], phaser_radar_dsp.AXIS_DECIMALS) if sg else None,
+                "sg_range": sg["range"] if sg else None,
+                "sg_t_step": sg["t_step"] if sg else None,
+            })
             out.update({
                 "kind": "range_doppler",
                 "peak_range": rd["peak_range"],

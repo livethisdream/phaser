@@ -29,6 +29,7 @@ const state = {
         last: null,          // the last frame, for the 0 m calibration
         span_db: 60,         // color scale: the top down this far
         scales: {},          // per chart: the fixed color scale {top, bottom} (colorScale)
+        sg: null,            // spectrogram: {vel, range, step, cols} (pushSpectrogram)
         avg: null,           // averaged single-chirp profile power, for the readout
         readout_t: 0,        // when the peak readouts last changed
         preset_info: {},     // {preset: {num_chirps}}, from get_fmcw_radar_state
@@ -43,7 +44,7 @@ const state = {
 
 // Every Plotly chart on the page, for the resize-after-layout-change passes.
 const ALL_CHARTS = ['chart-waterfall', 'chart-spectrum', 'chart-time',
-                    'chart-fmcw-range', 'chart-fmcw-wf', 'chart-fmcw-rd'];
+                    'chart-fmcw-range', 'chart-fmcw-wf', 'chart-fmcw-rd', 'chart-fmcw-sg'];
 const C_LIGHT = 299792458;
 
 /* --- Theme --- */
@@ -423,6 +424,20 @@ Plotly.newPlot('chart-fmcw-rd', [{
 
 enableColorbarDrag('chart-fmcw-wf', 'wf');
 enableColorbarDrag('chart-fmcw-rd', 'rd');
+
+// Micro-Doppler spectrogram: velocity (y) against burst time (x), at one
+// range. Each frame adds its columns (13 a 256-chirp burst, ~8 ms apart) and
+// the oldest scroll off; time counts burst time, so gaps between bursts close.
+Plotly.newPlot('chart-fmcw-sg', [{
+    z: [[]], x: [], y: [], type: 'heatmap', colorscale: 'Electric',
+    colorbar: { title: 'dB', thickness: 12 },
+    hovertemplate: 't=%{x:.2f} s<br>v=%{y:.2f} m/s<br>%{z:.1f} dB<extra></extra>',
+}], Object.assign({}, getLayoutBase(), {
+    xaxis: { title: 'Time (s)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+    yaxis: { title: 'Velocity (m/s)', gridcolor: getPlotPalette().gridColor, griddash: 'dash' },
+}), { displayModeBar: false, responsive: true });
+enableColorbarDrag('chart-fmcw-sg', 'sg');
+const SG_SECONDS = 6;     // burst time shown
 
 function refreshWaterfallScale() {
     if (state.autoscale) {
@@ -835,6 +850,34 @@ function handleFmcwFrame(frame) {
     }
 }
 
+/* Append a frame's spectrogram columns, oldest scrolling off after
+   SG_SECONDS. Frames with no mover to follow add nothing. */
+function pushSpectrogram(frame) {
+    if (!frame.sg_map) return;
+    const cols = decodeDbU8(frame.sg_map);          // rows = time, cols = velocity
+    const vel = frame.sg_velocity_axis;
+    let sg = state.fmcw.sg;
+    // A new velocity axis (another preset) starts afresh; a range that moves
+    // -- auto follows the mover -- carries on, the title saying where.
+    if (!sg || sg.vel.length !== vel.length || Math.abs(sg.vel[0] - vel[0]) > 1e-6) {
+        sg = state.fmcw.sg = { vel, range: null, step: frame.sg_t_step, cols: [] };
+    }
+    if (sg.range === null || Math.abs(sg.range - frame.sg_range) > 1e-6) {
+        sg.range = frame.sg_range;
+        Plotly.relayout('chart-fmcw-sg', { title: { text: `at ${sg.range.toFixed(2)} m`, font: { size: 12 } } });
+    }
+    for (const c of cols) sg.cols.push(c);
+    const keep = Math.max(1, Math.round(SG_SECONDS / sg.step));
+    if (sg.cols.length > keep) sg.cols.splice(0, sg.cols.length - keep);
+    // z is velocity x time for the heatmap.
+    const z = vel.map((_, i) => sg.cols.map(c => c[i]));
+    const t = sg.cols.map((_, k) => (k - sg.cols.length + 1) * sg.step);
+    let peak = -Infinity;
+    for (const c of cols) for (const v of c) if (v > peak) peak = v;
+    const sc = colorScale('sg', peak);
+    Plotly.restyle('chart-fmcw-sg', { z: [z], x: [t], y: [vel], zauto: false, zmin: sc.bottom, zmax: sc.top });
+}
+
 function renderFmcwFrame(frame) {
     const range = frame.range_axis;
     let trace;
@@ -846,6 +889,7 @@ function renderFmcwFrame(frame) {
             z: [z], x: [frame.velocity_axis], y: [range],
             zauto: false, zmin: sc.bottom, zmax: sc.top,
         });
+        pushSpectrogram(frame);
         // The range plot shows the strongest return per range bin twice: over
         // every velocity, and over the moving ones only. The waterfall gets
         // the moving one, so a hand shows against the static clutter.
@@ -972,6 +1016,8 @@ function readFmcwParams() {
     params.range_max = Number.isFinite(rmax) && rmax > 0 ? rmax : null;
     const pmin = parseFloat(fmcwEl('fmcw-peak-min')?.value);
     params.peak_min = Number.isFinite(pmin) && pmin >= 0 ? pmin : null;
+    const sgr = parseFloat(fmcwEl('fmcw-sg-range')?.value);
+    params.spectrogram_range = Number.isFinite(sgr) && sgr >= 0 ? sgr : null;
     const zero = parseFloat(fmcwEl('fmcw-zero-khz').value);
     params.zero_range_freq = Number.isFinite(zero) ? zero * 1e3 : null;
     const center = parseFloat(document.getElementById('center-freq').value);
@@ -1144,6 +1190,8 @@ function updateFmcwControlGating() {
     gate(fmcwEl('fmcw-mti-on')?.closest('.set-row'), !multi, noMti);
     gate(fmcwEl('fmcw-mti-mode')?.closest('.set-row'), !multi || !mtiOn,
          !multi ? noMti : 'Turn MTI on to choose its mode.');
+    gate(fmcwEl('fmcw-sg-range-row'), !multi,
+         'The spectrogram needs a burst of chirps: pick a Range + Velocity or Micro-Doppler preset.');
     gate(fmcwEl('fmcw-peak-min-row'), multi,
          'Range-Doppler skips the 0 m leakage by velocity (it sits at 0 m/s): Peak Min is for the Range presets.');
     const noCfar = 'CFAR runs on the single-chirp range profile: pick a Range preset.';
@@ -1198,6 +1246,10 @@ fmcwEl('fmcw-cfar-mode')?.addEventListener('change', () => { state.fmcw.waterfal
 fmcwEl('fmcw-range-max')?.addEventListener('change', () => {
     state.fmcw.waterfall = null;
     pushFmcwParams({ range_max: readFmcwParams().range_max });
+});
+fmcwEl('fmcw-sg-range')?.addEventListener('change', () => {
+    state.fmcw.sg = null;
+    pushFmcwParams({ spectrogram_range: readFmcwParams().spectrogram_range });
 });
 fmcwEl('fmcw-peak-min')?.addEventListener('change', () => {
     pushFmcwParams({ peak_min: readFmcwParams().peak_min });
@@ -1437,6 +1489,7 @@ function playbackSettings() {
     return {
         mti: p.mti, cfar: p.cfar, cfar_guard: p.cfar_guard, cfar_ref: p.cfar_ref,
         cfar_bias_db: p.cfar_bias_db, range_max: p.range_max, peak_min: p.peak_min,
+        spectrogram_range: p.spectrogram_range,
         zero_range_freq: p.zero_range_freq,
         fft_window: document.getElementById('fft-window').value,
     };
