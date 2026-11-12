@@ -1,110 +1,144 @@
 # SAR mode: plan
 
-Status: draft for review, 2026-11-12. No code until the open decisions below
-are settled. FMCW (C5) passed on phaser-01 on 2026-11-11, which this builds on.
+Status: draft for review, revised 2026-11-12. No code until the open
+decisions below are settled. FMCW (C5) passed on phaser-01 on 2026-11-11,
+which this builds on.
 
 ## What it is
 
-Synthetic-aperture radar (SAR): slide the kit along a straight line, take one
-FMCW measurement at each position, and combine them coherently into a
-top-down image of the scene: range (out from the array) by cross-range (along
-the rail). One look sees range only; the slide adds the second dimension at a
-resolution no single antenna this size could give.
+Synthetic-aperture radar: take FMCW measurements from many viewing geometries
+and combine them coherently into a 2D image, range by cross-range, at a
+cross-range resolution no single antenna this size could give. Two ways to get
+the geometries, sharing one image-formation algorithm:
 
-The Phaser is well suited to it: 500 MHz chirps already give 0.30 m range
-resolution, the chirps are coherent (0.16 deg phase std chirp to chirp,
-phaser-01 2026-11-11), and its electronically steered array allows
-spotlight SAR, which a fixed-antenna kit can't do.
+- **ISAR (inverse SAR):** the radar stands still and the **target rotates**,
+  on the printed turntable already in the repo (`hardware/stand`,
+  `hardware/stand-simple`). It images the object on the platter.
+- **SAR:** the **radar moves** along a straight rail past a still scene. It
+  images the scene, such as a room or corner reflectors on the floor.
+
+The Phaser suits both: 500 MHz chirps give 0.30 m range resolution, the
+chirps are coherent (0.16 deg phase std chirp to chirp, phaser-01
+2026-11-11), and its steerable array allows spotlight SAR.
+
+**Order: ISAR first.** It needs no new hardware. The stand already exists, and
+its 5 deg detents are fine enough (see below) to start by hand. Its GT2 rim
+then takes a stepper for an automatic sweep. SAR on a printed rail comes
+second.
 
 ## The numbers
 
-At 10.25 GHz the wavelength is 29.2 mm.
+At 10.25 GHz the wavelength is 29.2 mm. Range resolution is c / 2B = 0.30 m
+at 500 MHz for both.
+
+### ISAR on the turntable
 
 | | |
 |---|---|
-| Range resolution | c / 2B = 0.30 m at 500 MHz (sub-bin peak reading does not improve resolution) |
-| Array aperture D | 8 elements x 14 mm = 112 mm, beam ~15 deg wide at boresight |
-| Stripmap cross-range resolution | ~D/2 = 5.6 cm, whatever the range or rail length, because a target is lit only while it is inside the beam |
-| Spotlight cross-range resolution | lambda R / 2L: 1 m of rail at 2 m gives 2.9 cm; 0.5 m gives 5.8 cm |
-| Position step, stripmap | <= lambda / (4 sin(beam/2)) ~ 5 cm with the full array; finer with a wider beam |
-| Position step, spotlight | <= lambda / 4 = 7.3 mm for alias-free cross-range at the scene |
-| Position accuracy | ~1 mm (a few percent of lambda) for a focused image; errors defocus, they don't shift |
+| Cross-range resolution | lambda / (2 x total rotation): 30 deg gives 2.8 cm, 60 deg 1.4 cm |
+| Angle step | <= lambda / (4 r), r = the target's radius from the axis: 5 deg suits r <= 8 cm, 2 deg r <= 21 cm |
+| Angle accuracy | ~0.1 deg for a focused image; the stand's detents and a stepper both beat it |
+| Radar distance | 1-2 m from the axis, on its own tripod, beam centered on the platter |
 
-Spotlight mode steers the beam at the scene center from every position, so a
-target stays lit across the whole rail: finer resolution, at the cost of more
-positions and a smaller imaged patch. Stripmap keeps boresight and images a
-strip as long as the rail.
+The stand's 5 deg detents give a first test with no motor: 12 clicks over 60 deg
+image targets within 8 cm of the axis (a few corner reflectors close together)
+at about 1.4 cm across.
+
+### SAR on a rail
+
+| | |
+|---|---|
+| Array aperture D | 8 elements x 14 mm = 112 mm, beam ~15 deg wide |
+| Stripmap cross-range resolution | ~D/2 = 5.6 cm, whatever the range or rail length |
+| Spotlight cross-range resolution | lambda R / 2L: 1 m of rail at 2 m gives 2.9 cm |
+| Position step | spotlight <= lambda/4 = 7.3 mm; stripmap ~5 cm |
+| Position accuracy | ~1 mm for a focused image |
 
 ## How an image is formed
 
-1. At each position n, record a burst (default: the Range + Velocity chirp,
-   averaged over its 256 chirps for ~24 dB more SNR; the scene is still).
-2. Range-compress: the range FFT of the averaged chirp, zero-padded 4x so the
-   backprojection can interpolate.
-3. Phase reference: take the 0 m leakage's phase at each position and remove
-   it, so drift between positions (seconds apart, separate bursts) cancels.
-   The leakage path doesn't move with the kit, so it is a good reference.
-4. Backproject: for each image pixel p, sum over positions the range-compressed
-   sample at R_n = |p - x_n| times exp(+j 4 pi R_n / lambda). That is
-   N_pixels x N_positions operations: 200 x 200 pixels x 200 positions = 8 M,
-   about a second in numpy on the Pi, and fine in the browser simulator.
-5. Show |image| in dB on a new SAR Image tab, rebuilt after every position so
-   the picture sharpens as the slide goes.
+The same steps for both; only the geometry in step 4 differs.
 
-Backprojection rather than a frequency-domain (omega-k) algorithm: it handles
-any rail positions, uneven steps, near range and spotlight steering with one
-formula, and it is what a student can follow.
+1. At each angle or position, record one burst (the Range + Velocity chirp,
+   averaged over its 256 chirps for ~24 dB more SNR; the scene holds still
+   between steps).
+2. Range-compress: the range FFT of the averaged chirp, zero-padded 4x for
+   interpolation.
+3. Phase reference: remove the 0 m leakage's phase at each step, so drift
+   between bursts (seconds apart) cancels. The leakage path is inside the
+   kit, so it doesn't change as the target turns or the kit slides.
+4. Backproject: for each image pixel p, sum over steps the range-compressed
+   sample at that step's range to p, times exp(+j 4 pi R / lambda).
+   - ISAR: pixels sit on the platter and rotate with it; R is from the fixed
+     radar to the pixel rotated by that step's angle.
+   - SAR: R = |p - x_n|, from the rail position.
+   200 x 200 pixels x 100 steps is 4 M operations: about a second in numpy
+   on the Pi, and fine in the browser.
+5. Show |image| in dB on a new **SAR Image** tab, rebuilt after every step so
+   the picture sharpens as the sweep goes.
+6. ISAR only: still clutter (the room, the stand's own base) doesn't rotate
+   with the target, so it smears into a ring. Subtracting the mean over all
+   angles from each step's range profile removes it, the same idea as MTI.
+
+Backprojection rather than a frequency-domain algorithm (polar format,
+omega-k): one formula for any geometry, uneven steps and near range, and it
+is what a student can follow.
 
 ## Phases (each its own PR into radar-dev)
 
-**S1. Simulator first, no hardware.**
-- A SAR scene: point scatterers (corner reflectors) at known (x, y), and the
-  array's position as a parameter of the FMCW synthesis (today it sits at the
-  origin).
-- Backprojection in Python (`phaser_radar_dsp.sar_backproject`) and JS, with
-  parity cases, as for every other DSP function.
-- The radar UI's SAR section (rail length, step, stripmap or spotlight,
-  Capture Position, Clear) and the SAR Image tab. In simulation, an
-  "Auto slide" button steps the simulated kit along the rail.
-- Save / Load a SAR dataset: an .npz of iq per position, the positions, and
-  the usual fs, fc, B, T_ramp, f0.
+**S1. Simulator, both geometries.**
+- Scenes: point targets on a rotating platter (ISAR), and point targets in a
+  room with the radar's position as a parameter of the FMCW synthesis (SAR).
+- `phaser_radar_dsp.sar_backproject` in Python and JS, with parity cases.
+- A SAR section in the radar UI: geometry (turntable or rail), angle or
+  position step, sweep length, Capture Step, Clear, plus Auto Sweep in
+  simulation. The SAR Image tab.
+- Save / Load a SAR dataset: an .npz with iq per step, the angles or
+  positions, and the usual fs, fc, B, T_ramp, f0.
 - Works on the Pages demo.
-- Done when: two simulated corners 10 cm apart in cross-range at 2 m are
-  resolved in spotlight mode with 1 m of rail, and parity holds.
+- Done when: two simulated corners 3 cm apart on the platter resolve with
+  60 deg of rotation, two 10 cm apart resolve on 1 m of rail in spotlight,
+  and parity holds.
 
-**S2. On the kit, stop-and-go.**
-- Capture Position takes one averaged burst at the current position. The
-  position comes from the step count (n x step) by default, or typed in.
-- The user slides the kit by hand along a ruler or a taped rail.
-- Spotlight steering per position uses the existing beam steering.
-- Done when: two real corners 10-15 cm apart at ~2 m show as two spots.
+**S2. ISAR on the kit, by hand.**
+- Targets on the stand's platter (the tripod platter, mast removed); the
+  Phaser on its own tripod 1-2 m away.
+- Click the platter one 5 deg detent, press Capture Step, repeat. The angle
+  is step count x 5 deg, or typed in.
+- First test: a single corner on the axis must focus to one spot. That checks
+  the phase reference before anything else.
+- Done when: two corners about 5 cm apart on the platter show as two spots.
 
-**S3. Optional: motion hardware.**
-- A motorized linear rail (a stepper on the Pi's GPIO, or a USB controller),
-  so a slide runs unattended and repeatably.
-- Or ISAR instead: the kit still, the target on a turntable (the fan and
-  spinner already rotate), imaging the object rather than the room.
+**S3. Motorized turntable.**
+- A stepper on the stand's GT2 rim (300 teeth; with a 20T pulley 15:1), on
+  the bracket mounts the stand already has. The Pi steps it and captures at
+  each angle, so a sweep runs unattended.
+- A small printed bracket and pulley mount (OpenSCAD, in `hardware/stand`).
+
+**S4. SAR on a printed rail.**
+- A quick manual test first: a masking-tape line marked every 7 mm, the kit
+  slid by hand, about 70 captures over 0.5 m.
+- Then a printed indexed rail (OpenSCAD, new `hardware/sar-rail/`): a
+  carriage on joined segments or an aluminum extrusion, detents every 7.3 mm,
+  and the same stepper and belt as S3 for unattended sweeps.
 
 ## Open decisions
 
 | Decision | Options | Recommendation |
 |---|---|---|
-| Positioning on the kit | ruler stop-and-go / motorized rail / turntable (ISAR) | Ruler stop-and-go for S2. It costs nothing and shows whether the phase reference holds before buying anything |
-| Mode first | stripmap / spotlight | Spotlight: finer resolution from the same rail, and it uses the phased array, which is the point of this kit. Stripmap is a checkbox later |
-| Audience | course lab / demo | Decides how much the UI explains (resolution, step size, grating lobes). If it's a lab, it needs a short procedure doc alongside |
-| Rail length and step | 0.5 m / 1 m; step from the table above | 1 m at 7 mm in spotlight is ~140 positions, minutes by hand. 0.5 m at 7 mm (~70) for a first test |
-| Image size | patch around a chosen center / full strip | A 1 x 1 m patch at a chosen range (default 2 m), 5 mm pixels |
+| Stepper and driver | 28BYJ-48 + ULN2003 (~$5, slow, 5 mm shaft) / NEMA17 + A4988 or TMC2209 (the stand's design assumes NEMA17) | NEMA17 + TMC2209: what the stand was drawn for, and quiet |
+| How the Pi drives it | Pi GPIO pins (need to check which the Phaser's own GPIO use leaves free) / a USB stepper controller | Check the free GPIO first; USB only if there aren't any |
+| Audience | course lab / demo | Decides how much the UI explains (resolution, step size, why still clutter rings). A lab needs a short procedure doc too |
+| Rail length (S4) | 0.5 m / 1 m | 0.5 m first: ~70 positions in spotlight |
+| Image patch | ISAR: the platter, ~0.3 m across, 2 mm pixels; SAR: 1 x 1 m at a chosen range, 5 mm pixels | As listed |
 
 ## Risks
 
-- Phase drift between positions larger than the leakage reference can remove,
-  e.g. if the burst-to-burst tone phase isn't constant. S2's first test should
-  image a single still corner while the kit stays put: it must focus to one
-  spot.
-- Position error from a hand slide: 1-2 mm is plausible with a taped rule,
-  enough to soften but not destroy the image. Autofocus is out of scope.
-- Room multipath (walls, floor) will show as extra spots; a field or a large
-  room helps on the first real image.
+- Phase drift between bursts larger than the leakage reference removes. S2's
+  first test (one corner on the axis) shows it straight away.
+- The stand's own plastic and screws turn with the target and will image
+  too; corner reflectors are far brighter, and a sheet of absorber or a
+  wooden spacer under the targets helps.
+- Room multipath shows as extra spots, more in SAR than ISAR.
 
 ## Not in this plan
 
