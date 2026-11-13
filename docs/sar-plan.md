@@ -1,8 +1,8 @@
 # SAR mode: plan
 
-Status: draft for review, revised 2026-11-12. No code until the open
-decisions below are settled. FMCW (C5) passed on phaser-01 on 2026-11-11,
-which this builds on.
+Status: S1 (simulator, ISAR) in progress, 2026-11-12. S3 (motorized
+turntable) is deferred: not this semester. FMCW (C5) passed on phaser-01 on
+2026-11-11, which this builds on.
 
 ## What it is
 
@@ -85,7 +85,22 @@ is what a student can follow.
 
 ## Phases (each its own PR into radar-dev)
 
-**S1. Simulator, both geometries.**
+**S1. Simulator, both geometries.** ISAR part done, 2026-11-12: the
+`turntable` scene, `phaser_radar_dsp.isar_profile` / `isar_backproject`
+(Python and JS, parity in `tests/test_radar_sim_parity.py`), the headless
+`isar_capture` / `isar_image` / `isar_clear` commands, and a SAR mode in
+the radar UI (a third mode tab beside CW and FMCW: FMCW's Range + Velocity
+chirp underneath, its own settings section and an ISAR Image tab). Two corners 3 cm apart
+resolve with 60 deg (`tests/test_isar.py`). Still to come: the SAR rail
+scene and Save / Load of a step set. What the simulator showed:
+- 60 deg resolves across (1.4 cm) but barely down-range (~11 cm): the
+  image is streaks. +-90 deg (37 steps) resolves both ways and is the
+  first sweep on the kit; the simulated Sweep defaults to it, and Angle
+  starts at -90. A full 360 deg turn is sharpest (~7 mm).
+- 5 deg steps image cleanly only within ~8 cm of the axis (grating lobes
+  at lambda / (2 x step) = 17 cm), so the patch defaults to 16 cm.
+- Remove Still Clutter is off by default: it also removes a target on the
+  axis, which S2's first test uses.
 - Scenes: point targets on a rotating platter (ISAR), and point targets in a
   room with the radar's position as a parameter of the FMCW synthesis (SAR).
 - `phaser_radar_dsp.sar_backproject` in Python and JS, with parity cases.
@@ -106,9 +121,42 @@ is what a student can follow.
   is step count x 5 deg, or typed in.
 - First test: a single corner on the axis must focus to one spot. That checks
   the phase reference before anything else.
+- Second test: one corner off the axis, on a known side. The image's
+  handedness depends on the sign of the beat phase, which the simulator
+  and the kit may not share (the simulator's Doppler sign is opposite the
+  kit's: it reads an approaching target as positive). A mirrored image
+  means flip the sign in `isar_backproject`.
 - Done when: two corners about 5 cm apart on the platter show as two spots.
 
-**S3. Motorized turntable.**
+**S2 bench procedure (phaser-01).** Install the branch, open the radar page
+(no `?sim=1`) and pick **SAR**.
+
+- Set-up: the stand's tripod with the platter; the Phaser on its own tripod
+  ~1.5 m away, boresight on the platter's axis at target height. Type the
+  tape-measured distance into Distance.
+- Frame: at Angle 0, x is to the radar's right and y away from it. A
+  positive Step turns the platter counterclockwise seen from above (the
+  simulator's convention). Turn it the other way and use a negative Step.
+- Targets: a corner reflector only returns strongly within ~+-40 deg of
+  facing the radar, so a +-90 deg sweep wants targets that look the same
+  from every side -- upright drink cans, or bolts stood on end. (The simulator's
+  corners are isotropic; real ones aren't.)
+- Each step: click the platter one 5 deg detent, press Capture Step (Angle
+  moves on by itself). The first sweeps run -90 to +90 deg, 37 steps:
+  Angle starts at -90, so turn the platter a quarter turn clockwise (seen
+  from above) from its 0 deg position first. After a few steps, press
+  **Find Distance**: it moves Distance onto the radar's own range scale.
+1. One can on the axis, -90 to +90 deg. Expect one spot at (0, 0). A ring or
+   smear instead means phase drift between steps that the leakage
+   reference doesn't remove -- the first risk below.
+2. One can 5 cm to the radar's right and 3 cm beyond the axis, placed
+   with the platter at its 0 deg position.
+   Expect a spot at (+5, +3). At (-5, -3), turn on **Flip Phase** (the
+   kit's beat-phase sign is the simulator's opposite). At (-5, +3), the
+   platter turned the other way: negative Step.
+3. Two cans 5 cm apart: two spots. That is S2 done.
+
+**S3. Motorized turntable. Deferred: not this semester (2026-11-12).**
 - A stepper on the stand's GT2 rim (300 teeth; with a 20T pulley 15:1), on
   the bracket mounts the stand already has. The Pi steps it and captures at
   each angle, so a sweep runs unattended.

@@ -585,7 +585,10 @@ h1, h2, h3 {
      transition: max-height 0.3s ease-out, padding 0.3s ease;
 }
 .accordion-item.active .accordion-body {
-     max-height: 800px;
+     /* A cap, not a size: the open/close animation needs a number. Keep it
+        well above the tallest section -- FMCW passed 800px with SAR and its
+        last rows were cut off, unscrollable (2026-11-12). */
+     max-height: 3000px;
      padding: 0.35rem 0.5rem;
 }
 
@@ -1338,7 +1341,7 @@ input[type=number]::-webkit-outer-spin-button {
 .mode-tabs {
     position: relative;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     height: 40px;
     padding: 3px;
     margin-bottom: 0.65rem;
@@ -1353,7 +1356,7 @@ input[type=number]::-webkit-outer-spin-button {
     top: 3px;
     bottom: 3px;
     left: 3px;
-    width: calc(50% - 3px);
+    width: calc((100% - 6px) / 3);
     border-radius: 999px;
     background: var(--primary);
     box-shadow: 0 3px 10px var(--primary-glow);
@@ -1361,6 +1364,9 @@ input[type=number]::-webkit-outer-spin-button {
 }
 .mode-tabs[data-mode="fmcw"]::before {
     transform: translateX(100%);
+}
+.mode-tabs[data-mode="sar"]::before {
+    transform: translateX(200%);
 }
 .mode-tab {
     position: relative;
@@ -1411,6 +1417,8 @@ input[type=number]::-webkit-outer-spin-button {
     color: var(--text-muted);
 }
 .tab-btn[hidden],
+.accordion-item[hidden],
+.sidebar-icon-btn[hidden],
 .stat-box[hidden] {
     display: none;
 }

@@ -15,11 +15,11 @@ import {
     CW_DEFAULT_TARGETS, DEFAULTS, FMCW_DEFAULT_PRESET, FMCW_DEFAULT_TARGETS,
     FMCW_PRESETS, FMCW_PRESET_UI, NOISE_SIGMA,
     RAMP_SYNCED, RX_FREQ_HZ, CAPTURE_SINGLE_CHIRP_FRAMES, FMCW_SCENES, FMCW_DEFAULT_SCENE, SCENE_NOISE_LEVELS, FMCW_DEFAULT_SCENE_NOISE,
-    CAPTURE_FULL_SCALE,
+    CAPTURE_FULL_SCALE, ISAR_R0_M, ISAR_EXTENT_M,
 } from './constants.generated.js';
 import {
     captureBursts, captureLimits, chirpPlan, fmcwConfig, fmcwPayload, processCwFrame, rampTimeUs,
-    resolveTaper, sliceChirps,
+    resolveTaper, sliceChirps, isarProfile, isarBackproject, isarFRef, isarFindDistance,
 } from './dsp.js';
 import {
     createGauss, finishCapture, finishChannels, synthesizeCw, synthesizeFmcw,
@@ -61,6 +61,9 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         fmcwPreset: null,
         sampleRate: 0,
         bufferSize: 0,
+        turntableDeg: 0,      // the turntable scene's angle (ISAR)
+        isar: null,
+        isarView: null,
     };
 
     function applyTaper(taper) {
@@ -167,6 +170,7 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
                     signal_freq: Number(cfg.signal_freq), output_freq: Number(cfg.output_freq),
                 },
                 plan, scene, noise: currentSceneNoise(), t0: t0 ?? sceneClock(), elements, phaseError,
+                turntableDeg: s.turntableDeg,
             });
         }
         return synthesizeFmcw({
@@ -302,6 +306,83 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
         return out;
     }
 
+    // --- ISAR: phaser_headless.isar_capture / isar_image / isar_clear --------
+
+    function isarView(params = {}) {
+        const view = s.isarView || { r0: ISAR_R0_M, extent: ISAR_EXTENT_M, clutter: false, flip: false };
+        if (params.r0 != null) view.r0 = Number(params.r0);
+        if (params.extent != null) view.extent = Number(params.extent);
+        if (params.clutter != null) view.clutter = Boolean(params.clutter);
+        if (params.flip != null) view.flip = Boolean(params.flip);
+        if (!(view.r0 >= 0.2 && view.r0 <= 10) || !(view.extent >= 0.02 && view.extent <= 1)) {
+            throw new Error('Target distance must be 0.2-10 m and the patch 0.02-1 m');
+        }
+        s.isarView = view;
+        return view;
+    }
+
+    function isarResult() {
+        const isar = s.isar, view = s.isarView;
+        const data = { n_steps: 0, angles: [], ...view };
+        if (isar && isar.profiles.length) {
+            data.n_steps = isar.profiles.length;
+            data.angles = [...isar.angles];
+            Object.assign(data, isarBackproject(isar.profiles, isar.angles, isar.ranges, isar.fRef,
+                view.r0, { extent: view.extent, clutter: view.clutter, flip: view.flip }));
+        }
+        return { status: 'ok', data };
+    }
+
+    function isarCapture(params = {}) {
+        const angle = Number(params.angle_deg);
+        try {
+            if (params.angle_deg == null || !Number.isFinite(angle)) throw new Error("'angle_deg'");
+            isarView(params);
+        } catch (e) {
+            return { status: 'error', message: `ISAR step: ${e.message}` };
+        }
+        const cfg = s.fmcwCfg, plan = s.fmcwPlan;
+        if (s.mode !== 'fmcw_radar' || !cfg || !plan) {
+            return { status: 'error', message: 'Start FMCW to capture an ISAR step' };
+        }
+        if (!plan.synced) return { status: 'error', message: 'ISAR needs a synced preset, such as Range + Velocity' };
+        s.turntableDeg = angle;
+        const data = sliceChirps(finishCapture(synthesizeFmcwChannels(), { noiseSigma: fmcwNoiseSigma(), gauss }), plan);
+        const zero = cfg.zero_range_freq ?? cfg.signal_freq;
+        const prof = isarProfile(data, plan.sample_rate, Number(cfg.chirp_bw), plan.effective_ramp_time, {
+            zeroRangeFreq: Number(zero), fftWindow: cfg.fft_window ?? 'blackman',
+        });
+        const key = [plan.sample_rate, Number(cfg.chirp_bw), plan.effective_ramp_time,
+            Number(cfg.output_freq), Number(zero), prof.ranges.length].join('|');
+        if (!s.isar || s.isar.key !== key) {
+            s.isar = { key, ranges: prof.ranges, profiles: [], angles: [], fRef: isarFRef(cfg, plan) };
+        }
+        s.isar.profiles.push({ re: prof.re, im: prof.im });
+        s.isar.angles.push(angle);
+        return isarResult();
+    }
+
+    function isarImage(params = {}) {
+        try { isarView(params); } catch (e) { return { status: 'error', message: `ISAR image: ${e.message}` }; }
+        return isarResult();
+    }
+
+    function isarFindDistanceCmd(params = {}) {
+        let view;
+        try { view = isarView(params); } catch (e) { return { status: 'error', message: `Find Distance: ${e.message}` }; }
+        if (!s.isar || !s.isar.profiles.length) {
+            return { status: 'error', message: 'Capture a step first: Find Distance reads the profiles' };
+        }
+        view.r0 = isarFindDistance(s.isar.profiles, s.isar.ranges, view.r0);
+        return isarResult();
+    }
+
+    function isarClear() {
+        s.isar = null;
+        isarView({});
+        return isarResult();
+    }
+
     // --- Mode dispatcher -------------------------------------------------
 
     const HANDLERS = {
@@ -433,6 +514,14 @@ export function createRadarEngine({ noiseSigma = NOISE_SIGMA, seed = 0, clock = 
                 return setFmcwRadarParams(data);
             case 'save_fmcw_capture':
                 return saveFmcwCapture(data);
+            case 'isar_capture':
+                return isarCapture(data);
+            case 'isar_image':
+                return isarImage(data);
+            case 'isar_clear':
+                return isarClear();
+            case 'isar_find_distance':
+                return isarFindDistanceCmd(data);
 
             default:
                 return { status: 'error', message: `Unknown command: ${cmd}` };

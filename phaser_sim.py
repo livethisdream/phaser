@@ -138,12 +138,19 @@ FMCW_SCENES = {
     "corners": "Corner reflectors at 1, 2 and 3 m",
     "walker": "A person walking out from 1 m to 4 m and back",
     "hand": "A hand waving at 0.6 m, 1 Hz",
+    "turntable": "Three corner reflectors on a turntable 1.5 m out (ISAR)",
 }
 FMCW_DEFAULT_SCENE = "static"
 # The walker's five scatterer phases (torso, two legs, two arms): what
 # fmcw_sim.add_walker draws from np.random.default_rng(1).uniform(0, 6.28),
 # written out so the JS port carries the same numbers.
 SCENE_WALKER_PHASES = (3.2142, 5.9689, 0.9053, 5.9575, 1.9583)
+# The ISAR scene: a turntable (the printed stand, hardware/stand) with its axis
+# SCENE_TURNTABLE_R0 out along boresight, carrying point targets at (x, y) m
+# in the platter's frame with rcs m^2. SimSDR.turntable_deg turns it; 0 deg
+# has the platter's +y pointing away from the radar.
+SCENE_TURNTABLE_R0 = 1.5
+SCENE_TURNTABLE_POINTS = ((0.03, 0.0, 0.1), (-0.02, 0.04, 0.1), (-0.04, -0.03, 0.1))
 
 # How messy a live scene is. A kit sees more than fmcw_sim's clean targets:
 # a higher floor, a skirt of leakage past 0 m, a room full of things that
@@ -200,7 +207,15 @@ def scene_echo_dbfs(r, rcs, fs, fc):
     return SCENE_NOISE_DBFS + pr_dbm - noise_dbm
 
 
-def scene_scatterers(name, t, fs, fc, noise=FMCW_DEFAULT_SCENE_NOISE):
+def turntable_point(x, y, deg, r0=SCENE_TURNTABLE_R0):
+    """A platter point (x, y) turned by deg, as (range m, azimuth deg) from the radar."""
+    a = np.radians(deg)
+    xw = x * np.cos(a) - y * np.sin(a)
+    yw = r0 + x * np.sin(a) + y * np.cos(a)
+    return float(np.hypot(xw, yw)), float(np.degrees(np.arctan2(xw, yw)))
+
+
+def scene_scatterers(name, t, fs, fc, noise=FMCW_DEFAULT_SCENE_NOISE, turntable_deg=0.0):
     """The scatterers of a scene at absolute times t (s, any shape).
 
     Returns [(range_m, level_dbfs, phase0, az_deg)], range and level arrays
@@ -208,14 +223,14 @@ def scene_scatterers(name, t, fs, fc, noise=FMCW_DEFAULT_SCENE_NOISE):
     `noise` (SCENE_NOISE) adds the room's clutter and the leakage skirt
     after the scene's own scatterers, and fades the moving ones.
     """
-    out = _scene_targets(name, t, fs, fc)
+    out = _scene_targets(name, t, fs, fc, turntable_deg)
     if name == "static":
         return out
     if noise not in SCENE_NOISE:
         raise ValueError(f"unknown scene noise {noise!r}; expected one of {sorted(SCENE_NOISE)}")
     level = SCENE_NOISE[noise]
     depth = level["fluct_db"]
-    if depth and name != "corners":       # corner reflectors hold steady
+    if depth and name not in ("corners", "turntable"):    # corner reflectors hold steady
         out = [out[0]] + [(r, lv + scene_fluct_db(t, k, depth), p0, az)
                           for k, (r, lv, p0, az) in enumerate(out[1:])]
     if level["clutter_db"] is not None:
@@ -228,9 +243,15 @@ def scene_scatterers(name, t, fs, fc, noise=FMCW_DEFAULT_SCENE_NOISE):
     return out
 
 
-def _scene_targets(name, t, fs, fc):
+def _scene_targets(name, t, fs, fc, turntable_deg=0.0):
     """A scene's own scatterers, as fmcw_sim places them: leakage first."""
     out = [(np.zeros_like(t), np.full_like(t, SCENE_LEAKAGE_DBFS), 0.7, 0.0)]
+    if name == "turntable":
+        for k, (x, y, rcs) in enumerate(SCENE_TURNTABLE_POINTS):
+            rng, az = turntable_point(x, y, turntable_deg)
+            r = np.full_like(t, rng)
+            out.append((r, scene_echo_dbfs(r, rcs, fs, fc), 0.4 + 0.9 * k, az))
+        return out
     if name == "corners":
         for r0, ph in ((1.0, 0.0), (2.0, 1.1), (3.0, 2.3)):
             r = np.full_like(t, r0)
@@ -364,6 +385,7 @@ class SimSDR:
         # of the frame being synthesized; tests replace it with a fixed one.
         self._fmcw_scene = FMCW_DEFAULT_SCENE
         self._fmcw_scene_noise = FMCW_DEFAULT_SCENE_NOISE
+        self.turntable_deg = 0.0      # the turntable scene's angle (ISAR)
         self._scene_t0 = time.monotonic()
         self.scene_clock = lambda: time.monotonic() - self._scene_t0
         self._fmcw = {
@@ -592,7 +614,8 @@ class SimSDR:
         t = t0 + np.arange(num_chirps)[:, None] * pri + t_fast[None, :]
         f_if = float(cfg["signal_freq"])
         for r, level, phase0, az in scene_scatterers(self._fmcw_scene, t, fs, f_c,
-                                                     self._fmcw_scene_noise):
+                                                     self._fmcw_scene_noise,
+                                                     turntable_deg=self.turntable_deg):
             amp = SCENE_FULL_SCALE * 10 ** (np.asarray(level) / 20) / self.AMP_SCALE
             phase = (2 * np.pi * (f_if + 2 * slope * r / SCENE_C) * t_fast[None, :]
                      - 4 * np.pi * r * f_c / SCENE_C + phase0)

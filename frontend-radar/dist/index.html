@@ -10,8 +10,8 @@
        tools/vendor_plotly.mjs (npm prebuild). No external requests. -->
   <link rel="stylesheet" href="./fonts/fonts.css" />
   <script src="./vendor/plotly.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-Cg7iOi7D.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-De-p9im4.css">
+  <script type="module" crossorigin src="./assets/index-CAlV_I4c.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DsL7CZdw.css">
   <meta name="phaser-transport" content="web">
 </head>
 <body>
@@ -58,6 +58,12 @@
               <path d="M4 18L10 6M10 18l6-12M16 18l4-8"></path>
             </svg>
           </button>
+          <button class="sidebar-icon-btn" data-section="5" title="SAR (Turntable)" aria-label="SAR (Turntable)" hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <ellipse cx="12" cy="15" rx="8" ry="3"></ellipse>
+              <path d="M12 12V5M8.5 7.5a5 2 0 0 1 7 0"></path>
+            </svg>
+          </button>
           <div class="sidebar-icons-spacer"></div>
           <button class="sidebar-icon-btn" id="btn-theme-toggle-icon" title="Switch theme" aria-label="Switch theme">
             <svg viewBox="0 0 24 24" aria-hidden="true" class="icon-moon">
@@ -80,6 +86,7 @@
           <div class="mode-tabs" role="tablist" aria-label="Radar mode" data-mode="cw">
             <button class="mode-tab active" id="mode-cw" role="tab" title="CW Doppler: velocity">CW</button>
             <button class="mode-tab" id="mode-fmcw" role="tab" title="FMCW: range, and range-Doppler">FMCW</button>
+            <button class="mode-tab" id="mode-sar" role="tab" title="SAR: image a target turning on the turntable (ISAR)">SAR</button>
           </div>
 
           <div class="accordion" id="accordionSettings">
@@ -287,6 +294,49 @@
               </div>
             </div>
 
+            <!-- 6. SAR: ISAR on the turntable (docs/sar-plan.md). Shown in SAR mode only. -->
+            <div class="accordion-item" id="sar-section" hidden>
+              <button class="accordion-header" title="ISAR: the radar holds still while the target turns on the turntable. Each step records one burst at Angle; the steps are combined into an image of the platter, on the ISAR Image tab."><span class="accordion-icon" data-icon="5"></span> SAR (Turntable) <span>▼</span></button>
+              <div class="accordion-body">
+                <div class="fmcw-capability" id="sar-capability">Runs the Range + Velocity chirp</div>
+                <div class="set-row mt-2" title="The turntable angle of the next step, in degrees. It moves on by Step after each capture; on the kit, turn the platter to match before pressing Capture Step.">
+                  <label for="isar-angle">Angle (°)</label>
+                  <input type="number" id="isar-angle" class="set-ctrl" step="any" value="-90">
+                </div>
+                <div class="set-row" title="Degrees between steps: one 5° detent on the printed stand. Smaller steps image a wider patch without ghosts (5° is clean to about ±8 cm from the axis).">
+                  <label for="isar-step">Step (°)</label>
+                  <input type="number" id="isar-step" class="set-ctrl" step="any" min="0.1" max="45" value="5">
+                </div>
+                <div class="set-row" id="isar-sweep-row" hidden title="Simulation: how far Sweep turns the platter, centered on 0°. 180° (±90°, 37 steps) is the first sweep on the kit and resolves both ways; 60° resolves across (1.4 cm) but hardly down-range; a full 360° turn is sharpest, about 7 mm.">
+                  <label for="isar-sweep">Sweep (°)</label>
+                  <input type="number" id="isar-sweep" class="set-ctrl" step="any" min="5" max="360" value="180">
+                </div>
+                <div class="set-row" title="Target distance: from the array to the turntable's axis, in meters. Measure it: a few cm off blurs the image.">
+                  <label for="isar-r0">Distance (m)</label>
+                  <input type="number" id="isar-r0" class="set-ctrl" step="0.01" min="0.2" max="10" value="1.5">
+                </div>
+                <div class="set-row" title="Side of the square patch of platter imaged, in meters, centered on the axis.">
+                  <label for="isar-extent">Patch (m)</label>
+                  <input type="number" id="isar-extent" class="set-ctrl" step="0.01" min="0.02" max="1" value="0.16">
+                </div>
+                <div class="set-row" title="Remove still clutter: subtract the average over all steps from each one: still clutter (the room, the stand's base) doesn't turn, so it goes. So does a target right on the axis, which doesn't move either.">
+                  <label for="isar-clutter">Remove Clutter</label>
+                  <label class="toggle-container set-switch"><input type="checkbox" id="isar-clutter"><span class="checkmark"></span></label>
+                </div>
+                <div class="set-row" title="Flip the sign of the beat phase. If a corner placed off the axis shows up on the opposite side of the image (turned 180°), turn this on. If it shows up mirrored left to right instead, the platter turned the other way from the angles: use a negative Step.">
+                  <label for="isar-flip">Flip Phase</label>
+                  <label class="toggle-container set-switch"><input type="checkbox" id="isar-flip"><span class="checkmark"></span></label>
+                </div>
+                <div class="taper-buttons mt-2">
+                  <button class="btn btn-outline" id="isar-capture" disabled title="Start FMCW to capture ISAR steps">Capture Step</button>
+                  <button class="btn btn-outline" id="isar-sweep-btn" hidden disabled title="Simulation: turn the platter through Sweep, a step at a time">Sweep</button>
+                  <button class="btn btn-outline" id="isar-find" title="Set Distance from the steps taken: the strongest return within 0.5 m of it, on the radar's own range scale (which follows the 0 m calibration, so it can differ from a tape measure)">Find Distance</button>
+                  <button class="btn btn-outline" id="isar-clear" title="Forget the steps so far">Clear</button>
+                </div>
+                <div class="fmcw-capability mt-2" id="isar-status">No steps yet</div>
+              </div>
+            </div>
+
           </div>
 
           <!-- Theme Toggle (bottom of sidebar) -->
@@ -310,10 +360,11 @@
               <button class="tab-btn active" data-target="tab-waterfall" data-mode="cw">Waterfall</button>
               <button class="tab-btn" data-target="tab-spectrum" data-mode="cw">Spectrum</button>
               <button class="tab-btn" data-target="tab-time" data-mode="cw">Time-Domain</button>
-              <button class="tab-btn" data-target="tab-fmcw-wf" data-mode="fmcw" hidden>Range Waterfall</button>
+              <button class="tab-btn" data-target="tab-fmcw-wf" data-mode="fmcw sar" hidden>Range Waterfall</button>
               <button class="tab-btn" data-target="tab-fmcw-rd" data-mode="fmcw" hidden>Range-Doppler</button>
               <button class="tab-btn" data-target="tab-fmcw-sg" data-mode="fmcw" hidden title="Micro-Doppler: velocity against time at one range">Spectrogram</button>
-              <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw" hidden>Range</button>
+              <button class="tab-btn" data-target="tab-fmcw-range" data-mode="fmcw sar" hidden>Range</button>
+              <button class="tab-btn" data-target="tab-isar" data-mode="sar" hidden title="ISAR: the turntable steps combined into an image of the platter">ISAR Image</button>
               <button class="tab-btn" data-target="tab-logs">Logs</button>
             </div>
           </div>
@@ -345,6 +396,9 @@
           </div>
           <div class="chart-wrapper tab-content" id="tab-fmcw-sg">
             <div id="chart-fmcw-sg" style="width:100%; height:100%;"></div>
+          </div>
+          <div class="chart-wrapper tab-content" id="tab-isar">
+            <div id="chart-isar" style="width:100%; height:100%;"></div>
           </div>
           <div class="chart-wrapper tab-content" id="tab-logs">
             <div class="logs-pane">
