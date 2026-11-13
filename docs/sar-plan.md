@@ -94,8 +94,9 @@ chirp underneath, its own settings section and an ISAR Image tab). Two corners 3
 resolve with 60 deg (`tests/test_isar.py`). Still to come: the SAR rail
 scene and Save / Load of a step set. What the simulator showed:
 - 60 deg resolves across (1.4 cm) but barely down-range (~11 cm): the
-  image is streaks. A full 360 deg turn gives ~7 mm both ways, so the
-  simulated Sweep defaults to 360 deg.
+  image is streaks. +-90 deg (37 steps) resolves both ways and is the
+  first sweep on the kit; the simulated Sweep defaults to it, and Angle
+  starts at -90. A full 360 deg turn is sharpest (~7 mm).
 - 5 deg steps image cleanly only within ~8 cm of the axis (grating lobes
   at lambda / (2 x step) = 17 cm), so the patch defaults to 16 cm.
 - Remove Still Clutter is off by default: it also removes a target on the
@@ -137,16 +138,19 @@ scene and Save / Load of a step set. What the simulator showed:
   positive Step turns the platter counterclockwise seen from above (the
   simulator's convention). Turn it the other way and use a negative Step.
 - Targets: a corner reflector only returns strongly within ~+-40 deg of
-  facing the radar, so a full turn wants targets that look the same from
-  every side -- upright drink cans, or bolts stood on end. (The simulator's
+  facing the radar, so a +-90 deg sweep wants targets that look the same
+  from every side -- upright drink cans, or bolts stood on end. (The simulator's
   corners are isotropic; real ones aren't.)
 - Each step: click the platter one 5 deg detent, press Capture Step (Angle
-  moves on by itself). 72 steps make a full turn. After a few, press **Find
-  Distance**: it moves Distance onto the radar's own range scale.
-1. One can on the axis, a full turn. Expect one spot at (0, 0). A ring or
+  moves on by itself). The first sweeps run -90 to +90 deg, 37 steps:
+  Angle starts at -90, so turn the platter a quarter turn clockwise (seen
+  from above) from its 0 deg position first. After a few steps, press
+  **Find Distance**: it moves Distance onto the radar's own range scale.
+1. One can on the axis, -90 to +90 deg. Expect one spot at (0, 0). A ring or
    smear instead means phase drift between steps that the leakage
    reference doesn't remove -- the first risk below.
-2. One can 5 cm to the radar's right and 3 cm beyond the axis, at Angle 0.
+2. One can 5 cm to the radar's right and 3 cm beyond the axis, placed
+   with the platter at its 0 deg position.
    Expect a spot at (+5, +3). At (-5, -3), turn on **Flip Phase** (the
    kit's beat-phase sign is the simulator's opposite). At (-5, +3), the
    platter turned the other way: negative Step.

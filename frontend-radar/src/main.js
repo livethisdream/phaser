@@ -1679,7 +1679,7 @@ document.getElementById('isar-sweep-btn')?.addEventListener('click', async () =>
 document.getElementById('isar-clear')?.addEventListener('click', async () => {
     try {
         await isarCall('isar_clear');
-        document.getElementById('isar-angle').value = '0';
+        document.getElementById('isar-angle').value = '-90';   // a fresh ±90° sweep
     } catch (e) {
         log('error', 'SAR', `Clear failed: ${e.message || e}`);
     }

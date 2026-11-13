@@ -299,15 +299,15 @@
                 <div class="fmcw-capability" id="sar-capability">Runs the Range + Velocity chirp</div>
                 <div class="set-row mt-2" title="The turntable angle of the next step, in degrees. It moves on by Step after each capture; on the kit, turn the platter to match before pressing Capture Step.">
                   <label for="isar-angle">Angle (°)</label>
-                  <input type="number" id="isar-angle" class="set-ctrl" step="any" value="0">
+                  <input type="number" id="isar-angle" class="set-ctrl" step="any" value="-90">
                 </div>
                 <div class="set-row" title="Degrees between steps: one 5° detent on the printed stand. Smaller steps image a wider patch without ghosts (5° is clean to about ±8 cm from the axis).">
                   <label for="isar-step">Step (°)</label>
                   <input type="number" id="isar-step" class="set-ctrl" step="any" min="0.1" max="45" value="5">
                 </div>
-                <div class="set-row" id="isar-sweep-row" hidden title="Simulation: how far Sweep turns the platter, centered on 0°. A short sweep resolves across (60° gives 1.4 cm) but hardly down-range; a full 360° turn gives about 7 mm both ways.">
+                <div class="set-row" id="isar-sweep-row" hidden title="Simulation: how far Sweep turns the platter, centered on 0°. 180° (±90°, 37 steps) is the first sweep on the kit and resolves both ways; 60° resolves across (1.4 cm) but hardly down-range; a full 360° turn is sharpest, about 7 mm.">
                   <label for="isar-sweep">Sweep (°)</label>
-                  <input type="number" id="isar-sweep" class="set-ctrl" step="any" min="5" max="360" value="360">
+                  <input type="number" id="isar-sweep" class="set-ctrl" step="any" min="5" max="360" value="180">
                 </div>
                 <div class="set-row" title="Target distance: from the array to the turntable's axis, in meters. Measure it: a few cm off blurs the image.">
                   <label for="isar-r0">Distance (m)</label>
