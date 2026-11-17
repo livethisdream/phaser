@@ -56,6 +56,9 @@ CASES = [
     ("cfar_tuned", "fmcw",
      {"preset": "cfar", "cfar": True, "cfar_guard": 2, "cfar_ref": 8, "cfar_bias_db": 3.0}),
     ("range_rect_window", "fmcw", {"preset": "range", "fft_window": "rect", "taper": "hann"}),
+    # The micro-Doppler spectrogram held at a range, with and without MTI.
+    ("rd_spectrogram_fixed", "fmcw", {"spectrogram_range": 3.5}),
+    ("rd_spectrogram_mti", "fmcw", {"spectrogram_range": 3.5, "mti": "2pulse"}),
     # Peak Min off, and a 0 m beat set above the reflector's (Calibrate has
     # to find it below 0 m, outside the displayed profile).
     ("range_peak_min_off", "fmcw", {"preset": "range", "peak_min": 0}),
@@ -178,7 +181,7 @@ def test_frame_matches_python(name, mode, params, js_frames):
         if key in ignore:
             continue
         other = js[key]
-        if key == "map":
+        if key in ("map", "sg_map") and value is not None:
             assert (other["rows"], other["cols"]) == (value["rows"], value["cols"]), name
             _close(name, "map.db_max", value["db_max"], other["db_max"], DB_TOL)
             _close(name, "map.db_min", value["db_min"], other["db_min"], DB_TOL)
@@ -502,17 +505,18 @@ L28_CORNER = Path("/home/user/livethisdream/ece444/book/extras/radar-data/L28_co
 
 
 @pytest.mark.skipif(not L28_CORNER.exists(), reason="the ece444 recordings are not checked out")
-@pytest.mark.parametrize("peak_min,expect", [(None, 3.09), (0, 0.09)], ids=["default_1m", "off"])
+@pytest.mark.parametrize("peak_min,expect", [(None, 3.0), (0, 0.0)], ids=["default_1m", "off"])
 def test_l28_corner_reads_the_corner_not_the_leakage(peak_min, expect, tmp_path):
     """The L28 thread's file: the 3 m corner is weaker than the leakage, so
-    with Peak Min off the readout said 0.09 m. The 1 m default finds it."""
+    with Peak Min off the readout said the leakage. The 1 m default finds
+    it, and peak interpolation puts it at its 3 m, not the 3.09 m bin."""
     src = (ROOT / "frontend-radar" / "src").as_posix()
     settings = {} if peak_min is None else {"peak_min": peak_min}
     got = _node(_JS_PLAY_DRIVER % {"src": src}, [str(L28_CORNER), settings], tmp_path)
     assert got["units"] == "full_scale"
     assert got["frame"]["peak_range"] == pytest.approx(expect, abs=0.05)
     # Calibrate reads the strongest return wherever it is: the leakage.
-    assert got["frame"]["cal_peak_range"] == pytest.approx(0.09, abs=0.05)
+    assert got["frame"]["cal_peak_range"] == pytest.approx(0.0, abs=0.05)
 
 
 # --- Live scenes ---------------------------------------------------------------

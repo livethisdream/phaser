@@ -585,3 +585,184 @@ def test_every_fmcw_preset_transmits_in_the_arrays_band():
     for name, preset in _dsp.FMCW_PRESETS.items():
         lo, hi = preset["output_freq"], preset["output_freq"] + preset["chirp_bw"]
         assert 9.5e9 <= lo and hi <= 10.6e9, f"{name}: {lo / 1e9:g}-{hi / 1e9:g} GHz"
+
+
+# --- MTI: a flat noise floor, and no readout without a target ------------
+
+def _rd_noise(mti, seed=0, target_v=None, snr_db=None):
+    """256 chirps of complex noise (and optionally a mover), through MTI and
+    the map. Returns the map result and its Doppler-column means."""
+    rng = np.random.default_rng(seed)
+    n_fast, n_slow, fs, pri, fc = 539, 256, 2e6, 5e-4, 10e9
+    m = (rng.standard_normal((n_fast, n_slow)) + 1j * rng.standard_normal((n_fast, n_slow))) * 10
+    if target_v is not None:
+        t_fast = np.arange(n_fast)[:, None] / fs
+        fd = 2 * target_v * fc / _dsp.C
+        beat = 100e3 + 2 * 500e6 * 2.0 / (_dsp.C * 300e-6)       # a mover at 2 m
+        amp = 10 * 10 ** (snr_db / 20)
+        m = m + amp * np.exp(2j * np.pi * (beat * t_fast + fd * np.arange(n_slow)[None, :] * pri))
+    rd = _dsp.range_doppler_map(_dsp.mti_filter(m, mti), fs, 500e6, 300e-6, pri, fc,
+                                zero_range_freq=100e3, range_max=10.0, peak_exclude=0.3,
+                                mti=mti, peak_snr_db=_dsp.FMCW_PROC_DEFAULTS["peak_snr_db"])
+    return rd, np.asarray(rd["map_db"]).mean(axis=0)
+
+
+@pytest.mark.parametrize("mti", ["2pulse", "3pulse"])
+def test_mti_noise_floor_is_flat_outside_the_notch(mti):
+    """The canceller lifts the fast Doppler bins (+6 / +12 dB at the edges);
+    taken back out, the edges sit level with mid-band noise."""
+    rd, cols = _rd_noise(mti)
+    v = np.asarray(rd["velocity_axis"])
+    vmax = np.abs(v).max()
+    edge = cols[np.abs(v) > 0.8 * vmax].mean()
+    mid = cols[(np.abs(v) > 0.4 * vmax) & (np.abs(v) < 0.6 * vmax)].mean()
+    assert abs(edge - mid) < 1.5, (edge, mid)
+
+
+@pytest.mark.parametrize("mti", ["none", "2pulse", "3pulse"])
+def test_no_peak_readout_on_noise_alone(mti):
+    """Nothing moving: no cell stands 15 dB clear of the median, so the
+    readout is None -- not a different noise cell every frame."""
+    for seed in range(20):
+        rd, _ = _rd_noise(mti, seed=seed)
+        assert rd["peak_range"] is None and rd["peak_velocity"] is None
+        assert rd["cal_peak_range"] is not None
+
+
+@pytest.mark.parametrize("mti", ["2pulse", "3pulse"])
+def test_mti_finds_a_mover_instead_of_the_edges(mti):
+    """A hand-sized mover a few dB over the noise per sample: found at its
+    own velocity, sign kept (closing is negative), every time."""
+    for seed in range(5):
+        rd, _ = _rd_noise(mti, seed=seed, target_v=-1.5, snr_db=-5)
+        assert rd["peak_velocity"] == pytest.approx(-1.5, abs=0.2)
+        assert rd["peak_range"] == pytest.approx(2.0, abs=0.35)
+
+
+
+# --- Peak interpolation: a target between bins reads where it is -----------
+
+@pytest.mark.parametrize("r", [1.0, 1.1, 1.17, 2.0, 2.05, 3.0, 3.2])
+def test_range_peak_reads_between_bins(r):
+    """One bin is ~0.3 m; the vertex of the parabola through the peak and its
+    neighbors reads a lone target to a few cm, wherever it falls in a bin."""
+    x = _chirp((r, 100.0))
+    prof = _dsp.range_profile(x, 2e6, 500e6, 300e-6, zero_range_freq=100e3,
+                              range_max=20, peak_min=0.5)
+    step = prof["range_axis"][1] - prof["range_axis"][0]
+    assert step > 0.25                                  # bins really are coarse
+    assert prof["peak_range"] == pytest.approx(r, abs=0.03)
+    assert prof["cal_peak_range"] == pytest.approx(r, abs=0.03)
+
+
+def test_peak_offset_edges_and_flat():
+    assert _dsp.peak_offset([0, 1, 0], 0) == 0.0          # edge: no neighbor
+    assert _dsp.peak_offset([1, 1, 1], 1) == 0.0          # flat: no peak
+    assert _dsp.peak_offset([0, 2, 1], 1) == pytest.approx(1 / 6)
+    assert -0.5 <= _dsp.peak_offset([0, 2, 1.99], 1) <= 0.5
+
+
+def test_velocity_peak_reads_between_bins():
+    """Range-Doppler: a mover at a velocity between Doppler bins reads its
+    own velocity, not the nearest bin's."""
+    rd, _ = _rd_noise("none", target_v=-1.37, snr_db=0)
+    dv = abs(rd["velocity_axis"][1] - rd["velocity_axis"][0])
+    assert dv > 0.1
+    assert rd["peak_velocity"] == pytest.approx(-1.37, abs=0.03)
+    assert rd["peak_range"] == pytest.approx(2.0, abs=0.05)
+
+
+# --- A strong still target's leftovers are not a mover ---------------------
+
+def _still_room(mti, mover_db=None, mover_r=1.15, seed=0):
+    """A 4 in corner at 1.15 m, with phaser-01's 1.5% chirp-to-chirp amplitude
+    jitter (2026-11-11 capture), noise, and optionally a mover mover_db below
+    the corner at mover_r, -1.2 m/s. The readout as the backend runs it:
+    MTI'd map, the pre-MTI matrix as `stationary`."""
+    rng = np.random.default_rng(seed)
+    n_fast, n_slow, fs, pri, fc = 539, 256, 2e6, 5e-4, 10e9
+    t = np.arange(n_fast)[:, None] / fs
+    k = np.arange(n_slow)[None, :]
+    beat = lambda r: 100e3 + 2 * 500e6 * r / (_dsp.C * 300e-6)
+    amp = 3e4 * (1 + 0.015 * rng.standard_normal((1, n_slow)))
+    m = amp * np.exp(2j * np.pi * beat(1.15) * t)
+    m = m + (rng.standard_normal((n_fast, n_slow)) + 1j * rng.standard_normal((n_fast, n_slow))) * 3
+    if mover_db is not None:
+        fd = 2 * -1.2 * fc / _dsp.C
+        m = m + 3e4 * 10 ** (mover_db / 20) * np.exp(2j * np.pi * (beat(mover_r) * t + fd * k * pri))
+    d = _dsp.FMCW_PROC_DEFAULTS
+    return _dsp.range_doppler_map(_dsp.mti_filter(m, mti), fs, 500e6, 300e-6, pri, fc,
+                                  zero_range_freq=100e3, range_max=10.0, peak_exclude=0.3, mti=mti,
+                                  peak_snr_db=d["peak_snr_db"], stationary=m,
+                                  clutter_margin_db=d["clutter_margin_db"])
+
+
+@pytest.mark.parametrize("mti", ["none", "2pulse", "3pulse"])
+def test_still_corner_leftovers_read_no_mover(mti):
+    """Its skirt (no MTI) and MTI's residue cleared the noise gate by 25-40 dB
+    on phaser-01 and the readout jumped -3.2..+3.5 m/s. Judged against the
+    still return at their own range, they read None."""
+    for seed in range(5):
+        rd = _still_room(mti, seed=seed)
+        assert rd["peak_velocity"] is None and rd["peak_range"] is None
+        assert rd["cal_peak_range"] == pytest.approx(1.15, abs=0.05)
+
+
+@pytest.mark.parametrize("mti", ["none", "2pulse"])
+@pytest.mark.parametrize("mover_db,mover_r", [(-17, 1.15), (-25, 2.5)], ids=["hand_at_corner", "weak_far"])
+def test_a_real_mover_still_reads(mti, mover_db, mover_r):
+    """A hand 17 dB below the corner in its own range bin, or a weaker mover
+    elsewhere: found at its velocity and range."""
+    rd = _still_room(mti, mover_db=mover_db, mover_r=mover_r)
+    assert rd["peak_velocity"] == pytest.approx(-1.2, abs=0.05)
+    assert rd["peak_range"] == pytest.approx(mover_r, abs=0.1)
+
+
+# --- Micro-Doppler spectrogram ---------------------------------------------
+
+def test_spectrogram_shows_a_spinner_both_ways():
+    """Two blades of a spinner at 1 m, tips at +-3 m/s turning at 10 Hz: the
+    spectrogram's columns, ~8 ms apart, reach both signs, a burst at a time."""
+    n_fast, n_slow, fs, pri, fc = 539, 256, 2e6, 5e-4, 10e9
+    t_fast = np.arange(n_fast)[:, None] / fs
+    t = np.arange(n_slow)[None, :] * pri
+    beat = 100e3 + 2 * 500e6 * 1.0 / (_dsp.C * 300e-6)
+    lam = _dsp.C / fc
+    m = np.zeros((n_fast, n_slow), complex)
+    for sign in (+1, -1):
+        # radial displacement of a blade tip: r_tip sin(2 pi f t); v = 2 pi f r_tip cos(...)
+        r_tip = 3.0 / (2 * np.pi * 10)
+        disp = sign * r_tip * np.sin(2 * np.pi * 10 * t)
+        m = m + 1e3 * np.exp(2j * np.pi * beat * t_fast - 4j * np.pi * disp / lam)
+    sg = _dsp.doppler_spectrogram(m, fs, 500e6, 300e-6, pri, fc, 1.0, zero_range_freq=100e3)
+    cols = np.asarray(sg["columns_db"])
+    v = np.asarray(sg["velocity_axis"])
+    assert cols.shape == ((n_slow - _dsp.SPEC_WINDOW) // _dsp.SPEC_HOP + 1, _dsp.SPEC_WINDOW)
+    assert sg["t_step"] == pytest.approx(_dsp.SPEC_HOP * pri)
+    assert sg["range"] == pytest.approx(1.0, abs=0.2)
+    # Energy at the tips' speed on both sides, somewhere in the burst.
+    loud = cols > cols.max() - 20
+    assert np.any(loud[:, v > 1.5]) and np.any(loud[:, v < -1.5])
+    assert not np.any(loud[:, np.abs(v) > 4.5])
+
+
+def test_spectrogram_follows_the_mover_in_the_frame():
+    """The payload's spectrogram sits at the range-Doppler peak unless held."""
+    import sys, types
+    sys.modules.setdefault("adi", types.ModuleType("adi"))
+    sys.path.insert(0, str(Path(__file__).parent))
+    from test_radar_sim_parity import _python_frame
+    f = _python_frame("fmcw", {})
+    assert f["sg_range"] == pytest.approx(f["peak_range"], abs=0.35)
+    held = _python_frame("fmcw", {"spectrogram_range": 7.0})
+    assert held["sg_range"] == pytest.approx(7.0, abs=0.35)
+    rows = _dsp.decode_db_u8(held["sg_map"]).shape
+    assert rows == (13, _dsp.SPEC_WINDOW)
+
+
+def test_every_preset_runs_at_a_rate_the_pluto_accepts():
+    """The AD9361 refuses rates below 521 kS/s without a decimating FIR.
+    Micro-Doppler at 0.3 MS/s would not start on phaser-01 (2026-11-12);
+    the simulator has no such limit, so only this test catches it."""
+    for name, preset in _dsp.FMCW_PRESETS.items():
+        assert preset["sample_rate"] >= _dsp.MIN_SAMPLE_RATE, f"{name}: {preset['sample_rate']} S/s"

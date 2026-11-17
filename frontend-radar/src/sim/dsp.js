@@ -15,7 +15,7 @@ import {
     AXIS_DECIMALS, CAPTURE_SINGLE_CHIRP_FRAMES, CAPTURE_MAX_FRAMES_S, CAPTURE_FRAME_S,
     BYTES_PER_SAMPLE, CAPTURE_BURST_INTERVAL_S, CAPTURE_MAX_BYTES,
     RAMP_SYNCED, RAMP_FREE_RUNNING, RANGE_TIME_SCALE, MAX_BURST_BUFFER,
-    RAMP_SETTLE_FRACTION,
+    RAMP_SETTLE_FRACTION, SPEC_WINDOW, SPEC_HOP,
 } from './constants.generated.js';
 
 export { window };
@@ -36,6 +36,14 @@ function argmax(arr) {
     let best = 0;
     for (let i = 1; i < arr.length; i++) if (arr[i] > arr[best]) best = i;
     return best;
+}
+
+/** numpy.median: the middle value, or the mean of the middle two. */
+function median(arr) {
+    const a = Float64Array.from(arr).sort();
+    const n = a.length;
+    if (!n) return NaN;
+    return n % 2 ? a[(n - 1) >> 1] : (a[n / 2 - 1] + a[n / 2]) / 2;
 }
 
 function sum(arr) {
@@ -177,6 +185,22 @@ function rangeMask(ranges, rangeMin, rangeMax) {
     return idx;
 }
 
+/** phaser_radar_dsp.peak_offset: sub-bin position of a peak at k, from the
+    parabola through values[k-1..k+1]; 0 at an edge or where they are no peak. */
+export function peakOffset(values, k) {
+    if (k <= 0 || k >= values.length - 1) return 0;
+    const a = values[k - 1], b = values[k], c = values[k + 1];
+    const den = a - 2 * b + c;
+    if (!(Number.isFinite(a) && Number.isFinite(b) && Number.isFinite(c)) || den >= 0) return 0;
+    return Math.min(0.5, Math.max(-0.5, (0.5 * (a - c)) / den));
+}
+
+/** phaser_radar_dsp._at: axis[k] moved `offset` bins along a uniform axis. */
+function at(axis, k, offset) {
+    const step = axis.length > 1 ? axis[1] - axis[0] : 0;
+    return axis[k] + offset * step;
+}
+
 export function rangeProfile(iq, fs, chirpBw, rampTime, {
     zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0, peakMin = 0,
 } = {}) {
@@ -201,15 +225,20 @@ export function rangeProfile(iq, fs, chirpBw, rampTime, {
     }
     if (peak < 0) peak = argmax(profile);
     let cal = 0, calMag = -1;
+    const fullDb = new Float64Array(ranges.length);
     for (let i = 0; i < ranges.length; i++) {
         const m = Math.hypot(X.re[i], X.im[i]);
+        fullDb[i] = toDb(m, ws);
         if (m > calMag) { calMag = m; cal = i; }
     }
+    // Interpolated on the whole profile, so a peak at the crop's edge still
+    // has both neighbors.
+    const fullPeak = idx[peak];
     return {
         range_axis: rangeOut,
         profile_db: profile,
-        peak_range: rangeOut[peak],
-        cal_peak_range: ranges[cal],
+        peak_range: at(ranges, fullPeak, peakOffset(fullDb, fullPeak)),
+        cal_peak_range: at(ranges, cal, peakOffset(fullDb, cal)),
         peak_magnitude_db: profile[peak],
         range_resolution: rangeResolution(chirpBw),
         max_range: maxUnambiguousRange(fs, chirpBw, rampTime),
@@ -253,9 +282,21 @@ export function mtiFilter(cols, mode = 'none') {
  * FFT to a 5-smooth length, and keep the peak readout off the zero-Doppler
  * cells (peakExclude) while cal_peak_range reads the strongest cell anywhere.
  */
+/** phaser_radar_dsp.mti_gain_db: the pulse canceller's gain at each Doppler frequency, dB. */
+export function mtiGainDb(dopplerHz, pri, mode) {
+    const m = String(mode || 'none').toLowerCase();
+    return Array.from(dopplerHz, (f) => {
+        if (m === 'none' || m === 'off' || m === '') return 0;
+        let h = 2 * Math.abs(Math.sin(Math.PI * f * Number(pri)));
+        if (m === '3pulse') h *= h;
+        return 20 * Math.log10(Math.max(h, 1e-12));
+    });
+}
+
 export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     zeroRangeFreq = 0, fftWindow = 'blackman', rangeMax = null, rangeMin = 0,
-    velMax = null, peakExclude = 0,
+    velMax = null, peakExclude = 0, mti = 'none', peakSnrDb = 0,
+    stationary = null, clutterMarginDb = 0,
 } = {}) {
     const nSlow = cols.length;
     const nFast = nSlow ? cols[0].re.length : 0;
@@ -298,14 +339,17 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
         }
     }
 
-    // Slow time, range bin by range bin.
+    // Slow time, range bin by range bin. MTI's lift above unity gain at the
+    // fast Doppler bins is taken back out, so the noise floor is flat.
+    const gain = mtiGainDb(vidx.map(i => dopplerHz[i]), pri, mti);
+    const lift = gain.map(g => Math.max(g, 0));
     const mapDb = [];
     for (let r = 0; r < nr; r++) {
         const Y = fft(specRe[r], specIm[r]);
         const mag = new Float64Array(nSlow);
         for (let i = 0; i < nSlow; i++) mag[i] = Math.hypot(Y.re[i], Y.im[i]);
         const shifted = fftshift(mag);
-        mapDb.push(vidx.map(i => toDb(shifted[i], winSum)));
+        mapDb.push(vidx.map((i, k) => toDb(shifted[i], winSum) - lift[k]));
     }
 
     let search = velOut.map(() => true);
@@ -317,21 +361,54 @@ export function rangeDopplerMap(cols, fs, chirpBw, rampTime, pri, outputFreq, {
     }
     if (!search.some(Boolean)) search = search.map(() => true);
 
+    // As range_doppler_map: a moving cell must be within clutterMarginDb of
+    // the strongest still return (zero-Doppler, before MTI) within the
+    // fast-time main lobe of its range. One FFT of the window-weighted chirp
+    // sum gives the still return per range bin, in the map's units.
+    let stillNear = null;
+    if (stationary && clutterMarginDb) {
+        const n0 = stationary.length;
+        const ws0 = window(fftWindow, n0);
+        const sr = new Float64Array(nFast), si = new Float64Array(nFast);
+        for (let c = 0; c < n0; c++) {
+            const col = stationary[c];
+            for (let i = 0; i < nFast; i++) { sr[i] += ws0[c] * col.re[i]; si[i] += ws0[c] * col.im[i]; }
+        }
+        for (let i = 0; i < nFast; i++) { sr[i] *= wFast[i]; si[i] *= wFast[i]; }
+        const S = fft(sr, si, nFft);
+        const norm = (sum(wFast) * sum(ws0)) / n0;
+        const stDb = ridx.map(i => toDb(Math.hypot(S.re[i], S.im[i]), norm));
+        const half = MAINLOBE_HALF_BINS[String(fftWindow).toLowerCase()] ?? 3;
+        stillNear = stDb.map((_, r) => {
+            let m = -Infinity;
+            for (let k = r - half; k <= r + half; k++) m = Math.max(m, stDb[Math.min(Math.max(k, 0), nr - 1)]);
+            return m;
+        });
+    }
     let pr = 0, pv = -1;
     for (let r = 0; r < nr; r++) {
         const row = mapDb[r];
+        const floor = stillNear ? stillNear[r] - Number(clutterMarginDb) : -Infinity;
         for (let v = 0; v < row.length; v++) {
-            if (search[v] && (pv < 0 || row[v] > mapDb[pr][pv])) { pr = r; pv = v; }
+            if (search[v] && row[v] >= floor && (pv < 0 || row[v] > mapDb[pr][pv])) { pr = r; pv = v; }
         }
     }
+    const anyCell = pv >= 0;
+    if (!anyCell) { pr = 0; pv = 0; }
     const cr = argmax(calPow);
+    // A peak counts only peakSnrDb above the map's median (its noise floor).
+    const all = [];
+    for (const row of mapDb) for (const v of row) all.push(v);
+    const noiseDb = median(all);
+    const clear = anyCell && (!peakSnrDb || mapDb[pr][pv] - noiseDb >= Number(peakSnrDb));
     return {
         map_db: mapDb,
         range_axis: rangeOut,
         velocity_axis: velOut,
-        peak_range: rangeOut[pr],
-        cal_peak_range: ranges[cr],
-        peak_velocity: velOut[pv],
+        peak_range: clear ? at(rangeOut, pr, peakOffset(mapDb.map(row => row[pv]), pr)) : null,
+        cal_peak_range: at(ranges, cr, peakOffset(Array.from(calPow, p => 10 * Math.log10(Math.max(p, 1e-300))), cr)),
+        peak_velocity: clear ? at(velOut, pv, peakOffset(mapDb[pr], pv)) : null,
+        noise_db: noiseDb,
         peak_magnitude_db: mapDb[pr][pv],
         range_resolution: rangeResolution(chirpBw),
         velocity_resolution: velocityResolution(nSlow, pri, outputFreq),
@@ -351,6 +428,64 @@ function base64(bytes) {
 }
 
 /** A 2D dB array as one byte a cell, base64, with its own scale. */
+/** phaser_radar_dsp.doppler_spectrogram: short-time Doppler spectra at one range. */
+export function dopplerSpectrogram(cols, fs, chirpBw, rampTime, pri, outputFreq, rangeM, {
+    zeroRangeFreq = 0, fftWindow = 'blackman', mti = 'none', winLen = SPEC_WINDOW, hop = SPEC_HOP,
+} = {}) {
+    const nSlow = cols.length;
+    const nFast = cols[0].re.length;
+    const nFft = fastLen(nFast);
+    const ranges = rangeBins(nFft, fs, chirpBw, rampTime, zeroRangeFreq);
+    let k0 = 0;
+    for (let k = 1; k < ranges.length; k++) {
+        if (Math.abs(ranges[k] - rangeM) < Math.abs(ranges[k0] - rangeM)) k0 = k;
+    }
+    const ks = [k0 - 1, k0, k0 + 1].filter(k => k >= 0 && k < ranges.length);
+    const wFast = window(fftWindow, nFast);
+    // Three bins of the fast-time DFT, every chirp: x[b][c].
+    const xr = ks.map(() => new Float64Array(nSlow)), xi = ks.map(() => new Float64Array(nSlow));
+    ks.forEach((k, b) => {
+        const cr = new Float64Array(nFast), ci = new Float64Array(nFast);
+        for (let n = 0; n < nFast; n++) {
+            const a = (-2 * Math.PI * k * n) / nFft;
+            cr[n] = Math.cos(a) * wFast[n]; ci[n] = Math.sin(a) * wFast[n];
+        }
+        for (let c = 0; c < nSlow; c++) {
+            const col = cols[c];
+            let re = 0, im = 0;
+            for (let n = 0; n < nFast; n++) {
+                re += col.re[n] * cr[n] - col.im[n] * ci[n];
+                im += col.re[n] * ci[n] + col.im[n] * cr[n];
+            }
+            xr[b][c] = re; xi[b][c] = im;
+        }
+    });
+    const W = Math.min(winLen, nSlow);
+    const step = Math.max(1, Math.trunc(hop));
+    const wSlow = window(fftWindow, W);
+    const dopplerHz = fftshift(fftfreq(W, Number(pri)));
+    const lift = mtiGainDb(dopplerHz, pri, mti).map(g => Math.max(g, 0));
+    const norm = (sum(wFast) * sum(wSlow)) / W;
+    const columns = [];
+    for (let start = 0; start + W <= nSlow; start += step) {
+        const pow = new Float64Array(W);
+        for (let b = 0; b < ks.length; b++) {
+            const yr = new Float64Array(W), yi = new Float64Array(W);
+            for (let i = 0; i < W; i++) { yr[i] = xr[b][start + i] * wSlow[i]; yi[i] = xi[b][start + i] * wSlow[i]; }
+            const Y = fft(yr, yi);
+            for (let i = 0; i < W; i++) pow[i] += Y.re[i] * Y.re[i] + Y.im[i] * Y.im[i];
+        }
+        const shifted = fftshift(pow);
+        columns.push(Array.from(shifted, (p, i) => toDb(Math.sqrt(p), norm) - lift[i]));
+    }
+    return {
+        columns_db: columns,
+        velocity_axis: Array.from(dopplerHz, f => (C * f) / (2 * Number(outputFreq))),
+        t_step: step * Number(pri),
+        range: ranges[k0],
+    };
+}
+
 export function encodeDbU8(mapDb, spanDb = MAP_SPAN_DB) {
     const rows = mapDb.length, cols = rows ? mapDb[0].length : 0;
     let hi = -Infinity, lo = Infinity;
@@ -522,7 +657,21 @@ export function fmcwPayload(data, cfg, plan, preset = null) {
             cfg.output_freq, {
                 zeroRangeFreq: zero, fftWindow, rangeMax: cfg.range_max,
                 velMax: cfg.vel_max, peakExclude: cfg.peak_exclude ?? 0,
+                mti: cfg.mti ?? 'none', peakSnrDb: cfg.peak_snr_db ?? 0,
+                stationary: data, clutterMarginDb: cfg.clutter_margin_db ?? 0,
             });
+        // The micro-Doppler spectrogram, at Spectrogram Range or the strongest mover.
+        const sgAt = cfg.spectrogram_range == null ? rd.peak_range : Number(cfg.spectrogram_range);
+        const sg = sgAt != null && matrix.length >= 2
+            ? dopplerSpectrogram(matrix, fs, cfg.chirp_bw, ramp, plan.pri_ms / 1e3, cfg.output_freq, sgAt, {
+                zeroRangeFreq: zero, fftWindow, mti: cfg.mti ?? 'none',
+            }) : null;
+        Object.assign(out, {
+            sg_map: sg ? encodeDbU8(sg.columns_db) : null,
+            sg_velocity_axis: sg ? rounded(sg.velocity_axis, AXIS_DECIMALS) : null,
+            sg_range: sg ? sg.range : null,
+            sg_t_step: sg ? sg.t_step : null,
+        });
         Object.assign(out, {
             kind: 'range_doppler',
             peak_range: rd.peak_range,
