@@ -28,12 +28,18 @@ import types
 REPO = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+import json                        # noqa: E402
+
 import ADAR_pyadi_functions        # noqa: E402
 import config                      # noqa: E402
 import phaser_ctf                  # noqa: E402
+import phaser_radar_dsp            # noqa: E402
 import phaser_sim                  # noqa: E402
 
 OUT = REPO / "frontend" / "src" / "sim" / "constants.generated.js"
+# The radar UI's simulator (frontend-radar/src/sim/) gets its own file: the
+# radar half of phaser_sim.py plus the phaser_radar_dsp tables it processes with.
+RADAR_OUT = REPO / "frontend-radar" / "src" / "sim" / "constants.generated.js"
 
 
 def steering_pi():
@@ -115,6 +121,7 @@ def main():
     steer_pi = steering_pi()
     h = headless_defaults()
     drop_db = centroid_drop_db()
+    import phaser_headless  # imported (adi stubbed) by headless_defaults
 
     body = f"""// GENERATED FILE -- DO NOT EDIT BY HAND.
 //
@@ -131,11 +138,17 @@ def main():
 
 // --- Scene -----------------------------------------------------------------
 export const TARGET_ANGLE_DEG = {sdr.TARGET_ANGLE_DEG!r};
+export const TARGET_RANGE_M = {sdr.TARGET_RANGE_M!r};
+export const TARGET_RANGE_MIN_M = {sdr.TARGET_RANGE_MIN_M!r};
+export const TARGET_RANGE_MAX_M = {sdr.TARGET_RANGE_MAX_M!r};
 export const TARGET_IF_HZ = {sdr.TARGET_IF_HZ!r};
 
 // --- Synthesis -------------------------------------------------------------
 export const AMP_SCALE = {sdr.AMP_SCALE!r};
 export const NOISE_SIGMA = {sdr.NOISE_SIGMA!r};
+// Sub-array 1's Rx path relative to sub-array 0's (a real kit's mismatch).
+export const CHANNEL_PHASE_ERROR_DEG = {sdr.CHANNEL_PHASE_ERROR_DEG!r};
+export const CHANNEL_GAIN_ERROR_DB = {sdr.CHANNEL_GAIN_ERROR_DB!r};
 
 // --- Radio -----------------------------------------------------------------
 export const SIGNAL_FREQ_HZ = {h.SignalFreq!r};
@@ -164,6 +177,9 @@ export const BW_MHZ = {h.BW!r};
 export const BF_MODE = {h.bf_mode!r};
 export const MVDR_K = {h.mvdr_K!r};
 export const MVDR_DIAG_LOAD = {h.mvdr_diag_load!r};
+// MVDR measures its look vector on the target only within these limits.
+export const MVDR_LOOK_MAX_DEG = {phaser_headless.MVDR_LOOK_MAX_DEG!r};
+export const MVDR_LOOK_MIN_COHERENCE = {phaser_headless.MVDR_LOOK_MIN_COHERENCE!r};
 
 // --- Synthetic interferer (injected in do_sweep) ---------------------------
 export const INTERFERER_ANGLE_DEG = {h.interferer_angle_deg!r};
@@ -209,6 +225,101 @@ export const DEFAULT_GAIN_CAL = {list(h.gain_cal)!r};
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(body)
     print(f"wrote {OUT.relative_to(REPO)}")
+    write_radar(h)
+
+
+def _js(value):
+    """A Python literal as JS: dicts, lists, tuples, numbers, None, bools."""
+    return json.dumps(value)
+
+
+def write_radar(h):
+    sdr = phaser_sim.SimSDR
+    dsp = phaser_radar_dsp
+    body = f"""// GENERATED FILE -- DO NOT EDIT BY HAND.
+//
+// Produced by tools/gen_sim_constants.py from phaser_sim.py,
+// phaser_radar_dsp.py and phaser_headless.py, for the radar UI's in-browser
+// simulator. Python is the source of truth; re-run after changing any of these:
+//     python tools/gen_sim_constants.py
+//
+// CI regenerates this file and fails if the result differs from what is
+// committed.
+
+// --- Scenes (phaser_sim.SimSDR) --------------------------------------------
+// CW: [velocity_mps, angle_deg, amplitude]; FMCW: [range_m, velocity_mps,
+// angle_deg, amplitude]. Velocity is positive for closing targets.
+export const CW_DEFAULT_TARGETS = {_js(sdr.CW_DEFAULT_TARGETS)};
+export const FMCW_DEFAULT_TARGETS = {_js(sdr.FMCW_DEFAULT_TARGETS)};
+export const AMP_SCALE = {sdr.AMP_SCALE!r};
+export const NOISE_SIGMA = {sdr.NOISE_SIGMA!r};
+export const ELEMENT_SPACING_M = {h.d!r};
+// The kit IF a sim backend reports (get_state's Rx_freq).
+export const RX_FREQ_HZ = {h.Rx_freq!r};
+// ADAR1000 rx_gain register code -> voltage amplitude (ADAR_pyadi_functions).
+export const RX_GAIN_AMPLITUDE = {list(ADAR_pyadi_functions.RX_GAIN_AMPLITUDE)!r};
+
+// --- Live FMCW scenes (phaser_sim, after ece444 fmcw_sim.py) ----------------
+export const FMCW_SCENES = {_js(phaser_sim.FMCW_SCENES)};
+export const FMCW_DEFAULT_SCENE = {_js(phaser_sim.FMCW_DEFAULT_SCENE)};
+export const SCENE_PT_DBM = {phaser_sim.SCENE_PT_DBM!r};
+export const SCENE_GTGR_DB = {phaser_sim.SCENE_GTGR_DB!r};
+export const SCENE_NF_DB = {phaser_sim.SCENE_NF_DB!r};
+export const SCENE_NOISE_DBFS = {phaser_sim.SCENE_NOISE_DBFS!r};
+export const SCENE_LEAKAGE_DBFS = {phaser_sim.SCENE_LEAKAGE_DBFS!r};
+export const SCENE_R_MIN = {phaser_sim.SCENE_R_MIN!r};
+export const SCENE_FULL_SCALE = {phaser_sim.SCENE_FULL_SCALE!r};
+export const SCENE_WALKER_PHASES = {_js(phaser_sim.SCENE_WALKER_PHASES)};
+export const SCENE_NOISE_LEVELS = {_js(phaser_sim.SCENE_NOISE_LEVELS)};
+export const FMCW_DEFAULT_SCENE_NOISE = {_js(phaser_sim.FMCW_DEFAULT_SCENE_NOISE)};
+export const SCENE_NOISE = {_js(phaser_sim.SCENE_NOISE)};
+export const SCENE_CLUTTER = {_js(phaser_sim.SCENE_CLUTTER)};
+export const SCENE_SKIRT = {_js(phaser_sim.SCENE_SKIRT)};
+export const SCENE_FLUCT_HZ = {_js(phaser_sim.SCENE_FLUCT_HZ)};
+export const SCENE_FLUCT_PHASE = {_js(phaser_sim.SCENE_FLUCT_PHASE)};
+
+// --- phaser_radar_dsp --------------------------------------------------------
+export const C = {dsp.C!r};
+export const DEFAULTS = {_js(dsp.DEFAULTS)};
+export const TAPER_PRESETS = {_js(dsp.TAPER_PRESETS)};
+export const TAPER_MAX = {dsp.TAPER_MAX!r};
+export const FMCW_DEFAULTS = {_js(dsp.FMCW_DEFAULTS)};
+export const FMCW_HW_DEFAULTS = {_js(dsp.FMCW_HW_DEFAULTS)};
+export const FMCW_PRESETS = {_js(dsp.FMCW_PRESETS)};
+export const FMCW_PROC_DEFAULTS = {_js(dsp.FMCW_PROC_DEFAULTS)};
+export const FMCW_DEFAULT_PRESET = {_js(dsp.FMCW_DEFAULT_PRESET)};
+export const FMCW_FALLBACK_PRESET = {_js(dsp.FMCW_FALLBACK_PRESET)};
+// [label, hint] per preset, in the dropdown's order.
+export const FMCW_PRESET_UI = {_js(dsp.FMCW_PRESET_UI)};
+export const MTI_MODES = {_js(dsp.MTI_MODES)};
+export const MAINLOBE_HALF_BINS = {_js(dsp.MAINLOBE_HALF_BINS)};
+export const MAP_SPAN_DB = {dsp.MAP_SPAN_DB!r};
+export const AXIS_DECIMALS = {dsp.AXIS_DECIMALS!r};
+export const DB_DECIMALS = {dsp.DB_DECIMALS!r};
+export const RAMP_SYNCED = {_js(dsp.RAMP_SYNCED)};
+export const RAMP_FREE_RUNNING = {_js(dsp.RAMP_FREE_RUNNING)};
+export const RANGE_TIME_SCALE = {_js(dsp.RANGE_TIME_SCALE)};
+export const MAX_BURST_BUFFER = {dsp.MAX_BURST_BUFFER!r};
+export const RAMP_SETTLE_FRACTION = {dsp.RAMP_SETTLE_FRACTION!r};
+// Single-chirp frames per saved capture (the course .npz).
+export const CAPTURE_SINGLE_CHIRP_FRAMES = {dsp.CAPTURE_SINGLE_CHIRP_FRAMES!r};
+export const CAPTURE_MAX_FRAMES_S = {dsp.CAPTURE_MAX_FRAMES_S!r};
+export const CAPTURE_FRAME_S = {dsp.CAPTURE_FRAME_S!r};
+export const BYTES_PER_SAMPLE = {dsp.BYTES_PER_SAMPLE!r};
+export const CAPTURE_FULL_SCALE = {dsp.CAPTURE_FULL_SCALE!r};
+export const SPEC_WINDOW = {dsp.SPEC_WINDOW!r};
+export const SPEC_HOP = {dsp.SPEC_HOP!r};
+export const CAPTURE_BURST_INTERVAL_S = {dsp.CAPTURE_BURST_INTERVAL_S!r};
+export const CAPTURE_MAX_BYTES = {dsp.CAPTURE_MAX_BYTES!r};
+export const CAPTURE_COUNTS_ABOVE = {dsp.CAPTURE_COUNTS_ABOVE!r};
+
+// --- phaser_headless ---------------------------------------------------------
+// The frame-rate cap the main loop applies to radar frames.
+export const RADAR_MAX_FPS = {type(h).RADAR_MAX_FPS!r};
+"""
+    RADAR_OUT.parent.mkdir(parents=True, exist_ok=True)
+    RADAR_OUT.write_text(body)
+    print(f"wrote {RADAR_OUT.relative_to(REPO)}")
 
 
 if __name__ == "__main__":

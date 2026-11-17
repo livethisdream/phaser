@@ -65,6 +65,11 @@ export function createWebTransport(callbacks = {}) {
                     return;
                 }
 
+                if (data.type === 'fmcw_radar_frame') {
+                    callbacks.onFmcwFrame?.(data.data || data);
+                    return;
+                }
+
                 callbacks.onMessage?.(data);
             } catch (e) {
                 callbacks.onLog?.('error', 'WS', `Parse error: ${e}`);
@@ -78,7 +83,8 @@ export function createWebTransport(callbacks = {}) {
         }
     }
 
-    function invoke(cmd, args = {}) {
+    // timeoutMs: a long Save Capture takes as long as its duration, and more.
+    function invoke(cmd, args = {}, timeoutMs = 30000) {
         return new Promise((resolve, reject) => {
             if (!ws || ws.readyState !== WebSocket.OPEN) {
                 reject(new Error('Not connected'));
@@ -93,7 +99,7 @@ export function createWebTransport(callbacks = {}) {
                     pendingRequests.delete(id);
                     reject(new Error('Timeout'));
                 }
-            }, 30000);
+            }, timeoutMs);
         });
     }
 
@@ -102,6 +108,10 @@ export function createWebTransport(callbacks = {}) {
     function startCwRadar(params = {}) { return invoke('start_cw_radar', params); }
     function stopCwRadar() { return invoke('stop_cw_radar'); }
     function setCwRadarParams(params) { return invoke('set_cw_radar_params', params); }
+    function getFmcwRadarState() { return invoke('get_fmcw_radar_state'); }
+    function startFmcwRadar(params = {}) { return invoke('start_fmcw_radar', params); }
+    function stopFmcwRadar() { return invoke('stop_fmcw_radar'); }
+    function setFmcwRadarParams(params) { return invoke('set_fmcw_radar_params', params); }
 
     return {
         connect,
@@ -112,6 +122,10 @@ export function createWebTransport(callbacks = {}) {
         startCwRadar,
         stopCwRadar,
         setCwRadarParams,
+        getFmcwRadarState,
+        startFmcwRadar,
+        stopFmcwRadar,
+        setFmcwRadarParams,
         get isConnected() { return ws && ws.readyState === WebSocket.OPEN; }
     };
 }

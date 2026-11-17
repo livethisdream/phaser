@@ -708,17 +708,25 @@ digital beamformer -- on the kit and in the simulator alike.
   sweep from the signal *before* injection. Keep it well above ~25 kHz so the
   two are distinct over MVDR's 128-snapshot window; **Coherent** pins it to
   0 Hz, the case MVDR handles badly.
-- While it is on, an **Interferer** badge sits over every plot, the FFT marks
+- While it is on, an **Interferer ON** badge sits over every plot, the FFT marks
   both tones, and the stat row shows the interferer's level relative to the
   target and, after measuring both Manual and MVDR with the same settings,
   how much MVDR suppresses it. Measure with the beam held on the target
   (Static Phase or Signal vs Time).
-- In MVDR mode an **Adaptive** tab plots the held beam's response with the
-  MVDR weights beside the conventional one, so the notch on the interferer is
-  visible. Worth trying in class: the two sub-arrays sit about two
-  wavelengths apart, so a jammer near +/-30 deg (looking at boresight) is
-  nearly indistinguishable from the target to the digital stage. MVDR still
-  nulls it, but only with large weights that lift the rest of the pattern.
+- With the beam held (Signal vs Time), the **Rectangular** tab plots the held
+  beam's response against arrival angle, with Look and Interferer lines: the
+  conventional pattern dashed, and the pattern with the weights in use solid
+  (MVDR's, or Manual's own). In Manual the interferer sits on a sidelobe; in
+  MVDR the notch on it is visible. (This replaced a separate Adaptive tab.)
+  Worth trying in class: the two sub-arrays sit about two wavelengths apart,
+  so a jammer near +/-30 deg (looking at boresight) is nearly
+  indistinguishable from the target to the digital stage. MVDR still nulls
+  it, but only with large weights that lift the rest of the pattern.
+- MVDR measures its look vector on the target (`_mvdr_look_vector`): a kit's
+  two Rx paths are not in phase, and with the ideal [1, 1] MVDR spent its one
+  null on a target stronger than the interferer instead of on the interferer.
+  `sim_channel_phase_error_deg` (set_state, `--sim` only) reproduces that
+  mismatch in the simulator.
 
 ### CTF mode
 

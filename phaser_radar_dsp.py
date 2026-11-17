@@ -1,0 +1,1356 @@
+"""Radar signal processing and configuration — pure numpy, no hardware.
+
+Everything in here is a function of its arguments. Nothing imports `adi`,
+touches libiio, or reads the headless object's state. That is the point: the
+hardware-poking half of the radar lives in phaser_cw_radar.py, which cannot be
+imported on a machine without pyadi-iio, and so the DSP that ships to the Pi
+had no test coverage anywhere pyadi-iio was absent -- tests/test_cw_radar.py
+skipped itself on `No module named 'adi'` and the suite went green without
+running a single radar assertion.
+
+Splitting the math out fixes that, and gives the FMCW work (range, range-
+Doppler, MTI, CFAR) somewhere to land that stays testable.
+
+phaser_cw_radar re-exports the names below, so `from phaser_cw_radar import
+process_cw_frame, DEFAULTS` keeps working for anything that already does it.
+"""
+
+import base64
+from fractions import Fraction
+from math import lcm
+
+import numpy as np
+
+# scipy.fft when present: it keeps complex64 in single precision (numpy.fft
+# only does from numpy 2.0; the Pi runs 1.24) and spreads a 2D transform
+# over every core. Optional, because the DSP must import anywhere.
+try:
+    import scipy.fft as _sfft
+except ImportError:  # pragma: no cover -- exercised by monkeypatching _sfft
+    _sfft = None
+
+
+# Physical constants
+C = 299_792_458.0
+
+
+# Defaults lifted from radar/CW_RADAR_Waterfall.py
+DEFAULTS = {
+    "sample_rate": 600_000,
+    "fft_size": 1024 * 64,
+    "signal_freq": 100_000,
+    "output_freq": 12.2e9,
+    "center_freq": 2.2e9,
+    "rx_gain": 30,
+    "tx_gain": 0,
+    "fft_window": "blackman",
+    "taper": "blackman",  # Blackman ADAR1000 taper
+    "vel_max": 30.0,      # m/s; crops the Doppler window sent to the frontend
+    "peak_exclude": 0.3,  # m/s; the peak search skips +/- this around 0
+}
+
+
+TAPER_PRESETS = {
+    "rect":     [127, 127, 127, 127, 127, 127, 127, 127],
+    "hann":     [12,  43,  77,  100, 100, 77,  43,  12],
+    # Match radar/CW_RADAR_Waterfall.py exactly:
+    "blackman": [8,   34,  84,  127, 127, 84,  34,  8],
+}
+
+# ADAR1000 rx_gain is a 7-bit field.
+TAPER_MAX = 127
+
+
+def resolve_taper(taper):
+    """Turn a taper request into eight ADAR1000 gain codes.
+
+    Accepts a preset name ("rect" / "hann" / "blackman"), an explicit
+    sequence of eight values, or None. Anything unrecognised falls back to the
+    Blackman preset rather than raising: a bad taper should cost you a
+    sidelobe, not the whole radar mode.
+    """
+    if taper is None:
+        return list(TAPER_PRESETS["blackman"])
+
+    if isinstance(taper, str):
+        return list(TAPER_PRESETS.get(taper.lower(), TAPER_PRESETS["blackman"]))
+
+    try:
+        values = [int(round(float(v))) for v in taper]
+    except (TypeError, ValueError):
+        return list(TAPER_PRESETS["blackman"])
+
+    if not values:
+        return list(TAPER_PRESETS["blackman"])
+
+    # Pad short lists with zeros and clamp into the 7-bit field.
+    values = (values + [0] * 8)[:8]
+    return [max(0, min(TAPER_MAX, v)) for v in values]
+
+
+def cw_lo_freq(cfg):
+    """The mixer LO a CW capture needs, in Hz.
+
+    The Pluto transmits `signal_freq` of baseband on a `center_freq` carrier.
+    The LTC5548 on the Phaser mixes that up to the antenna, and mixes the echo
+    back down again with the same LO. For the transmitted carrier to land on
+    `output_freq` and the echo to return as a `signal_freq` tone at the Pluto's
+    `center_freq` Rx LO, the mixer has to run at the sum:
+
+        LO = output_freq + signal_freq + center_freq
+
+    which is what every ADI phaser radar example writes (as `// 4`, because the
+    CN0566 divides by four ahead of the PLL -- SDR_LO_init does that division,
+    so hand it this undivided value).
+    """
+    return float(cfg["output_freq"]) + float(cfg["signal_freq"]) + float(cfg["center_freq"])
+
+
+def build_iq_tone(fs, n, signal_freq, scale=2 ** 14):
+    """Build a cyclic IQ tone at the requested IF frequency, snapped to bin.
+
+    Snapping to an exact FFT bin is what makes the buffer cyclic: a tone at a
+    non-integer number of cycles per buffer steps in phase every time the
+    hardware wraps the buffer, which smears the transmitted line.
+    """
+    n = int(n)
+    fc_bin = round(float(signal_freq) / float(fs) * n)
+    fc_exact = fc_bin * float(fs) / n
+    t = np.arange(n) / float(fs)
+    i = np.cos(2 * np.pi * t * fc_exact) * scale
+    q = np.sin(2 * np.pi * t * fc_exact) * scale
+    return i + 1j * q
+
+
+def coherent_tone_length(fs, signal_freq, n_target, align=8):
+    """The cyclic Tx length nearest n_target that holds signal_freq exactly.
+
+    build_iq_tone snaps the tone to a bin of whatever length it is given. At
+    2**18 samples and 4 MHz that moved 100 kHz to 100006.1 Hz, and FMCW cannot
+    afford it: chirp to chirp the tone advances 2*pi*f*PRI, which is only a
+    whole number of cycles at the frequency the PRI was chosen for. The extra
+    6.1 Hz walked every return +1.9 degrees a chirp, a constant Doppler that
+    put stationary clutter two bins up and through the MTI.
+
+    So instead of moving the tone to fit the buffer, size the buffer to fit
+    the tone: a whole number of its periods, which is also a whole number of
+    cycles, so the buffer still wraps cleanly and the bin is exact. `align`
+    keeps the length a multiple of 8 samples for the Tx DMA.
+
+    Returns None when no such length is anywhere near n_target (a tone with no
+    short rational period), and the caller falls back to snapping.
+    """
+    ratio = (Fraction(float(signal_freq)).limit_denominator(10 ** 6)
+             / Fraction(float(fs)).limit_denominator(10 ** 6))
+    period = lcm(ratio.denominator, int(align))
+    if period > int(n_target):
+        return None
+    return max(1, round(int(n_target) / period)) * period
+
+
+def window(name, n):
+    """FFT window by name. Unknown names get Blackman, matching the default."""
+    name = (name or "").lower()
+    if name in ("hann", "hanning"):
+        return np.hanning(n)
+    if name == "hamming":
+        return np.hamming(n)
+    if name in ("rect", "none"):
+        return np.ones(n)
+    return np.blackman(n)
+
+
+# Kept under the old private name so phaser_cw_radar._window still resolves.
+_window = window
+
+
+def process_cw_frame(iq, fs, signal_freq, output_freq, fft_window="blackman",
+                     downsample_iq=512, vel_max=None, peak_exclude=None):
+    """Compute Doppler spectrum, velocity axis, and stats for one CW frame.
+
+    The CW radar transmits at signal_freq above DC (the IF tone). A moving
+    target reflects with a Doppler shift around that tone; we shift the spectrum
+    so the IF appears at 0 Hz, then convert that residual frequency to velocity:
+
+        v = c * f_doppler / (2 * f_carrier)
+
+    where f_carrier is the actual transmitted carrier (== output_freq for the
+    CN0566 CW path).
+
+    `vel_max` crops the returned window to +/- that many m/s, so the frontend
+    gets a few hundred bins instead of the full 64k. It is a parameter rather
+    than a constant because the UI has a "Velocity Max" control: pinned at a
+    hardcoded 30 m/s, asking the UI for a wider window just added empty margin
+    to the plot, because the bins were never sent.
+
+    `peak_exclude` keeps the peak readout off the 0 m/s line. The Tx tone
+    leaks straight into the Rx (and every stationary reflector returns it
+    unshifted), so the strongest bin in the window is almost always at
+    0 m/s: the reported velocity sat near zero and jittered whatever moved
+    in front of the array. CW cannot tell a stationary target from that
+    leakage anyway, so the search skips +/- peak_exclude m/s -- about three
+    bins at the defaults (0.11 m/s a bin), which is the Blackman main lobe.
+    The spectrum itself is untouched; only the readout ignores the line.
+    0 restores the old whole-window search.
+    """
+    n = int(len(iq))
+    if n == 0:
+        raise ValueError("Empty IQ buffer")
+
+    win = window(fft_window, n)
+    sp = np.abs(np.fft.fft(iq * win))
+    sp = np.fft.fftshift(sp)
+    mag = np.maximum(sp / np.sum(win), 1e-15)
+    spectrum_db = 20 * np.log10(mag / (2 ** 11))
+
+    freq = np.fft.fftshift(np.fft.fftfreq(n, 1.0 / fs))
+
+    # Doppler frequency = freq - signal_freq (IF tone moves to 0 after shift)
+    doppler_hz = freq - signal_freq
+
+    f_carrier = float(output_freq) if output_freq else 1.0
+    velocity = C * doppler_hz / (2.0 * f_carrier)
+
+    if vel_max is None:
+        vel_max = DEFAULTS["vel_max"]
+    vel_max = abs(float(vel_max))
+
+    mask = np.abs(velocity) <= vel_max
+    if not np.any(mask):  # safety: keep at least the central 1024 bins
+        center = n // 2
+        half = min(512, center)
+        mask = np.zeros(n, dtype=bool)
+        mask[center - half:center + half] = True
+
+    velocity_out = velocity[mask]
+    spectrum_out = spectrum_db[mask]
+
+    if peak_exclude is None:
+        peak_exclude = DEFAULTS["peak_exclude"]
+    search = np.abs(velocity_out) > abs(float(peak_exclude))
+    if not np.any(search):  # window no wider than the exclusion: search it all
+        search[:] = True
+    peak_idx = int(np.argmax(np.where(search, spectrum_out, -np.inf)))
+    peak_velocity = float(velocity_out[peak_idx])
+    peak_magnitude_db = float(spectrum_out[peak_idx])
+
+    # Optional downsampled |IQ| for the time-domain tab — keep it small.
+    iq_mag = None
+    if downsample_iq and n > downsample_iq:
+        step = max(1, n // downsample_iq)
+        iq_mag = np.abs(iq[::step])[:downsample_iq]
+
+    out = {
+        "velocity_axis": velocity_out.astype(np.float32).tolist(),
+        "spectrum_db": spectrum_out.astype(np.float32).tolist(),
+        "peak_velocity": peak_velocity,
+        "peak_magnitude_db": peak_magnitude_db,
+        "peak_exclude": abs(float(peak_exclude)),
+        "n_samples": n,
+        "sample_rate": float(fs),
+        "signal_freq": float(signal_freq),
+        "output_freq": float(output_freq),
+    }
+    if iq_mag is not None:
+        out["iq_mag"] = iq_mag.astype(np.float32).tolist()
+    return out
+
+
+# ---------------------------------------------------------------------------
+# FMCW radar
+#
+# Everything below serves the four FMCW labs in docs/2025_Phaser_labs_Python.pdf
+# (pp. 29-38): beat-frequency range, the range waterfall, range-Doppler, MTI and
+# CFAR. It is all pure numpy -- the ADF4159 ramp and the chirp-synced capture
+# that feed it live in the hardware module.
+#
+# The chain is:
+#     iq -> chirp_matrix -> [mti_filter] -> range_doppler_map
+# with range_profile() as the single-chirp case the range lab uses, and
+# ca_cfar() applied to either.
+# ---------------------------------------------------------------------------
+
+
+FMCW_DEFAULTS = {
+    "sample_rate": 600_000,
+    "chirp_bw": 500e6,      # B, the ramp's frequency sweep
+    "ramp_time": 1e-3,      # T_s, seconds
+    "num_chirps": 1,        # 1 = the range lab; >1 gives range-Doppler
+    "pri": 1e-3,            # pulse repetition interval, seconds
+    "signal_freq": 100_000, # IF tone, and so the nominal 0 m beat frequency
+    "output_freq": 12.2e9,
+    "center_freq": 2.2e9,
+    "rx_gain": 30,
+    "tx_gain": 0,
+    "fft_window": "blackman",
+    "taper": "blackman",
+    "range_max": 20.0,      # m; crops the profile sent to the frontend
+    "mti": "none",          # "none" | "2pulse" | "3pulse"
+    "zero_range_freq": None,  # None -> signal_freq; the lab's 0 m calibration
+}
+
+
+MTI_MODES = ("none", "2pulse", "3pulse")
+
+
+def fmcw_slope(chirp_bw, ramp_time):
+    """Ramp slope S = B / T_s, in Hz per second."""
+    ramp_time = float(ramp_time)
+    if ramp_time <= 0:
+        raise ValueError("ramp_time must be positive")
+    return float(chirp_bw) / ramp_time
+
+
+def beat_freq_to_range(f_beat, chirp_bw, ramp_time):
+    """R = c * f_b / (2 * S).
+
+    The labs quote 3.3 kHz of beat per meter at B = 500 MHz and T_s = 1 ms,
+    which is this relation read the other way round: 2*S/c = 3336 Hz/m.
+
+    (Step 22 of the same lab asks whether 1 m moved the peak by "about 6.7kHz",
+    which is twice what its own background section derives. The formula is the
+    unambiguous half of that pair, so it is what is implemented here.)
+    """
+    slope = fmcw_slope(chirp_bw, ramp_time)
+    return C * np.asarray(f_beat, dtype=float) / (2.0 * slope)
+
+
+def range_to_beat_freq(target_range, chirp_bw, ramp_time):
+    """Inverse of beat_freq_to_range: f_b = 2 * S * R / c."""
+    slope = fmcw_slope(chirp_bw, ramp_time)
+    return 2.0 * slope * np.asarray(target_range, dtype=float) / C
+
+
+def range_resolution(chirp_bw):
+    """Two targets closer than c/(2B) merge into one. Independent of ramp time,
+    which is why the lab's "change chirp_BW to 200e6" question is about dot
+    size and nothing else."""
+    return C / (2.0 * float(chirp_bw))
+
+
+def max_unambiguous_range(sample_rate, chirp_bw, ramp_time):
+    """Range at which the beat frequency reaches Nyquist and folds."""
+    return float(beat_freq_to_range(float(sample_rate) / 2.0, chirp_bw, ramp_time))
+
+
+def velocity_resolution(num_chirps, pri, output_freq):
+    """dv = c / (2 * f_c * M * PRI).
+
+    The lab's "change num_chirps to 32 or 128, what happens to the velocity
+    resolution?" is asking about the M in this denominator.
+    """
+    dwell = float(num_chirps) * float(pri)
+    if dwell <= 0:
+        raise ValueError("num_chirps and pri must be positive")
+    return C / (2.0 * float(output_freq) * dwell)
+
+
+def max_unambiguous_velocity(pri, output_freq):
+    """+/- c / (4 * f_c * PRI); beyond this the Doppler shift aliases."""
+    return C / (4.0 * float(output_freq) * float(pri))
+
+
+def chirp_matrix(iq, num_chirps, samples_per_chirp=None):
+    """Fold a multi-chirp capture into the labs' N x M matrix.
+
+    Rows are fast time (samples within one chirp, separated by the sampling
+    period); columns are slow time (chirp to chirp, separated by the PRI). The
+    2D FFT of that matrix is what turns into range vs velocity.
+
+    Trailing samples that do not fill a whole chirp are dropped rather than
+    zero-padded: a partial chirp is not a chirp, and padding it would put a
+    spurious return at zero Doppler.
+    """
+    iq = np.asarray(iq)
+    num_chirps = int(num_chirps)
+    if num_chirps < 1:
+        raise ValueError("num_chirps must be >= 1")
+
+    if samples_per_chirp is None:
+        samples_per_chirp = len(iq) // num_chirps
+    samples_per_chirp = int(samples_per_chirp)
+    if samples_per_chirp < 1:
+        raise ValueError(
+            f"{len(iq)} samples cannot be split into {num_chirps} chirps"
+        )
+
+    usable = samples_per_chirp * num_chirps
+    return iq[:usable].reshape(num_chirps, samples_per_chirp).T
+
+
+def mti_filter(matrix, mode="none"):
+    """Pulse-cancel along slow time to suppress everything that is not moving.
+
+    A stationary target returns a near-identical signal on consecutive chirps,
+    so differencing them cancels it; a moving one has advanced in Doppler phase
+    and survives. Two-pulse is one difference, three-pulse is two -- a deeper
+    null at zero Doppler for a wider notch around it.
+
+    Each stage costs one chirp, so a 2-pulse filter on M chirps returns M-1
+    columns and a 3-pulse returns M-2. The caller has to use the returned
+    width for the Doppler axis, not the width it asked for.
+    """
+    matrix = np.asarray(matrix)
+    mode = (mode or "none").lower()
+    if mode in ("none", "off", ""):
+        return matrix
+    if matrix.ndim != 2:
+        raise ValueError("mti_filter needs a 2D chirp matrix")
+
+    if mode == "2pulse":
+        if matrix.shape[1] < 2:
+            raise ValueError("2-pulse MTI needs at least 2 chirps")
+        return matrix[:, 1:] - matrix[:, :-1]
+    if mode == "3pulse":
+        if matrix.shape[1] < 3:
+            raise ValueError("3-pulse MTI needs at least 3 chirps")
+        return matrix[:, 2:] - 2.0 * matrix[:, 1:-1] + matrix[:, :-2]
+
+    raise ValueError(f"unknown MTI mode {mode!r}; expected one of {MTI_MODES}")
+
+
+def _range_bins(n, sample_rate, chirp_bw, ramp_time, zero_range_freq):
+    """Positive-frequency half of an n-point FFT, mapped to range.
+
+    Only the positive half carries range: a target's beat sits at
+    (zero_range_freq + f_b), and zero_range_freq is the lab's crude 0 m
+    calibration -- the tone does not land exactly on signal_freq, so the lab
+    has you hold a target at 0 m and read off where the peak actually is.
+    """
+    freq = np.fft.fftfreq(n, 1.0 / float(sample_rate))[: n // 2]
+    return beat_freq_to_range(freq - float(zero_range_freq), chirp_bw, ramp_time)
+
+
+def _to_db(mag, win_sum):
+    return 20.0 * np.log10(np.maximum(mag / win_sum, 1e-15) / (2 ** 11))
+
+
+def peak_offset(values, k):
+    """Sub-bin position of a peak, in bins from bin k: the vertex of the
+    parabola through values[k-1], values[k], values[k+1] (dB, or any log
+    scale). 0 at an edge, or where the three do not make a peak. Reads a
+    single target's position to a few cm, against one bin (~0.3 m at
+    B = 500 MHz) -- it does not separate two targets closer than a bin."""
+    if k <= 0 or k >= len(values) - 1:
+        return 0.0
+    a, b, c = float(values[k - 1]), float(values[k]), float(values[k + 1])
+    den = a - 2.0 * b + c
+    if not (np.isfinite(a) and np.isfinite(b) and np.isfinite(c)) or den >= 0:
+        return 0.0
+    return float(np.clip(0.5 * (a - c) / den, -0.5, 0.5))
+
+
+def _at(axis, k, offset):
+    """axis[k] moved `offset` bins along a uniform axis."""
+    step = float(axis[1] - axis[0]) if len(axis) > 1 else 0.0
+    return float(axis[k]) + offset * step
+
+
+def range_profile(iq, sample_rate, chirp_bw, ramp_time, zero_range_freq=0.0,
+                  fft_window="blackman", range_max=None, range_min=0.0, peak_min=0.0):
+    """One chirp -> one range profile. The FMCW range lab's main plot.
+
+    Returns the range axis in meters alongside the magnitude in dB, cropped to
+    [range_min, range_max] so the frontend gets a few hundred bins rather than
+    the whole positive half.
+
+    `peak_range` is the strongest displayed bin at or beyond `peak_min`
+    meters (to within half a bin): the Tx->Rx leakage near 0 m is otherwise stronger than a corner
+    at 3 m (L28_corner_3m.npz read 0.25 m). `cal_peak_range` is the strongest
+    bin anywhere in the band, below 0 m and past the crop included: the 0 m
+    calibration looks for a reflector at the array wherever the current 0 m
+    beat puts it.
+    """
+    iq = np.asarray(iq)
+    n = int(len(iq))
+    if n < 2:
+        raise ValueError("need at least 2 samples for a range profile")
+
+    win = window(fft_window, n)
+    sp = np.abs(np.fft.fft(iq * win))[: n // 2]
+    profile_db = _to_db(sp, np.sum(win))
+
+    ranges = _range_bins(n, sample_rate, chirp_bw, ramp_time, zero_range_freq)
+
+    mask = ranges >= float(range_min)
+    if range_max is not None:
+        mask &= ranges <= float(range_max)
+    if not np.any(mask):
+        mask = np.ones(len(ranges), dtype=bool)
+
+    ranges_out = ranges[mask]
+    profile_out = profile_db[mask]
+
+    # Half a bin of slack, so a target at the cutoff itself still counts: the
+    # 1 m reflector of the range lab reads 0.999 m.
+    half_bin = 0.5 * abs(float(ranges[1] - ranges[0])) if len(ranges) > 1 else 0.0
+    search = ranges_out >= float(peak_min or 0.0) - half_bin
+    if not np.any(search):
+        search[:] = True
+    peak_idx = int(np.argmax(np.where(search, profile_out, -np.inf)))
+    cal_idx = int(np.argmax(profile_db))
+    # Interpolated on the whole profile, so a peak at the crop's edge still
+    # has both neighbors.
+    full_peak = int(np.flatnonzero(mask)[peak_idx])
+    return {
+        "range_axis": ranges_out.astype(np.float32).tolist(),
+        "profile_db": profile_out.astype(np.float32).tolist(),
+        "peak_range": _at(ranges, full_peak, peak_offset(profile_db, full_peak)),
+        "cal_peak_range": _at(ranges, cal_idx, peak_offset(profile_db, cal_idx)),
+        "peak_magnitude_db": float(profile_out[peak_idx]),
+        "range_resolution": float(range_resolution(chirp_bw)),
+        "max_range": float(max_unambiguous_range(sample_rate, chirp_bw, ramp_time)),
+        "n_samples": n,
+    }
+
+
+def _fast_len(n):
+    """Smallest length >= n whose only prime factors are 2, 3 and 5.
+
+    The settled part of a chirp is whatever length the plan gives -- 1079
+    samples for range_doppler, and 1079 = 13 * 83. An FFT of that length took
+    2.5x as long as one of 1080. Zero-padding to here costs nothing in
+    amplitude (the padded samples add nothing to any bin) and only reshapes
+    the range bins, which the axis follows.
+    """
+    k = max(int(n), 1)
+    while True:
+        m = k
+        for p in (2, 3, 5):
+            while m % p == 0:
+                m //= p
+        if m == 1:
+            return k
+        k += 1
+
+
+def _fft(x, axis, n=None):
+    """One FFT along `axis`: scipy on all cores if present, else numpy."""
+    if _sfft is not None:
+        return _sfft.fft(x, n=n, axis=axis, workers=-1)
+    return np.fft.fft(x, n=n, axis=axis)
+
+
+# Half-width of each window's main lobe, in bins: a return spreads this far
+# either side of its own bin before the first null.
+MAINLOBE_HALF_BINS = {"blackman": 3, "hann": 2, "hamming": 2, "rect": 1}
+
+
+def mti_gain_db(doppler_hz, pri, mode):
+    """The pulse canceller's gain at each Doppler frequency, dB: 2-pulse
+    |1 - z^-1| = 2|sin(pi f T)|, 3-pulse its square. 0 dB with no MTI."""
+    mode = (mode or "none").lower()
+    if mode in ("none", "off", ""):
+        return np.zeros(len(doppler_hz))
+    h = 2.0 * np.abs(np.sin(np.pi * np.asarray(doppler_hz, dtype=float) * float(pri)))
+    if mode == "3pulse":
+        h = h ** 2
+    return 20.0 * np.log10(np.maximum(h, 1e-12))
+
+
+def range_doppler_map(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq,
+                      zero_range_freq=0.0, fft_window="blackman",
+                      range_max=None, range_min=0.0, vel_max=None,
+                      peak_exclude=0.0, mti="none", peak_snr_db=0.0,
+                      stationary=None, clutter_margin_db=0.0):
+    """2D FFT of the chirp matrix -> range vs velocity.
+
+    Range comes from the fast-time FFT down each column, velocity from the
+    slow-time FFT across each row. Returned `map_db` is indexed
+    [range][velocity] so a frontend heatmap can use it directly with
+    `range_axis` as y and `velocity_axis` as x.
+
+    The Doppler axis is derived from the matrix's own column count, not from
+    any requested num_chirps -- MTI has usually eaten one or two columns by
+    the time this runs.
+
+    Cost (phaser-00, 2026-10-29, 1079 x 256, tools/bench_fmcw_capture.py):
+    121 ms as a full map then cropped, 31 ms as now. The range crop happens
+    before the slow-time FFT, so that FFT, the magnitude and the dB run on
+    the ~60 displayed range bins instead of all ~540; the fast-time FFT is
+    padded to a 5-smooth length; and with scipy present the whole thing is
+    complex64 on every core (at most 0.0012 dB from the float64 map).
+    """
+    matrix = np.asarray(matrix)
+    if matrix.ndim != 2:
+        raise ValueError("range_doppler_map needs a 2D chirp matrix")
+    n_fast, n_slow = matrix.shape
+    if n_fast < 2 or n_slow < 2:
+        raise ValueError(f"matrix too small for a 2D FFT: {matrix.shape}")
+
+    n_fft = _fast_len(n_fast)
+    real, cplx = (np.float32, np.complex64) if _sfft is not None else (np.float64, np.complex128)
+    w_fast = window(fft_window, n_fast)
+    w_slow = window(fft_window, n_slow)
+    win_sum = float(np.sum(w_fast)) * float(np.sum(w_slow)) / n_slow
+
+    ranges = _range_bins(n_fft, sample_rate, chirp_bw, ramp_time, zero_range_freq)
+    doppler_hz = np.fft.fftshift(np.fft.fftfreq(n_slow, float(pri)))
+    velocity = C * doppler_hz / (2.0 * float(output_freq))
+
+    rmask = ranges >= float(range_min)
+    if range_max is not None:
+        rmask &= ranges <= float(range_max)
+    if not np.any(rmask):
+        rmask = np.ones(len(ranges), dtype=bool)
+
+    vmask = np.ones(len(velocity), dtype=bool)
+    if vel_max is not None:
+        vmask = np.abs(velocity) <= abs(float(vel_max))
+        if not np.any(vmask):
+            vmask = np.ones(len(velocity), dtype=bool)
+
+    ranges_out = ranges[rmask]
+    velocity_out = velocity[vmask]
+
+    x = np.asarray(matrix, dtype=cplx) * w_fast.astype(real)[:, None]
+    full = _fft(x, axis=0, n=n_fft)[: n_fft // 2]
+    # The 0 m calibration wants a reflector held still at the array, wherever
+    # the current 0 m beat puts it -- below 0 m or past the crop too -- so it
+    # reads the strongest range over the whole band, power summed over the
+    # chirps (a still reflector is all zero-Doppler; any velocity counts).
+    # On the fast-time spectrum, so the crop below still saves the slow-time
+    # FFT its ~500 undisplayed bins.
+    cal_pow = np.sum(full.real.astype(np.float64) ** 2 + full.imag.astype(np.float64) ** 2, axis=1)
+    cal_r = int(np.argmax(cal_pow))
+    cal_off = peak_offset(10.0 * np.log10(np.maximum(cal_pow, 1e-300)), cal_r)
+    spec = full[rmask]
+    spec = np.fft.fftshift(_fft(spec * w_slow.astype(real)[None, :], axis=1), axes=1)
+    map_out = _to_db(np.abs(spec[:, vmask]), win_sum)
+    # MTI's canceller lifts the fast Doppler bins above unity gain -- +6 dB
+    # at the edges for 2-pulse, +12 dB for 3-pulse -- so with only a hand
+    # moving, the edge noise outshone it and the peak velocity jumped between
+    # +-14 m/s (phaser-01, 2026-11-06). Take that lift back out, so the noise
+    # floor is flat; keep the notch below unity, which is the point of MTI.
+    lift = np.maximum(mti_gain_db(doppler_hz[vmask], pri, mti), 0.0)
+    if np.any(lift):
+        map_out = map_out - lift[None, :].astype(map_out.dtype)
+
+    # The peak readout skips the zero-Doppler cells. The strongest cell in a
+    # room is the Tx->Rx leakage and stationary clutter at 0 m/s -- after the
+    # 0 m calibration, at exactly 0 m too -- so an unrestricted argmax read
+    # 0 m, 0 m/s whatever moved (phaser-01, 2026-10-30). The exclusion is the
+    # wider of peak_exclude and the slow-time window's main lobe, counted in
+    # bins: that clutter is tens of dB above a hand, and its own main lobe
+    # out to +/-3 bins (Blackman) otherwise wins at 0.3 m/s whenever a bin is
+    # coarser than 0.1 m/s. 0 turns it off. As for CW, the map is untouched;
+    # with no column outside the exclusion, search them all.
+    search = np.ones(len(velocity_out), dtype=bool)
+    if peak_exclude:
+        dv = float(velocity_resolution(n_slow, pri, output_freq))
+        lobe = MAINLOBE_HALF_BINS.get(str(fft_window).lower(), 3)
+        half = max(lobe, int(np.ceil(abs(float(peak_exclude)) / dv - 1e-9)))
+        search = np.abs(np.rint(velocity_out / dv)) >= half
+    if not np.any(search):
+        search[:] = True
+    masked = np.where(search[None, :], map_out, -np.inf)
+    # A moving cell must also stand within clutter_margin_db of the still
+    # return at its own range: a strong still target's leftovers -- its
+    # slow-time skirt without MTI, MTI's residue with it -- spread across
+    # every velocity at its range, 36-48 and ~60 dB below it (phaser-01,
+    # 2026-11-11, a corner at 1.1 m), and outshone the noise gate by 25-40 dB.
+    # `stationary` is the chirp matrix before MTI; its zero-Doppler cell per
+    # range bin, in the map's units, is one FFT of the window-weighted chirp
+    # sum (the slow-time FFT at 0 Hz is linear).
+    if stationary is not None and clutter_margin_db:
+        st = np.asarray(stationary)
+        ws0 = window(fft_window, st.shape[1])
+        still = (st * ws0[None, :]).sum(axis=1) * w_fast
+        st_spec = _fft(still.astype(cplx), axis=0, n=n_fft)[: n_fft // 2][rmask]
+        st_db = _to_db(np.abs(st_spec), float(np.sum(w_fast)) * float(np.sum(ws0)) / st.shape[1])
+        # A still return spreads over the fast-time window's main lobe, and
+        # so do its leftovers: compare with the strongest still return
+        # within that many range bins (a null between two walls read 24 dB).
+        half = MAINLOBE_HALF_BINS.get(str(fft_window).lower(), 3)
+        padded = np.pad(st_db, half, mode="edge")
+        st_near = np.max([padded[k:k + len(st_db)] for k in range(2 * half + 1)], axis=0)
+        masked = np.where(map_out >= st_near[:, None] - float(clutter_margin_db), masked, -np.inf)
+    peak_r, peak_v = np.unravel_index(int(np.argmax(masked)), map_out.shape)
+    # A peak only counts if it stands out: at least peak_snr_db above the
+    # map's median, its noise floor. Otherwise -- nothing moving, MTI on --
+    # the readout is None rather than whichever noise cell won this frame.
+    noise_db = float(np.median(map_out))
+    clear = (np.isfinite(masked[peak_r, peak_v])
+             and (not peak_snr_db or float(map_out[peak_r, peak_v]) - noise_db >= float(peak_snr_db)))
+    return {
+        "map_db": map_out.astype(np.float32).tolist(),
+        "range_axis": ranges_out.astype(np.float32).tolist(),
+        "velocity_axis": velocity_out.astype(np.float32).tolist(),
+        "peak_range": _at(ranges_out, peak_r, peak_offset(map_out[:, peak_v], peak_r)) if clear else None,
+        "cal_peak_range": _at(ranges, cal_r, cal_off),
+        "peak_velocity": _at(velocity_out, peak_v, peak_offset(map_out[peak_r, :], peak_v)) if clear else None,
+        "noise_db": noise_db,
+        "peak_magnitude_db": float(map_out[peak_r, peak_v]),
+        "range_resolution": float(range_resolution(chirp_bw)),
+        "velocity_resolution": float(velocity_resolution(n_slow, pri, output_freq)),
+        "max_velocity": float(max_unambiguous_velocity(pri, output_freq)),
+        "num_chirps": int(n_slow),
+    }
+
+
+# Micro-Doppler spectrogram: velocity against time at one range. Each burst
+# is cut into SPEC_WINDOW-chirp windows SPEC_HOP chirps apart, so a 256-chirp
+# burst gives 13 columns ~8 ms apart -- fine enough to see a spinner's blades
+# flicker, not one smear a frame.
+SPEC_WINDOW = 64
+SPEC_HOP = 16
+
+
+def doppler_spectrogram(matrix, sample_rate, chirp_bw, ramp_time, pri, output_freq,
+                        range_m, zero_range_freq=0.0, fft_window="blackman",
+                        mti="none", win_len=SPEC_WINDOW, hop=SPEC_HOP):
+    """Short-time Doppler spectra of the chirp matrix at one range.
+
+    The range bin nearest `range_m` and its two neighbors are taken straight
+    from the fast-time DFT (three bins, not a full FFT), then each window of
+    `win_len` chirps, `hop` apart, gets its own slow-time FFT; power is summed
+    over the three bins. dB in the map's units, MTI's lift above unity taken
+    out as range_doppler_map does. Returns {"columns_db": [n_cols][win_len],
+    "velocity_axis", "t_step" (s between columns), "range" (m)}.
+    """
+    matrix = np.asarray(matrix)
+    n_fast, n_slow = matrix.shape
+    n_fft = _fast_len(n_fast)
+    ranges = _range_bins(n_fft, sample_rate, chirp_bw, ramp_time, zero_range_freq)
+    k0 = int(np.argmin(np.abs(ranges - float(range_m))))
+    ks = np.array([k for k in (k0 - 1, k0, k0 + 1) if 0 <= k < len(ranges)])
+    w_fast = window(fft_window, n_fast)
+    n = np.arange(n_fast)
+    dft = np.exp(-2j * np.pi * np.outer(ks, n) / n_fft)
+    x = dft @ (matrix * w_fast[:, None])                     # bins x chirps
+    win_len = int(min(win_len, n_slow))
+    hop = max(1, int(hop))
+    w_slow = window(fft_window, win_len)
+    doppler_hz = np.fft.fftshift(np.fft.fftfreq(win_len, float(pri)))
+    lift = np.maximum(mti_gain_db(doppler_hz, pri, mti), 0.0)
+    cols = []
+    for start in range(0, n_slow - win_len + 1, hop):
+        y = np.fft.fftshift(np.fft.fft(x[:, start:start + win_len] * w_slow[None, :], axis=1), axes=1)
+        mag = np.sqrt(np.sum(np.abs(y) ** 2, axis=0))
+        cols.append(_to_db(mag, float(np.sum(w_fast)) * float(np.sum(w_slow)) / win_len) - lift)
+    return {
+        "columns_db": np.asarray(cols).tolist(),
+        "velocity_axis": (C * doppler_hz / (2.0 * float(output_freq))).tolist(),
+        "t_step": hop * float(pri),
+        "range": float(ranges[k0]),
+    }
+
+
+# --- frame payload (C3) ----------------------------------------------------
+#
+# What the backend sends the browser each frame. A range_doppler map is ~60 x
+# 256 cells; as a JSON list of floats that is ~300 KB a frame, as one byte a
+# cell in base64 ~20 KB. One byte is 0.4 dB a step over MAP_SPAN_DB, far finer
+# than a heatmap's color scale resolves.
+
+MAP_SPAN_DB = 100.0   # quantize from the frame's peak down to this far below
+AXIS_DECIMALS = 4     # m and m/s: 0.1 mm, far under any bin
+DB_DECIMALS = 2       # 1D traces in dB
+
+
+def encode_db_u8(map_db, span_db=MAP_SPAN_DB):
+    """A 2D dB array as one byte a cell, base64, with its own scale.
+
+    Quantized from the array's peak down to `span_db` below it; anything lower
+    is clipped to the floor rather than stretching the scale to the 1e-15
+    clamp in _to_db. Row-major, so for a range-Doppler map rows are range and
+    columns velocity, matching map_db. decode_db_u8() inverts it.
+    """
+    m = np.asarray(map_db, dtype=np.float32)
+    if m.ndim != 2:
+        raise ValueError("encode_db_u8 needs a 2D array")
+    hi = float(np.max(m)) if m.size else 0.0
+    lo = max(float(np.min(m)) if m.size else 0.0, hi - float(span_db))
+    if hi <= lo:  # flat map: any non-zero span keeps decoding finite
+        lo = hi - 1.0
+    q = np.rint((m - lo) * (255.0 / (hi - lo)))
+    q = np.clip(q, 0, 255).astype(np.uint8)
+    return {
+        "encoding": "u8-base64",
+        "rows": int(m.shape[0]),
+        "cols": int(m.shape[1]),
+        "db_min": round(lo, DB_DECIMALS),
+        "db_max": round(hi, DB_DECIMALS),
+        "data": base64.b64encode(q.tobytes()).decode("ascii"),
+    }
+
+
+def decode_db_u8(enc):
+    """encode_db_u8()'s output back to a rows x cols float32 dB array.
+
+    The browser does the same: dB = db_min + byte * (db_max - db_min) / 255.
+    """
+    q = np.frombuffer(base64.b64decode(enc["data"]), dtype=np.uint8)
+    q = q.reshape(enc["rows"], enc["cols"]).astype(np.float32)
+    return enc["db_min"] + q * ((enc["db_max"] - enc["db_min"]) / 255.0)
+
+
+def rounded(values, decimals):
+    """A 1D array as a JSON-friendly list, rounded (float32 tolist() spells
+    every value out to 17 digits, tripling the bytes for nothing)."""
+    return np.round(np.asarray(values, dtype=float), decimals).tolist()
+
+
+# --- Course capture (.npz) ----------------------------------------------------
+#
+# The ECE 444 radar labs' one capture format (ece444 radar_lab.load_capture,
+# project/ROADMAP.md "Shared code contract"): an np.savez with
+#     iq      complex64, n_chirps x n_samples -- the summed array, a chirp a row
+#     iq_ch   (optional) complex64, 2 x n_chirps x n_samples -- the two halves
+#     fs, fc, B, T_ramp, PRI, f0 -- float64 scalars, SI units; f0 is the 0 m
+#             frequency, from the L28 calibration
+#     note    a one-line description, as the course's recorded files carry
+# Range is then R = c T_ramp (f - f0) / (2 B), the relation range_profile uses.
+#
+# iq is in full-scale units, as the course's own files are (fmcw_sim.py):
+# |iq| = 1 is 0 dBFS. The Pluto hands back ADC counts, 2**11 at full scale,
+# so capture_npz divides by CAPTURE_FULL_SCALE and playback multiplies back.
+# Two summed channels reach at most about 2.83 full scale, so a file whose
+# peak |iq| is above CAPTURE_COUNTS_ABOVE holds counts (a save from before
+# this change) and plays as it is.
+CAPTURE_FULL_SCALE = 2 ** 11
+CAPTURE_COUNTS_ABOVE = 4.0
+
+# Single-chirp captures per saved file: the course's L28 recordings are 32.
+CAPTURE_SINGLE_CHIRP_FRAMES = 32
+# A single-chirp save takes frames at the live frame interval (RADAR_MAX_FPS,
+# 50 ms -- the L28 recordings' PRI), for at most this long.
+CAPTURE_MAX_FRAMES_S = 60.0
+CAPTURE_FRAME_S = 0.05
+BYTES_PER_SAMPLE = 8        # complex64
+# A range-Doppler save longer than one burst is a run of ordinary bursts, one
+# every CAPTURE_BURST_INTERVAL_S (or a burst's own length, if longer) -- what
+# the live view captures, so no mode re-entry and no giant buffer (a 1.6 s
+# continuous burst froze phaser-01, 2026-11-06). The file says where each
+# burst starts: burst_len chirps each, burst_t seconds from the first. Runs
+# stop at CAPTURE_MAX_BYTES of iq, so a save stays a download, not a crash.
+CAPTURE_BURST_INTERVAL_S = 0.25
+CAPTURE_MAX_BYTES = 64e6
+
+
+def capture_limits(plan, continuous=False):
+    """What a saved capture can be for this plan, for the UI's Duration box.
+
+    {"kind": "burst"|"bursts"|"frames", "default_s", "max_s", "chirp_s",
+     "bytes_per_s", "bytes_per_s_iq_ch", ...} -- the size is iq's alone, plus
+    the header bytes a file carries regardless; iq_ch triples it (iq + 2
+    halves). capture_bytes() turns a duration into bytes.
+      burst   (continuous=True) continuous chirps a PRI apart, as long as the
+              Pluto's burst buffer holds (MAX_BURST_BUFFER samples)
+      bursts  up to one burst, the next burst trimmed; longer, a run of
+              whole bursts every run_s (burst_s, bytes_per_burst)
+      frames  single chirps at the live frame interval
+    """
+    good = int(plan["good_ramp_samples"])
+    if plan.get("synced") and plan["num_chirps"] > 1:
+        pri = float(plan["pri_ms"]) / 1e3
+        n = int(plan["num_chirps"])
+        per_s = good * BYTES_PER_SAMPLE / pri
+        out = {"default_s": n * pri, "chirp_s": pri, "burst_s": n * pri,
+               "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
+        if continuous:
+            max_chirps = int(MAX_BURST_BUFFER // (float(plan["sample_rate"]) * pri))
+            return {"kind": "burst", "max_s": max_chirps * pri, **out}
+        run_s = max(CAPTURE_BURST_INTERVAL_S, n * pri)
+        per_burst = n * good * BYTES_PER_SAMPLE
+        max_bursts = max(2, int(CAPTURE_MAX_BYTES // per_burst))
+        return {"kind": "bursts", "max_s": min(CAPTURE_MAX_FRAMES_S, max_bursts * run_s),
+                "run_s": run_s, "bytes_per_burst": per_burst, **out}
+    per_s = good * BYTES_PER_SAMPLE / CAPTURE_FRAME_S
+    return {"kind": "frames", "default_s": CAPTURE_SINGLE_CHIRP_FRAMES * CAPTURE_FRAME_S,
+            "max_s": CAPTURE_MAX_FRAMES_S, "chirp_s": CAPTURE_FRAME_S,
+            "bytes_per_s": per_s, "bytes_per_s_iq_ch": 3 * per_s}
+
+
+def capture_bursts(limits, duration):
+    """How many whole bursts a "bursts" save of `duration` s takes; 0 when it
+    is a single (trimmed) burst."""
+    if limits["kind"] != "bursts" or duration <= limits["burst_s"] * (1 + 1e-9):
+        return 0
+    return max(2, int(round(duration / limits["run_s"])))
+
+
+def capture_bytes(limits, duration, iq_ch=False):
+    """The iq bytes a save of `duration` s writes (x3 with iq_ch)."""
+    k = 3 if iq_ch else 1
+    n = capture_bursts(limits, duration)
+    if n:
+        return k * n * limits["bytes_per_burst"]
+    return k * limits["bytes_per_s"] * duration
+
+
+def capture_npz(iq, fs, fc, chirp_bw, t_ramp, pri, f0, note="", iq_ch=None, extra=None):
+    """The course .npz, as bytes. `iq` is n_chirps x n_samples, in ADC counts;
+    the file holds it in full-scale units (CAPTURE_FULL_SCALE)."""
+    import io
+    arrays = {
+        "iq": (np.asarray(iq) / CAPTURE_FULL_SCALE).astype(np.complex64),
+        "fs": np.float64(fs), "fc": np.float64(fc), "B": np.float64(chirp_bw),
+        "T_ramp": np.float64(t_ramp), "PRI": np.float64(pri), "f0": np.float64(f0),
+        "note": np.str_(note),
+    }
+    if arrays["iq"].ndim != 2:
+        raise ValueError("iq must be n_chirps x n_samples")
+    if iq_ch is not None:
+        iq_ch = (np.asarray(iq_ch) / CAPTURE_FULL_SCALE).astype(np.complex64)
+        if iq_ch.shape != (2,) + arrays["iq"].shape:
+            raise ValueError(f"iq_ch must be 2 x {arrays['iq'].shape}, not {iq_ch.shape}")
+        arrays["iq_ch"] = iq_ch
+    for key, value in (extra or {}).items():
+        arrays[key] = np.asarray(value, dtype=np.float64)
+    buf = io.BytesIO()
+    # Uncompressed, like the course's own files: complex IQ barely deflates.
+    np.savez(buf, **arrays)
+    return buf.getvalue()
+
+
+def ca_cfar(spectrum_db, num_guard=4, num_ref=16, bias_db=6.0):
+    """Cell-averaging CFAR threshold, in dB, the same length as the input.
+
+    For each cell under test the noise estimate is the mean power of the
+    reference cells either side, skipping `num_guard` cells nearest the cell so
+    a target's own skirts do not raise the threshold that is meant to detect
+    it. `bias_db` is how far above that estimate a sample has to sit to count:
+    raise it for fewer false alarms and more missed targets, lower it for the
+    reverse. That trade is the whole point of the CFAR lab.
+
+    Edges use however many reference cells exist rather than wrapping, since
+    wrapping would let a strong near-range return set the threshold at max
+    range.
+    """
+    spectrum_db = np.asarray(spectrum_db, dtype=float)
+    if spectrum_db.ndim != 1:
+        raise ValueError("ca_cfar operates on a 1D spectrum")
+    n = len(spectrum_db)
+    num_guard = max(0, int(num_guard))
+    num_ref = int(num_ref)
+    if num_ref < 1:
+        raise ValueError("num_ref must be >= 1")
+    if n == 0:
+        return np.zeros(0)
+
+    power = 10.0 ** (spectrum_db / 10.0)
+    csum = np.concatenate([[0.0], np.cumsum(power)])
+
+    idx = np.arange(n)
+    half = num_guard + num_ref
+
+    lo_t = np.maximum(idx - half, 0)
+    hi_t = np.minimum(idx + half + 1, n)
+    lo_g = np.maximum(idx - num_guard, 0)
+    hi_g = np.minimum(idx + num_guard + 1, n)
+
+    sum_ref = (csum[hi_t] - csum[lo_t]) - (csum[hi_g] - csum[lo_g])
+    cnt_ref = (hi_t - lo_t) - (hi_g - lo_g)
+
+    noise = sum_ref / np.maximum(cnt_ref, 1)
+    # A cell with no reference cells at all (num_ref smaller than the guard
+    # band can reach) must not read as zero noise and detect everything.
+    noise = np.where(cnt_ref > 0, noise, np.max(power) if n else 1.0)
+
+    return 10.0 * np.log10(np.maximum(noise, 1e-30)) + float(bias_db)
+
+
+def apply_cfar(spectrum_db, threshold_db, floor_db=None):
+    """Blank everything below the CFAR threshold.
+
+    The lab has "Plot CFAR Threshold" and "Apply CFAR Threshold" as separate
+    checkboxes on purpose: you tune the bias and cell counts against the drawn
+    threshold first, and only then blank what falls below it.
+
+    Returns (masked_spectrum, detection_indices).
+    """
+    spectrum_db = np.asarray(spectrum_db, dtype=float)
+    threshold_db = np.asarray(threshold_db, dtype=float)
+    detections = np.flatnonzero(spectrum_db > threshold_db)
+    if floor_db is None:
+        floor_db = float(np.min(spectrum_db)) if len(spectrum_db) else 0.0
+    masked = np.where(spectrum_db > threshold_db, spectrum_db, floor_db)
+    return masked, detections
+
+
+# ---------------------------------------------------------------------------
+# FMCW hardware plans (Phase C1).
+#
+# What to write to the ADF4159 and the Pluto TDD engine, and where the chirps
+# land in the Rx buffer. Still pure: phaser_fmcw_radar.py does the writes, and
+# everything it writes is computed here, where it can be checked against the
+# lab scripts without a kit. Ground truth is Range_Doppler_Plot.py and the
+# *_ChirpSync.py scripts from jonkraft/PhaserRadarLabs, which are what the
+# 2025 labs run.
+# ---------------------------------------------------------------------------
+
+
+# The two ramps the labs use. The synced sawtooth, retriggered by the Pluto TDD
+# engine on every chirp, is the one code path; the free-running triangle needs
+# no TDD and is the fallback when the probe finds none.
+RAMP_SYNCED = "single_sawtooth_burst"
+RAMP_FREE_RUNNING = "continuous_triangular"
+RAMP_MODES = (RAMP_SYNCED, RAMP_FREE_RUNNING)
+
+# The ramp time to hand the c/(2*S) range functions above, as a fraction of the
+# ADF4159's freq_dev_time. RADAR_FFT_Waterfall.py ranges its triangle with
+# c/(4*S) and the sawtooth scripts use c/(2*S); the reading here is that the
+# triangle sweeps the full B in each half of freq_dev_time, which also makes
+# the lab's "about 6.7 kHz per meter" right for that ramp. Unverified until
+# bench step C5.3 -- if it is wrong, this table is the one number to change.
+RANGE_TIME_SCALE = {RAMP_SYNCED: 1.0, RAMP_FREE_RUNNING: 0.5}
+
+# The CN0566 divides the LO by 4 ahead of the ADF4159's RFIN, so every
+# frequency written to the chip is a quarter of the one the mixer sees.
+CN0566_LO_DIVIDER = 4
+
+# Rx buffer bounds in TDD burst mode. The Pluto takes 2**23, but the scripts
+# cap burst mode at 2**22, and start their search at 2**13.
+MIN_RX_BUFFER = 2 ** 13
+MAX_BURST_BUFFER = 2 ** 22
+
+# The start of every ramp is discarded while the synthesizer settles.
+RAMP_SETTLE_FRACTION = 0.1
+
+# TDD channel timing the scripts program on channels 0-2, in raw ticks.
+TDD_ON_RAW = 0
+TDD_OFF_RAW = 10
+
+# Keys the hardware path needs that the Phase B DSP defaults do not carry.
+FMCW_HW_DEFAULTS = {
+    "pri_guard_ms": 1.0,   # PRI = ramp + this; the scripts use 0.2 or 1.0
+    "fft_size": 4096,      # free-running Rx buffer (RADAR_FFT_Waterfall.py)
+    "prefetch": True,      # synced: fire the next burst while this frame is processed
+}
+
+# The AD9361's lowest sample rate without a decimating FIR loaded (pyadi-iio:
+# "Does not currently support sample rates below 521e3"). Every preset must
+# run at or above it, or it will not start on a kit.
+MIN_SAMPLE_RATE = 521e3
+
+# One preset per lab. Values come from the script the lab runs, except where
+# the lab text disagrees, where the lab wins. center_freq is deliberately in
+# none of them: it is the kit's characterized IF, which differs per unit (see
+# docs/calibration-bugs.md), and the scripts' 2.1 GHz is above some kits'.
+FMCW_PRESETS = {
+    # Lab pp. 29-31, RADAR_FFT_Waterfall.py. The script ramps for 1.2 ms; the
+    # lab states T_s = 1 ms and derives its 3.3 kHz/m from that, so 1 ms.
+    # The script transmits at 12.145 GHz; this one at 10 GHz, as the other
+    # presets do. 12.1 GHz is above the array's 10-10.5 GHz band: on phaser-01
+    # (2026-11-06) a corner's echo came back too weak to beat the internal
+    # leakage, so Calibrate locked onto the leakage's 100 kHz and Peak Range
+    # wandered. At 10 GHz it calibrated. kHz/m depends only on B and T.
+    "range": {
+        "sample_rate": 600_000,
+        "output_freq": 10e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 1e-3,
+        "num_chirps": 1,
+        "pri_guard_ms": 1.0,
+        "fft_size": 4096,
+        "rx_gain": 30,
+        "tx_gain": 0,
+    },
+    # FMCW_RADAR_Waterfall_ChirpSync.py. The lab gives no values for it.
+    "range_sync": {
+        "sample_rate": 5_000_000,
+        "output_freq": 10e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 500e-6,
+        "num_chirps": 1,
+        "pri_guard_ms": 1.0,
+        "rx_gain": 20,
+        "tx_gain": 0,
+    },
+    # Lab p. 38, CFAR_RADAR_Waterfall_ChirpSync.py (the lab names the script
+    # but gives no values).
+    "cfar": {
+        "sample_rate": 2_000_000,
+        "output_freq": 10e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 500e-6,
+        "num_chirps": 1,
+        "pri_guard_ms": 1.0,
+        "rx_gain": 20,
+        "tx_gain": 0,
+    },
+    # Lab pp. 33-36, Range_Doppler_Plot.py, but at half its 4 MHz -- the one
+    # deliberate departure from a script. The USB transfer is most of a frame
+    # (phaser-00, 2026-10-29: a 308 ms refill of 2**19 samples), and 4 MHz
+    # buys range nobody indoors uses: ~180 m to Nyquist against a 20 m
+    # display. 2 MHz halves the buffer for ~90 m and keeps every other value,
+    # so the velocity resolution the hand-wave and fidget-spinner steps show
+    # is unchanged. range_doppler_far is the script exactly.
+    "range_doppler": {
+        "sample_rate": 2_000_000,
+        "output_freq": 9.9e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 300e-6,
+        "num_chirps": 256,
+        "pri_guard_ms": 0.2,
+        "rx_gain": 60,
+        "tx_gain": 0,
+    },
+    # Range_Doppler_Plot.py as written, for outdoor targets: the lab confirms
+    # 4 MHz, 300 us, 256 chirps and a 0.5 ms PRI, and the script plots to
+    # 100 m. About half range_doppler's frame rate. Any single value can
+    # still be overridden per run (set_fmcw_radar_params).
+    "range_doppler_far": {
+        "sample_rate": 4_000_000,
+        "output_freq": 9.9e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 300e-6,
+        "num_chirps": 256,
+        "pri_guard_ms": 0.2,
+        "rx_gain": 60,
+        "tx_gain": 0,
+        "range_max": 100.0,
+    },
+    # Micro-Doppler: long continuous records of moving targets (a walker, a
+    # fan, a spinner) to classify by their micro-Doppler signatures. 300 us
+    # chirps every 0.5 ms, as the ECE 444 classification recordings (ece444
+    # radar-data/L31_*.npz) were made -- but at 0.6 MS/s, not their 0.3: the
+    # AD9361 refuses rates below 521 kS/s without a decimating FIR, and on
+    # phaser-01 (2026-11-12) the preset would not start. 0.6 MS/s is what
+    # Range (Basic) already runs there. The low rate is what makes a long
+    # continuous record fit the Pluto's burst buffer -- ~7 s against ~2 s at
+    # range_doppler's 2 MS/s. The beat reaches Nyquist ~17 m out; the display
+    # stops at 4 m, where micro-Doppler targets are.
+    "micro_doppler": {
+        "sample_rate": 600_000,
+        "output_freq": 10e9,
+        "chirp_bw": 500e6,
+        "ramp_time": 300e-6,
+        "num_chirps": 256,
+        "pri_guard_ms": 0.2,
+        "rx_gain": 60,
+        "tx_gain": 0,
+        "range_max": 4.0,
+    },
+}
+
+
+# Processing-only keys the backend's frame uses, all live-updatable.
+FMCW_PROC_DEFAULTS = {
+    "vel_max": None,        # m/s; None = the full unambiguous span
+    "cfar": False,
+    "cfar_guard": 4,
+    "cfar_ref": 16,
+    "cfar_bias_db": 6.0,
+    "peak_exclude": 0.3,    # m/s; range-Doppler peak readout skips |v| below this
+    # m; the range-profile peak readout skips returns closer than this, where
+    # the Tx->Rx leakage sits. Its Blackman main lobe is about 0.9 m wide at
+    # B = 500 MHz, so 1 m clears it; 0 turns it off. Calibrate ignores it.
+    "peak_min": 1.0,
+    # dB; a range-Doppler peak is reported only this far above the map's
+    # median (its noise floor), else the readout shows "--". 0 turns it off.
+    # The strongest of ~15,000 noise cells sits ~11-13 dB over the median, so
+    # 15 dB keeps noise out (~1 frame in 10^5) while a moving hand, summed
+    # over 256 chirps, clears it by tens of dB.
+    "peak_snr_db": 15.0,
+    # dB; and no more than this below the still (zero-Doppler, before MTI)
+    # return at its own range. A still corner's leftovers sat 36-48 dB below
+    # it without MTI and ~60 dB with (phaser-01, 2026-11-11); a hand is
+    # ~15-20 dB below such a corner, a person ~10 dB below a wall. 0 = off.
+    "clutter_margin_db": 30.0,
+    # m; where the micro-Doppler spectrogram looks. None follows the strongest
+    # mover (the range-Doppler peak); a number holds it there.
+    "spectrogram_range": None,
+}
+
+# What start_fmcw_radar runs when no preset is named: range and velocity
+# together, the richest view and the one the bench work uses. A kit without
+# chirp sync cannot run it, and falls back to FMCW_FALLBACK_PRESET.
+FMCW_DEFAULT_PRESET = "range_doppler"
+FMCW_FALLBACK_PRESET = "range"
+
+# How the radar UI names and orders the presets: a short dropdown label and a
+# one-line hint. The keys stay the internal names (bench_fmcw_capture.py's
+# --preset, saved params, tests, the plan doc).
+FMCW_PRESET_UI = {
+    "range_doppler": ("Range + Velocity", "Indoor, ~5 fps. Hand wave, fidget spinner, MTI."),
+    "range_doppler_far": ("Range + Vel (Far)", "Outdoor, out to ~180 m, ~2.4 fps."),
+    "range": ("Range (Basic)", "FMCW lab: the 0 m calibration and kHz per meter."),
+    "range_sync": ("Range (Fast)", "A steeper chirp, out to ~375 m."),
+    "cfar": ("Range (CFAR)", "CFAR lab: tune the threshold, then Apply."),
+    "micro_doppler": ("Micro-Doppler", "Long continuous records of moving targets for micro-Doppler: 0.6 MS/s, up to ~7 s, shown out to 4 m."),
+}
+
+
+def fmcw_config(params=None, preset=None):
+    """Defaults <- preset <- params, in that order."""
+    cfg = {**FMCW_DEFAULTS, **FMCW_HW_DEFAULTS, **FMCW_PROC_DEFAULTS}
+    if preset is not None:
+        if preset not in FMCW_PRESETS:
+            raise ValueError(
+                f"unknown FMCW preset {preset!r}; expected one of {sorted(FMCW_PRESETS)}")
+        cfg.update(FMCW_PRESETS[preset])
+    cfg.update(params or {})
+    return cfg
+
+
+def _check_ramp_mode(ramp_mode):
+    if ramp_mode not in RAMP_MODES:
+        raise ValueError(f"unknown ramp mode {ramp_mode!r}; expected one of {RAMP_MODES}")
+
+
+def to_adf4159_hz(freq_hz):
+    """A mixer-side frequency, as the ADF4159 register wants it (/4)."""
+    return int(float(freq_hz) / CN0566_LO_DIVIDER)
+
+
+def ramp_time_us(cfg):
+    """The requested ramp, in the whole microseconds freq_dev_time takes."""
+    us = int(round(float(cfg["ramp_time"]) * 1e6))
+    if us < 1:
+        raise ValueError(f"ramp_time {cfg['ramp_time']} s is under 1 us")
+    return us
+
+
+def ramp_registers(cfg, ramp_mode):
+    """The ADF4159 writes for one ramp, as an ordered list of (attr, value).
+
+    Order is upstream's, and it matters at the end: `enable = 0` is what
+    latches every other register, so it is written last. Returning a list
+    rather than writing makes that a property of the data, which a test can
+    see. Attribute names are pyadi-iio's adi.adf4159 properties.
+
+    One step per microsecond, as the scripts recommend.
+    """
+    _check_ramp_mode(ramp_mode)
+    ramp_us = ramp_time_us(cfg)
+    bw = float(cfg["chirp_bw"])
+    if bw <= 0:
+        raise ValueError("chirp_bw must be positive")
+    num_steps = ramp_us
+    return [
+        ("frequency", to_adf4159_hz(cw_lo_freq(cfg))),
+        ("freq_dev_range", to_adf4159_hz(bw)),
+        ("freq_dev_step", int((bw / CN0566_LO_DIVIDER) / num_steps)),
+        ("freq_dev_time", ramp_us),
+        ("delay_word", 4095),
+        ("delay_clk", "PFD"),
+        ("delay_start_en", 0),
+        ("ramp_delay_en", 0),
+        ("trig_delay_en", 0),
+        ("ramp_mode", ramp_mode),
+        ("sing_ful_tri", 0),
+        ("tx_trig_en", 1 if ramp_mode == RAMP_SYNCED else 0),
+        ("enable", 0),
+    ]
+
+
+def chirp_plan(cfg, ramp_mode, actual_ramp_us, on_ms=0.0):
+    """Where the chirps are, given the ramp the ADF4159 actually runs.
+
+    `actual_ramp_us` is freq_dev_time read back after the write: the chip
+    rounds it, and both the PRI and the range scale have to use what it runs,
+    not what was asked for.
+
+    The synced arithmetic is Range_Doppler_Plot.py's, expression for
+    expression, so the golden test can hold it to the script's numbers:
+        PRI_ms        = ramp_us/1e3 + guard
+        frame_samples = int(PRI_s * fs)
+        good samples  = int((ramp_s - 10% of ramp_s) * fs)
+        start offset  = int((on_ms/1e3 + 10% of ramp_s) * fs)
+        buffer        = smallest 2**p, p >= 13, holding PRI_ms * chirps
+    One difference: the script stops growing the buffer at its cap and goes
+    on to slice past the end of it. This raises instead.
+
+    For the free-running ramp nothing is triggered and nothing sliced: the
+    buffer is `fft_size` samples of whatever the triangle is doing.
+    """
+    _check_ramp_mode(ramp_mode)
+    fs = float(cfg["sample_rate"])
+    ramp_us = float(actual_ramp_us)
+    if fs <= 0:
+        raise ValueError("sample_rate must be positive")
+    if ramp_us <= 0:
+        raise ValueError("the ADF4159 reported a ramp time of 0")
+    ramp_s = ramp_us / 1e6
+
+    plan = {
+        "ramp_mode": ramp_mode,
+        "synced": ramp_mode == RAMP_SYNCED,
+        "sample_rate": fs,
+        "ramp_time": ramp_s,
+        "effective_ramp_time": ramp_s * RANGE_TIME_SCALE[ramp_mode],
+    }
+
+    if ramp_mode == RAMP_FREE_RUNNING:
+        n = int(cfg["fft_size"])
+        if n < 2:
+            raise ValueError("fft_size must be at least 2")
+        plan.update({
+            "num_chirps": 1,
+            "pri_ms": None,
+            "rx_buffer_size": n,
+            "frame_samples": n,
+            "start_offset_samples": 0,
+            "good_ramp_samples": n,
+        })
+        return plan
+
+    num_chirps = int(cfg["num_chirps"])
+    if num_chirps < 1:
+        raise ValueError("num_chirps must be >= 1")
+    guard_ms = float(cfg["pri_guard_ms"])
+    if guard_ms < 0:
+        raise ValueError("pri_guard_ms cannot be negative")
+
+    pri_ms = ramp_us / 1e3 + guard_ms
+    pri_s = pri_ms / 1e3
+    frame_samples = int(pri_s * fs)
+    begin_offset_time = RAMP_SETTLE_FRACTION * ramp_s
+    good_ramp_samples = int((ramp_s - begin_offset_time) * fs)
+    start_offset_samples = int((float(on_ms) / 1e3 + begin_offset_time) * fs)
+    if good_ramp_samples < 2:
+        raise ValueError(f"{ramp_us:g} us at {fs:g} S/s leaves under 2 samples per chirp")
+    if start_offset_samples + good_ramp_samples > frame_samples:
+        raise ValueError("the chirp window runs past its PRI slot; raise pri_guard_ms")
+
+    # Chirp-to-chirp phase of the Tx tone. Anything but a whole number of
+    # cycles per PRI is a Doppler offset on every stationary return.
+    cycles = float(cfg["signal_freq"]) * pri_s
+    step_deg = (cycles - round(cycles)) * 360.0
+
+    total_ms = pri_ms * num_chirps
+    power = 13
+    buffer_size = 2 ** power
+    while buffer_size / fs * 1000 < total_ms:
+        power += 1
+        buffer_size = 2 ** power
+        if buffer_size > MAX_BURST_BUFFER:
+            raise ValueError(
+                f"{num_chirps} chirps x {pri_ms:g} ms at {fs:g} S/s needs more than "
+                f"{MAX_BURST_BUFFER} samples; fewer chirps or a lower sample rate")
+
+    plan.update({
+        "num_chirps": num_chirps,
+        "pri_ms": pri_ms,
+        "rx_buffer_size": buffer_size,
+        "frame_samples": frame_samples,
+        "start_offset_samples": start_offset_samples,
+        "good_ramp_samples": good_ramp_samples,
+        "tone_cycles_per_pri": cycles,
+        "chirp_phase_step_deg": step_deg,
+    })
+    return plan
+
+
+def slice_chirps(iq, plan):
+    """Cut the settled part of each chirp out of a synced capture.
+
+    Chirp m occupies [start + m*frame, start + m*frame + good). Returns the
+    samples x chirps matrix chirp_matrix() returns, so mti_filter() and
+    range_doppler_map() take it as they are. A free-running capture comes
+    back unchanged, for range_profile().
+    """
+    iq = np.asarray(iq)
+    if not plan["synced"]:
+        return iq
+    m = int(plan["num_chirps"])
+    frame = int(plan["frame_samples"])
+    start = int(plan["start_offset_samples"])
+    good = int(plan["good_ramp_samples"])
+    end = start + (m - 1) * frame + good
+    if end > len(iq):
+        raise ValueError(f"capture of {len(iq)} samples is shorter than the {end} the plan needs")
+    idx = start + frame * np.arange(m)[:, None] + np.arange(good)[None, :]
+    return iq[idx].T
